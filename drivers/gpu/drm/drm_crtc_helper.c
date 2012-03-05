@@ -370,7 +370,6 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 	 * a chance to reject the mode entirely.
 	 */
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-
 		if (encoder->crtc != crtc)
 			continue;
 		encoder_funcs = encoder->helper_private;

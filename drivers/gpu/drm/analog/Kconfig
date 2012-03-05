@@ -1,0 +1,20 @@
+config DRM_ANALOG
+	tristate "DRM Support for Samsung SoC ANALOG Series"
+	depends on DRM && PLAT_SAMSUNG
+	default	n
+	select DRM_KMS_HELPER
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select VT_HW_CONSOLE_BINDING if FRAMEBUFFER_CONSOLE
+	help
+	  Choose this option if you have a Samsung SoC ANALOG chipset.
+	  If M is selected the module will be called analogdrm.
+
+config DRM_ANALOG_FIMD
+	tristate "Exynos DRM FIMD"
+	depends on DRM_ANALOG
+	default n
+	help
+	  Choose this option if you want to use Exynos FIMD for DRM.
+	  If M is selected, the module will be called analog_drm_fimd

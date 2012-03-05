@@ -424,6 +424,8 @@ EXPORT_SYMBOL(drm_crtc_cleanup);
 void drm_mode_probed_add(struct drm_connector *connector,
 			 struct drm_display_mode *mode)
 {
+	printk("new mode: %dx%d %dx%d %d\n", mode->hdisplay, mode->vdisplay,
+	mode->htotal, mode->vtotal, mode->clock);
 	list_add(&mode->head, &connector->probed_modes);
 }
 EXPORT_SYMBOL(drm_mode_probed_add);
