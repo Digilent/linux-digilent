@@ -2481,6 +2481,13 @@ err_release:
 	return ret;
 }
 
+void xslcr_set_fpga3_clock(unsigned int rate)
+{
+	unsigned int div = DIV_ROUND_CLOSEST(1000000000, rate);
+
+	xslcr_writereg(slcr->regs + XSLCR_FPGA2_CLK_CTRL_OFFSET, 0x100000 | (div << 8));
+}
+
 /**
  * xslcr_remove -  Remove call for the device.
  *
