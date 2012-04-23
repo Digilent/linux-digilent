@@ -309,6 +309,9 @@ static int adv7511_get_edid_block(void *data,
 {
 	struct drm_encoder *encoder = data;
 	struct adv7511 *adv7511 = encoder_to_adv7511(encoder);
+	struct i2c_msg xfer[2];
+	uint8_t offset;
+	int i;
 	int ret;
 
 	if (len > 128)
@@ -330,12 +333,29 @@ static int adv7511_get_edid_block(void *data,
 		regmap_write(adv7511->regmap, ADV7511_REG_INT(0),
 			ADV7511_INT0_EDID_READY | ADV7511_INT1_DDC_ERROR);
 
-		ret = i2c_master_recv(adv7511->i2c_edid, adv7511->edid_buf, 256);
-		printk("i2c ret: %x\n", ret);
-		if (ret < 0)
-			return ret;
-		else if (ret != 256)
-			return -EIO;
+		/* Break this apart, hopefully more I2C controllers will support 64
+		 * byte transfers than 256 byte transfers */
+
+		xfer[0].addr = adv7511->i2c_edid->addr;
+		xfer[0].flags = 0;
+		xfer[0].len = 1;
+		xfer[0].buf = &offset;
+		xfer[1].addr = adv7511->i2c_edid->addr;
+		xfer[1].flags = I2C_M_RD;
+		xfer[1].len = 64;
+		xfer[1].buf = adv7511->edid_buf;
+
+		for (i = 0; i < 4; ++i) {
+			ret = i2c_transfer(adv7511->i2c_edid->adapter, xfer, ARRAY_SIZE(xfer));
+			printk("i2c ret: %d\n", ret);
+			if (ret < 0)
+				return ret;
+			else if (ret != 2)
+				return -EIO;
+
+			xfer[1].buf += 64;
+			offset += 64;
+		}
 
 		adv7511->current_edid_segment = block / 2;
 	}
