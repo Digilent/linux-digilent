@@ -204,7 +204,13 @@
 
 		xilinx_pcm_audio: xilinx_pcm_audio {
 			compatible = "xilinx-pcm-audio";
-			dma-request = <&axi_dma_0 0>;
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			playback: stream@0 {
+				reg = <0>;
+				dma-request = <&axi_dma_0 0>;
+			};
 		};
 
 		adv7511_hdmi_snd: adv7511_hdmi_snd {

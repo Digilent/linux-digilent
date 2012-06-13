@@ -44,6 +44,8 @@ static const struct snd_pcm_hardware xlnx_pcm_hardware = {
 	.buffer_bytes_max = ULONG_MAX,
 };
 
+#define XLNX_PCM_MAX_STREAMS 2
+
 static int xlnx_pcm_hw_params(struct snd_pcm_substream *substream,
 				  struct snd_pcm_hw_params *params)
 {
@@ -70,11 +72,18 @@ static int xlnx_pcm_open(struct snd_pcm_substream *substream)
 	struct xlnx_pcm_dma_params *params = dev_get_drvdata(dev);
 	int ret;
 
+	if (substream->stream >= XLNX_PCM_MAX_STREAMS)
+		return -EINVAL;
+
+	if (params[substream->stream].of_node == NULL)
+		return -EINVAL;
+
 	ret = snd_soc_set_runtime_hwparams(substream, &xlnx_pcm_hardware);
 	if (ret)
 		return ret;
 
-	return snd_dmaengine_pcm_open(substream, xlnx_pcm_filter, params);
+	return snd_dmaengine_pcm_open(substream, xlnx_pcm_filter,
+		&params[substream->stream]);
 }
 
 static int xlnx_pcm_new(struct snd_soc_pcm_runtime *rtd)
@@ -121,19 +130,48 @@ static int __devinit xlnx_pcm_soc_platform_probe(struct platform_device *pdev)
 {
 	struct xlnx_pcm_dma_params *params;
 	struct of_phandle_args dma_spec;
+	struct device_node *node;
+	u32 stream;
 	int ret;
 
-	params = devm_kzalloc(&pdev->dev, sizeof(*params), GFP_KERNEL);
+	if (!pdev->dev.of_node)
+		return -EINVAL;
+
+	params = devm_kzalloc(&pdev->dev, sizeof(*params) * XLNX_PCM_MAX_STREAMS, GFP_KERNEL);
 	if (!params)
 		return -ENOMEM;
 
-	ret = of_parse_phandle_with_args(pdev->dev.of_node, "dma-request",
-		    "#dma-cells", 0, &dma_spec);
-	if (ret)
-		return ret;
+	for_each_child_of_node(pdev->dev.of_node, node) {
+		ret = of_property_read_u32(node, "reg", &stream);
+		if (ret) {
+			dev_err(&pdev->dev, "Missing 'reg' attribute for stream '%s'\n",
+					node->name);
+			continue;
+		}
 
-	params->of_node = dma_spec.np;
-	params->chan_id = dma_spec.args[0];
+		if (stream >= XLNX_PCM_MAX_STREAMS) {
+			dev_err(&pdev->dev, "Index to big for stream '%s'\n",
+					node->name);
+			continue;
+		}
+
+		ret = of_parse_phandle_with_args(node, "dma-request",
+		    "#dma-cells", 0, &dma_spec);
+		if (ret) {
+			dev_err(&pdev->dev, "Can not parse dma channel for stream '%s': %d\n",
+					node->name, ret);
+			continue;
+		}
+
+		if (dma_spec.args_count != 1) {
+			dev_err(&pdev->dev, "Invalid dma channel for stream '%s'\n",
+					node->name);
+			continue;
+		}
+
+		params[stream].of_node = dma_spec.np;
+		params[stream].chan_id = dma_spec.args[0];
+	}
 
 	dev_set_drvdata(&pdev->dev, params);
 
