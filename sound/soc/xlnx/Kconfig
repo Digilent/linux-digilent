@@ -6,6 +6,9 @@ config SND_SOC_XILINX
 config SND_SOC_AXI_SPDIF
 	tristate
 
+config SND_SOC_AXI_I2S
+	tristate
+
 config SND_SOC_ADV7511_HDMI
 	tristate "ADV7511 HDMI transmitter sound support"
 	depends on SND_SOC_XILINX
