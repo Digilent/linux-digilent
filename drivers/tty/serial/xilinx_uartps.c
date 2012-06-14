@@ -834,8 +834,10 @@ static struct uart_port *xuartps_get_port(void)
  **/
 static void xuartps_console_wait_tx(struct uart_port *port)
 {
+	unsigned int timeout = 10000;
+
 	while ((xuartps_readl(XUARTPS_SR_OFFSET) & XUARTPS_SR_TXEMPTY)
-				!= XUARTPS_SR_TXEMPTY)
+				!= XUARTPS_SR_TXEMPTY && --timeout)
 		barrier();
 }
 
