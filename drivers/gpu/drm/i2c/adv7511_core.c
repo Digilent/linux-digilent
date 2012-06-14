@@ -336,6 +336,7 @@ static int adv7511_get_edid_block(void *data,
 		/* Break this apart, hopefully more I2C controllers will support 64
 		 * byte transfers than 256 byte transfers */
 
+		offset = 0;
 		xfer[0].addr = adv7511->i2c_edid->addr;
 		xfer[0].flags = 0;
 		xfer[0].len = 1;
