@@ -215,7 +215,9 @@ static void xgpiops_set_value(struct gpio_chip *chip, unsigned int pin,
 	 * get the 32 bit value to be written to the mask/data register where
 	 * the upper 16 bits is the mask and lower 16 bits is the data
 	 */
-	state &= 0x01;
+	//state &= 0x01;
+	if(state)
+		state = 1;
 	state = ~(1 << (bank_pin_num + 16)) & ((state << bank_pin_num) |
 					       0xFFFF0000);
 
