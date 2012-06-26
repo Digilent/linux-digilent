@@ -77,9 +77,26 @@
 			compatible = "xlnx,ps7-gpio-1.00.a";
 			reg = <0xe000a000 0x1000>;
 			interrupts = <0x0 0x14 0x0>;
-			interrupt-parent = <0x1>;
-			gpio-controller;
-			#gpio-cells = <0x2>;
+			
+			oled@0 {
+				compatible = "dglnt,pmodoled-1.00.a";
+				spi-bus-num = <2>;
+				spi-speed-hz = <4000000>;
+				gpio-width = <0x6>;
+				gpio-pins = <0x37 0x38 0x39 0x3a 0x3b 0x3c>;
+			};
+
+			sw@1 {
+				compatible = "dglnt,sw-gpio-1.00.a";
+				gpio-width = <0x8>;
+				gpio-pins = <69 70 71 72 73 74 75 76>;
+			};
+
+			led@2 {
+				compatible = "dglnt,led-gpio-1.00.a";
+				gpio-width = <0x8>;
+				gpio-pins = <61 62 63 64 65 66 67 68>;
+			};
 		};
 
 		i2c@41600000 {
@@ -165,7 +182,7 @@
 			linux,phandle = <0x4>;
 			phandle = <0x4>;
 
-			dma-channel@7e200000 {
+			dma-channel@43000000 {
 				compatible = "xlnx,axi-vdma-mm2s-channel";
 				interrupts = <0x0 0x3b 0x4>;
 				xlnx,datawidth = <0x40>;
@@ -174,9 +191,9 @@
 			};
 		};
 
-		cf-adv7x11-core@6c000000 {
+		cf-adv7x11-core@70e00000 {
 			compatible = "adi,cf-adv7x11-core-1.00.a";
-			reg = <0x6c000000 0x10000 0x66000000 0x10000>;
+			reg = <0x70e00000 0x10000 0x79000000 0x10000>;
 			slave_adapter = <0x3>;
 			dma-request = <0x4 0x0>;
 		};
