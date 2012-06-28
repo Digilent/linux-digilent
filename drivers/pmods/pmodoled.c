@@ -56,7 +56,6 @@ struct pmodoled_device {
 	/* SPI Info */
 	uint32_t spi_id;
 	/* platform device structures */
-//	struct spi_gpio_platform_data pdata;
 	struct platform_device *pdev;
 	/* Char Device */
 	struct cdev cdev;
@@ -267,7 +266,7 @@ static int __init add_pmodoled_device_to_bus(struct pmodoled_device* dev) {
 	spi_device->mode = SPI_MODE_0;
 	spi_device->bits_per_word = 8;
 	spi_device->controller_data = dev->iCS;
-	spi_device->dev.platform_data = (void *)dev;
+	spi_device->dev.platform_data = dev;
 	strlcpy(spi_device->modalias, DRIVER_NAME, sizeof(DRIVER_NAME));
 
 	status = spi_add_device(spi_device);
@@ -305,7 +304,14 @@ static int __init pmodoled_of_probe(struct device_node *np)
 		status = -ENOMEM;
 		goto dev_alloc_err;
 	}
-	pmodoled_dev->disp_buf = NULL;
+	
+	/* Alloc Graphic Buffer for device */
+	pmodoled_dev->disp_buf = (uint8_t*) kmalloc(DISPLAY_BUF_SZ, GFP_KERNEL);
+	if(!pmodoled_dev->disp_buf) {
+		status = -ENOMEM;
+		printk(KERN_INFO DRIVER_NAME "Device Display data buffer allocation failed: %d\n", status);
+		goto disp_buf_alloc_err;
+	}
 
 	/* Get CS for SPI_GPIO */
 	tree_info = of_get_property(np, "spi-chip-select", NULL);
@@ -397,6 +403,8 @@ pdev_reg_err:
 pdev_alloc_err:
 	kfree(pmodoled_pdata);
 pdata_alloc_err:
+	kfree(pmodoled_dev->disp_buf);
+disp_buf_alloc_err:
 	kfree(pmodoled_dev);
 dev_alloc_err:
 	return status;
@@ -420,17 +428,11 @@ static int __exit pmodoled_of_remove(struct device_node *np)
 	}
 	pmodoled_dev = (struct pmodoled_device*) (np->data);
 
-	if(pmodoled_dev->spi != NULL) {
-		spi_unregister_device(pmodoled_dev->spi);
-	}
-	
-	platform_device_unregister(pmodoled_dev->pdev);
-	
 	if(pmodoled_dev->disp_buf != NULL) {
 		kfree(pmodoled_dev->disp_buf);
 	}
+	platform_device_unregister(pmodoled_dev->pdev);
 	
-	kfree(pmodoled_dev);
 	np->data = NULL;
 	
 	return 0;
@@ -603,14 +605,6 @@ static int pmodoled_spi_probe(struct spi_device *spi) {
 		goto spi_platform_data_err;
 	}
 	
-	/* Alloc Graphic Buffer for device */
-	pmodoled_dev->disp_buf = (uint8_t*) kmalloc(DISPLAY_BUF_SZ, GFP_KERNEL);
-	if(!pmodoled_dev->disp_buf) {
-		status = -ENOMEM;
-		printk(KERN_INFO DRIVER_NAME "Device Display data buffer allocation failed: %d\n", status);
-		goto disp_buf_alloc_err;
-	}
-
 	/* Setup char driver */
 	status = pmodoled_setup_cdev(pmodoled_dev, &(pmodoled_dev->dev_id), spi);	
 	if (status) {
@@ -635,7 +629,7 @@ static int pmodoled_spi_probe(struct spi_device *spi) {
 
 	pmodoled_disp_init(pmodoled_dev);
 
-	memset(pmodoled_dev->disp_buf, 0xF0, DISPLAY_BUF_SZ);
+	memset(pmodoled_dev->disp_buf, 0x00, DISPLAY_BUF_SZ);
 
 	status = screen_buf_to_display(pmodoled_dev->disp_buf, pmodoled_dev);
 	if(status) {
@@ -648,9 +642,6 @@ oled_init_error:
 cdev_add_err:
 	if (&pmodoled_dev->cdev)
 		cdev_del(&pmodoled_dev->cdev);
-	if(pmodoled_dev->disp_buf)
-		kfree(pmodoled_dev->disp_buf);
-disp_buf_alloc_err:
 spi_platform_data_err:
 spi_err:
 	return(status);
@@ -691,10 +682,6 @@ static int __devexit pmodoled_spi_remove(struct spi_device *spi)
 
 	gpio_free_array(pmodoled_ctrl, 4);
 }
-	
-	if(dev->disp_buf) {
-		kfree(dev->disp_buf);
-	}
 	
 	if(&dev->cdev) {
 		cdev_del(&dev->cdev);
@@ -746,10 +733,6 @@ static int __init pmodoled_init(void)
 
 static void __exit pmodoled_exit(void)
 {
-	spi_unregister_driver(&pmodoled_spi_driver);
-	
-	unregister_chrdev_region(pmodoled_dev_id, device_num);
-
 #ifdef CONFIG_OF
 {
 	struct device_node *np;
@@ -758,6 +741,10 @@ static void __exit pmodoled_exit(void)
 		pmodoled_of_remove(np);
 }
 #endif
+
+	spi_unregister_driver(&pmodoled_spi_driver);
+	
+	unregister_chrdev_region(pmodoled_dev_id, device_num);
 	
 	return;
 }
