@@ -38,8 +38,10 @@ dev_t pmodoled_dev_id = 0;
 static unsigned int device_num = 0;
 static unsigned int cur_minor = 0;
 struct mutex minor_mutex;
+static struct class *pmodoled_class = NULL;
 
 struct pmodoled_device {
+	char *name;
 	/* R/W Mutex Lock */
 	struct mutex mutex;
 	/* Display Buffers */
@@ -110,14 +112,6 @@ static int 	pmodoled_open(struct inode *inode, struct file *fp)
 
 	dev = container_of(inode->i_cdev, struct pmodoled_device, cdev);
 	fp->private_data = dev;
-#ifdef CONFIG_PMODS_DEBUG
-		printk(KERN_INFO "pmodoled: VBAT\t%d\n", dev->iVBAT);
-		printk(KERN_INFO "pmodoled: VDD\t%d\n", dev->iVDD);
-		printk(KERN_INFO "pmodoled: RES\t%d\n", dev->iRES);
-		printk(KERN_INFO "pmodoled: DC\t%d\n", dev->iDC);
-		printk(KERN_INFO "pmodoled: SCLK\t%d\n", dev->iCLK);
-		printk(KERN_INFO "pmodoled: SDIN\t%d\n", dev->iMOSI);
-#endif
 
 	return 0;
 }
@@ -265,7 +259,7 @@ static int __init add_pmodoled_device_to_bus(struct pmodoled_device* dev) {
 	spi_device->max_speed_hz = 4000000;
 	spi_device->mode = SPI_MODE_0;
 	spi_device->bits_per_word = 8;
-	spi_device->controller_data = dev->iCS;
+	spi_device->controller_data = (void *) dev->iCS;
 	spi_device->dev.platform_data = dev;
 	strlcpy(spi_device->modalias, DRIVER_NAME, sizeof(DRIVER_NAME));
 
@@ -331,14 +325,6 @@ static int __init pmodoled_of_probe(struct device_node *np)
 		pmodoled_dev->iDC = be32_to_cpup((tree_info + 3));
 		pmodoled_dev->iCLK = be32_to_cpup((tree_info + 4));
 		pmodoled_dev->iMOSI = be32_to_cpup((tree_info + 5));
-#ifdef CONFIG_PMODS_DEBUG
-		printk(KERN_INFO "pmodoled: VBAT\t%d\n", pmodoled_dev->iVBAT);
-		printk(KERN_INFO "pmodoled: VDD\t%d\n", pmodoled_dev->iVDD);
-		printk(KERN_INFO "pmodoled: RES\t%d\n", pmodoled_dev->iRES);
-		printk(KERN_INFO "pmodoled: DC\t%d\n", pmodoled_dev->iDC);
-		printk(KERN_INFO "pmodoled: SCLK\t%d\n",pmodoled_dev->iCLK);
-		printk(KERN_INFO "pmodoled: SDIN\t%d\n", pmodoled_dev->iMOSI);
-#endif
 	}
 
 	/* Get SPI Related Params */
@@ -392,7 +378,8 @@ static int __init pmodoled_of_probe(struct device_node *np)
 	/* Point device node data to pmodoled_device structure */
 	if(np->data == NULL)
 		np->data = pmodoled_dev;
-	
+
+	pmodoled_dev->name = np->name;	
 	device_num ++;	
 	return status;
 
@@ -431,7 +418,10 @@ static int __exit pmodoled_of_remove(struct device_node *np)
 	if(pmodoled_dev->disp_buf != NULL) {
 		kfree(pmodoled_dev->disp_buf);
 	}
-	platform_device_unregister(pmodoled_dev->pdev);
+	
+	if(pmodoled_dev->pdev != NULL) {
+		platform_device_unregister(pmodoled_dev->pdev);
+	}
 	
 	np->data = NULL;
 	
@@ -450,7 +440,8 @@ static int __exit pmodoled_of_remove(struct device_node *np)
  */
 static int pmodoled_setup_cdev(struct pmodoled_device *dev, dev_t *dev_id, struct spi_device *spi) 
 {
-	int status;
+	int status = 0;
+	struct device *device;
 	
 	cdev_init(&dev->cdev, &pmodoled_cdev_fops);
 	dev->cdev.owner = THIS_MODULE;
@@ -459,6 +450,20 @@ static int pmodoled_setup_cdev(struct pmodoled_device *dev, dev_t *dev_id, struc
 
 	*dev_id = MKDEV(MAJOR(pmodoled_dev_id), cur_minor++);
 	status = cdev_add(&dev->cdev, *dev_id, 1);
+	if(status < 0) {
+		return status;
+	}
+	
+	/* Add Device node in system */
+	device = device_create(pmodoled_class, NULL,
+					*dev_id, NULL,
+					"%s.%d", dev->name, (cur_minor - 1));
+	if(IS_ERR(device)) {
+		status = PTR_ERR(device);
+		printk(KERN_WARNING "failed to create device node %s.%d, err %d\n",
+				dev->name, (cur_minor-1), status);
+		cdev_del(&dev->cdev);
+	}
 	
 	return status;
 }
@@ -496,6 +501,7 @@ static int pmodoled_init_gpio(struct pmodoled_device *dev)
 	if(status) {
 		printk(KERN_INFO DRIVER_NAME "!!  gpio_request_array FAILED!\n");
 		printk(KERN_INFO DRIVER_NAME "          status is: %d\n", status);
+		gpio_free_array(pmodoled_ctrl, 4);
 		goto gpio_invalid;
 	}
 
@@ -611,7 +617,7 @@ static int pmodoled_spi_probe(struct spi_device *spi) {
 		printk(KERN_INFO DRIVER_NAME "oled_spi_probe: Error adding %s device: %d\n", DRIVER_NAME, status);
 		goto cdev_add_err;
 	}
-
+	
 	/* Initialize Mutex */
 	mutex_init(&pmodoled_dev->mutex);
 
@@ -639,9 +645,9 @@ static int pmodoled_spi_probe(struct spi_device *spi) {
 	return status;
 
 oled_init_error:
-cdev_add_err:
 	if (&pmodoled_dev->cdev)
 		cdev_del(&pmodoled_dev->cdev);
+cdev_add_err:
 spi_platform_data_err:
 spi_err:
 	return(status);
@@ -684,6 +690,7 @@ static int __devexit pmodoled_spi_remove(struct spi_device *spi)
 }
 	
 	if(&dev->cdev) {
+		device_destroy(pmodoled_class, dev->dev_id);
 		cdev_del(&dev->cdev);
 	}
 	
@@ -723,7 +730,13 @@ static int __init pmodoled_init(void)
 		printk(KERN_INFO DRIVER_NAME "Character device region not allocated correctly: %d\n", status);
 		return status;
 	}
-	
+
+	pmodoled_class = class_create(THIS_MODULE, DRIVER_NAME);
+	if (IS_ERR(pmodoled_class)) {
+		status = PTR_ERR(pmodoled_class);
+		return status;
+	}
+
 	return spi_register_driver(&pmodoled_spi_driver);
 }
 
@@ -743,6 +756,10 @@ static void __exit pmodoled_exit(void)
 #endif
 
 	spi_unregister_driver(&pmodoled_spi_driver);
+
+	if(pmodoled_class) {
+		class_destroy(pmodoled_class);
+	}
 	
 	unregister_chrdev_region(pmodoled_dev_id, device_num);
 	
