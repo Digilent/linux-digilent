@@ -27,7 +27,7 @@ static struct snd_soc_dai_link hdmi_dai_link = {
 	.stream_name = "HDMI",
 /*	.cpu_dai_name = "75c00000.axi-spdif-tx",
 	.platform_name = "xilinx_pcm_audio.2",*/
-	.codec_name = "adv7511.2-0039",
+	.codec_name = "adv7511.0-0039",
 	.codec_dai_name = "adv7511",
 	.dai_fmt = SND_SOC_DAIFMT_SPDIF |
 			SND_SOC_DAIFMT_NB_NF |
