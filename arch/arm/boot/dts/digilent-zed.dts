@@ -221,5 +221,15 @@
 			cpu-dai = <&axi_spdif>;
 			pcm = <&xlnx_pcm>;
 		};
+
+		leds {
+			compatible = "gpio-leds";
+
+			mmc_led {
+				label = "mmc_led";
+				gpios = <&gpiops 7 0>;
+				linux,default-trigger = "mmc0";
+			};
+		};
 	};
 };
