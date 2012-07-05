@@ -985,6 +985,7 @@ config ARCH_ZYNQ
 	select CACHE_L2X0
 	select ISA_DMA_API
 	select ARCH_REQUIRE_GPIOLIB
+	select COMMON_CLK
 	help
 	  Support for Xilinx Zynq ARM Cortex A9 Platform
 endchoice
@@ -1106,8 +1107,6 @@ source "arch/arm/plat-versatile/Kconfig"
 source "arch/arm/mach-vt8500/Kconfig"
 
 source "arch/arm/mach-w90x900/Kconfig"
-
-source "arch/arm/mach-xilinx/Kconfig"
 
 source "arch/arm/mach-zynq/Kconfig"
 

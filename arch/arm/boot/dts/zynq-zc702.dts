@@ -12,7 +12,7 @@
 		reg = <0x00000000 0x40000000>; 
 	};
 	chosen {
-		bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x800000,8M ip=:::::eth0:dhcp"; 
+		bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x800000,8M ip=:::::eth0:dhcp earlyprintk"; 
 		linux,stdout-path = "/amba@0/uart@E0001000";
 	};
 
@@ -30,6 +30,16 @@
 			      < 0xf8f00100 0x0100 >;
 		};
 
+		pl310@f8f02000 {
+			compatible = "arm,pl310-cache";
+			cache-unified;
+			cache-level = <2>;
+			reg = <0xf8f02000 0x1000>;
+			arm,data-latency = <3 2 2>;
+			arm,tag-latency = <2 2 2>;
+			interrupts = <0 34 4>;
+		};
+
 		uart@e0001000 {
 			compatible = "xlnx,ps7-uart-1.00.a";
 			reg = <0xe0001000 0x1000>;
@@ -43,13 +53,16 @@
 			reg = <0xf8001000 0x1000>;
 			interrupts = <0 10 0>,<0 11 0>,<0 12 0>; 
 			interrupt-parent = <&gic>;
-			clock-frequency = <111111111>;
+			clock-frequency-timer0 = <111111111>;
+			clock-frequency-timer1 = <111111111>;
+			clock-frequency-timer2 = <111111111>;
 		};
 
 		swdt@f8005000 {
 			device_type = "watchdog";
 			compatible = "xlnx,ps7-wdt-1.00.a";
 			reg = <0xf8005000 0x100>;
+			clock-frequency = <111111111>;
 		};
 
 		eth@e000b000 {
@@ -58,6 +71,13 @@
 			interrupts = <0 22 0>;
 			interrupt-parent = <&gic>;
 			phy-handle = <&phy0>;
+			xlnx,ptp-enet-clock = <111111111>;
+			xlnx,slcr-div0-1000Mbps = <8>;
+			xlnx,slcr-div0-100Mbps = <8>;
+			xlnx,slcr-div0-10Mbps = <8>;
+			xlnx,slcr-div1-1000Mbps = <1>;
+			xlnx,slcr-div1-100Mbps = <5>;
+			xlnx,slcr-div1-10Mbps = <50>;
 			#address-cells = <0x1>;
 			#size-cells = <0x0>;
 
@@ -84,6 +104,7 @@
 		sdhci@e0100000 {
 			compatible = "xlnx,ps7-sdhci-1.00.a";
 			reg = <0xe0100000 0x1000>;
+			xlnx,has-cd = <0x1>;
 			interrupts = <0 24 0>;
 			interrupt-parent = <&gic>;
 			clock-frequency = <33333000>;
@@ -155,8 +176,14 @@
 
 		devcfg@f8007000 {
 			compatible = "xlnx,ps7-dev-cfg-1.00.a";
-			reg = <0xf8007000 0x1000>;
+			reg = <0xf8007000 0x100>;
 			interrupts = <0 8 0>;
+			interrupt-parent = <&gic>;
+		};
+		xadc@f8007100 {
+			compatible = "xlnx,ps7-xadc-1.00.a";
+			reg = <0xf8007100 0x20>;
+			interrupts = <0 7 0>;
 			interrupt-parent = <&gic>;
 		};
 	};
