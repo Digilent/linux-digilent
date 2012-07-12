@@ -7,21 +7,55 @@
 	#size-cells = <0x1>;
 	interrupt-parent = <&gic>;
 
-	memory {
+	ps7_ddr_0: memory@0 {
 		device_type = "memory";
 		reg = <0x0 0x20000000>;
 	};
 
 	chosen {
 		bootargs = "console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait devtmpfs.mount=0";
-		linux,stdout-path = "/amba@0/uart@E0001000";
+		linux,stdout-path = "/axi@0/uart@E0001000";
 	};
+	
+	cpus {
+		#address-cells = <1>;
+		#cpus = <0x2>;
+		#size-cells = <0>;
+		ps7_cortexa9_0: cpu@0 {
+			clock-frequency = <666666687>;
+			compatible = "xlnx,ps7-cortexa9-1.00.a";
+			d-cache-line-size = <0x20>;
+			d-cache-size = <0x8000>;
+			device_type = "cpu";
+			i-cache-line-size = <0x20>;
+			i-cache-size = <0x8000>;
+			model = "ps7_cortexa9,1.00.a";
+			reg = <0>;
+			timebase-frequency = <333333343>;
+			xlnx,cpu-1x-clk-freq-hz = <0x69f6bcb>;
+			xlnx,cpu-clk-freq-hz = <0x27bc86bf>;
+		} ;
+		ps7_cortexa9_1: cpu@1 {
+			clock-frequency = <666666687>;
+			compatible = "xlnx,ps7-cortexa9-1.00.a";
+			d-cache-line-size = <0x20>;
+			d-cache-size = <0x8000>;
+			device_type = "cpu";
+			i-cache-line-size = <0x20>;
+			i-cache-size = <0x8000>;
+			model = "ps7_cortexa9,1.00.a";
+			reg = <1>;
+			timebase-frequency = <333333343>;
+			xlnx,cpu-1x-clk-freq-hz = <0x69f6bcb>;
+			xlnx,cpu-clk-freq-hz = <0x27bc86bf>;
+		} ;
+	} ;
 
-	amba@0 {
-		compatible = "simple-bus";
-		#address-cells = <0x1>;
-		#size-cells = <0x1>;
-		ranges;
+	ps7_axi_interconnect_0: axi@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "xlnx,ps7-axi-interconnect-1.00.a", "simple-bus";
+		ranges ;
 
 		gic: intc@f8f01000 {
 			interrupt-controller;
@@ -66,7 +100,7 @@
 			clock-frequency = <111111111>;
 		};
 
-		eth@e000b000 {
+		ps7_ethernet_0: eth@e000b000 {
 			compatible = "xlnx,ps7-ethernet-1.00.a";
 			reg = <0xe000b000 0x1000>;
 			interrupts = <0x0 0x16 0x0>;
@@ -81,12 +115,16 @@
 			xlnx,slcr-div1-1000Mbps = <1>;
 			xlnx,slcr-div1-100Mbps = <5>;
 			xlnx,slcr-div1-10Mbps = <50>;
+			mdio {
+				#address-cells = <1>;
+				#size-cells = <0>;
 
-			phy0: phy@0 {
-				compatible = "marvell,88e1510";
-				device_type = "ethernet-phy";
-				reg = <0x0>;
-				marvell,reg-init = <0x3 0x10 0xff00 0x1e 0x3 0x11 0xfff0 0xa>;
+				phy0: phy@0 {
+					compatible = "marvell,88e1510";
+					device_type = "ethernet-phy";
+					reg = <0x0>;
+					marvell,reg-init = <0x3 0x10 0xff00 0x1e 0x3 0x11 0xfff0 0xa>;
+				};
 			};
 		};
 
@@ -104,7 +142,7 @@
 			reg = <0xe0100000 0x1000>;
 			interrupts = <0x0 0x18 0x0>;
 			interrupt-parent = <&gic>;
-			xlnx,has-cd = <0x1>;
+			/*xlnx,has-cd = <0x1>;*/
 			clock-frequency = <0x1fc9f08>;
 		};
 
@@ -124,26 +162,6 @@
 			interrupts = <0x0 0x14 0x0>;
 			interrupt-parent = <&gic>;
 			gpio-controller;
-	
-			zed_oled {
-				compatible = "dglnt,pmodoled-1.00.a";
-				spi-bus-num = <2>;
-				spi-speed-hz = <4000000>;
-				gpio-width = <0x6>;
-				gpio-pins = <0x37 0x38 0x39 0x3a 0x3b 0x3c>;
-			};
-
-			zed_sw {
-				compatible = "dglnt,sw-gpio-1.00.a";
-				gpio-width = <0x8>;
-				gpio-pins = <69 70 71 72 73 74 75 76>;
-			};
-
-			zed_led {
-				compatible = "dglnt,led-gpio-1.00.a";
-				gpio-width = <0x8>;
-				gpio-pins = <61 62 63 64 65 66 67 68>;
-			};
 		};
 
 		qspi@e000d000 {
@@ -230,6 +248,20 @@
 				gpios = <&gpiops 7 0>;
 				linux,default-trigger = "mmc0";
 			};
+		};
+
+		zed_oled {
+			compatible = "dglnt,pmodoled-gpio";
+			/* GPIO Pins */
+			vbat-gpio = <&gpiops 55 0>;
+			vdd-gpio = <&gpiops 56 0>;
+			res-gpio = <&gpiops 57 0>;
+			dc-gpio = <&gpiops 58 0>;
+			/* SPI-GPIOs */
+			spi-bus-num = <2>;
+			spi-speed-hz = <4000000>;
+			spi-sclk-gpio = <&gpiops 59 0>;
+			spi-sdin-gpio = <&gpiops 60 0>;
 		};
 	};
 };
