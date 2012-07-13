@@ -450,7 +450,7 @@ static enum drm_connector_status adv7511_encoder_detect(struct drm_encoder *enco
 
 	hpd = adv7511_hpd(adv7511);
 
-	printk("detect: %x %d %d %d\n", val, status, hpd, adv7511->dpms_mode);
+	dev_dbg(encoder->dev->dev, "detect: %x %d %d %d\n", val, status, hpd, adv7511->dpms_mode);
 
 	/* The chip resets itself when the cable is disconnected, so in case there is
 	 * a pending HPD interrupt and the cable is connected there was at least on
