@@ -486,7 +486,7 @@ static int xilinx_dma_wait_status(struct xilinx_dma_chan *chan, uint32_t mask,
 
 	do {
 		status = DMA_IN(&chan->regs->cr);
-		printk("status: %x, mask: %x, value: %x\n", status, mask, value);
+		dev_dbg(chan->dev, "status: %x, mask: %x, value: %x\n", status, mask, value);
 		if ((status & mask) == value)
 			break;
 	} while (--timeout);
