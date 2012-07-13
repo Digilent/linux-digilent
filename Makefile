@@ -1,7 +1,7 @@
 VERSION = 3
 PATCHLEVEL = 3
 SUBLEVEL = 0
-EXTRAVERSION = -14.2-build1
+EXTRAVERSION = -digilent-12.07-zed-beta
 NAME = Saber-toothed Squirrel
 
 # *DOCUMENTATION*
