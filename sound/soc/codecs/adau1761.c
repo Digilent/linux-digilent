@@ -611,11 +611,21 @@ static bool adau1761_readable_register(struct device *dev, unsigned int reg)
 	return adau17x1_readable_register(dev, reg);
 }
 
+static struct adau1761_platform_data def_pdata = {
+	.input_differential = true,
+	.lineout_mode = ADAU1761_OUTPUT_MODE_LINE,
+	.headphone_mode = ADAU1761_OUTPUT_MODE_HEADPHONE_CAPLESS,
+	.digmic_jackdetect_pin_mode = ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE,
+};
+
 static int adau1761_probe(struct snd_soc_codec *codec)
 {
 	struct adau1761_platform_data *pdata = codec->dev->platform_data;
 	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 	int ret;
+
+	pdata = &def_pdata;
+	codec->dev->platform_data = &def_pdata;
 
 	ret = adau17x1_probe(codec);
 	if (ret < 0)
