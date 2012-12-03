@@ -74,7 +74,7 @@ static int zed_adau1761_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	ret = snd_soc_dai_set_pll(codec_dai, ADAU17X1_PLL,
-			ADAU17X1_PLL_SRC_MCLK, 8000000, pll_rate);
+			ADAU17X1_PLL_SRC_MCLK, 12288000, pll_rate);
 	if (ret)
 		return ret;
 
