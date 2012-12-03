@@ -114,10 +114,8 @@ static int axi_i2s_hw_params(struct snd_pcm_substream *substream,
 	unsigned int bclk_div, frame_size;
 
 	frame_size = snd_soc_params_to_frame_size(params) / 2;
-	bclk_div = DIV_ROUND_UP(i2s->clock, snd_soc_params_to_bclk(params)) - 1;
+	bclk_div = DIV_ROUND_UP(i2s->clock, snd_soc_params_to_bclk(params)) / 2 - 1;
 	axi_i2s_write(i2s, AXI_I2S_REG_CLK_CTRL, (frame_size << 16) | bclk_div);
-
-	printk("frame size: %d %d\n", frame_size, bclk_div);
 
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 	    unsigned int period_size = params_period_bytes(params) / 4 - 1;
