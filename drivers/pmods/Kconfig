@@ -23,4 +23,9 @@ config PMODCLS
 	help
 		This is the Digilent PmodCLS driver. Uses SPI over GPIO. 
 
+config PMODCLP
+	tristate "pmodclp"
+	help
+		This is the Digilent PmodCLP driver. Implements parallel access. 
+
 endif # PMODS 
