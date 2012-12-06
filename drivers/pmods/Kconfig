@@ -28,4 +28,10 @@ config PMODCLP
 	help
 		This is the Digilent PmodCLP driver. Implements parallel access. 
 
+config PMODDA1
+	tristate "pmodda1"
+	select SPI_BITBANG
+	help
+		This is the Digilent PmodDA1 driver. Uses SPI over GPIO. 
+
 endif # PMODS 
