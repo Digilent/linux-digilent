@@ -34,4 +34,10 @@ config PMODDA1
 	help
 		This is the Digilent PmodDA1 driver. Uses SPI over GPIO. 
 
+config PMODAD1
+	tristate "pmodad1"
+	select SPI_BITBANG
+	help
+		This is the Digilent PmodAD1 driver. Uses SPI over GPIO.
+
 endif # PMODS 
