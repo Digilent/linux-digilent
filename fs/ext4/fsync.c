@@ -89,6 +89,7 @@ int ext4_flush_completed_IO(struct inode *inode)
 		io = list_entry(ei->i_completed_io_list.next,
 				ext4_io_end_t, list);
 		list_del_init(&io->list);
+		io->flag |= EXT4_IO_END_IN_FSYNC;
 		/*
 		 * Calling ext4_end_io_nolock() to convert completed
 		 * IO to written.
@@ -108,6 +109,7 @@ int ext4_flush_completed_IO(struct inode *inode)
 		if (ret < 0)
 			ret2 = ret;
 		spin_lock_irqsave(&ei->i_completed_io_lock, flags);
+		io->flag &= ~EXT4_IO_END_IN_FSYNC;
 	}
 	spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
 	return (ret2 < 0) ? ret2 : 0;
@@ -133,14 +135,7 @@ static int ext4_sync_parent(struct inode *inode)
 	inode = igrab(inode);
 	while (ext4_test_inode_state(inode, EXT4_STATE_NEWENTRY)) {
 		ext4_clear_inode_state(inode, EXT4_STATE_NEWENTRY);
-		dentry = NULL;
-		spin_lock(&inode->i_lock);
-		if (!list_empty(&inode->i_dentry)) {
-			dentry = list_first_entry(&inode->i_dentry,
-						  struct dentry, d_alias);
-			dget(dentry);
-		}
-		spin_unlock(&inode->i_lock);
+		dentry = d_find_any_alias(inode);
 		if (!dentry)
 			break;
 		next = igrab(dentry->d_parent->d_inode);
@@ -230,7 +225,7 @@ int ext4_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 
 	if (!journal) {
 		ret = __sync_inode(inode, datasync);
-		if (!ret && !list_empty(&inode->i_dentry))
+		if (!ret && !hlist_empty(&inode->i_dentry))
 			ret = ext4_sync_parent(inode);
 		goto out;
 	}

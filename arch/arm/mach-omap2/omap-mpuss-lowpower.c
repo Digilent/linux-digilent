@@ -46,7 +46,6 @@
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 #include <asm/smp_scu.h>
-#include <asm/system.h>
 #include <asm/pgalloc.h>
 #include <asm/suspend.h>
 #include <asm/hardware/cache-l2x0.h>
@@ -256,19 +255,17 @@ int omap4_enter_lowpower(unsigned int cpu, unsigned int power_state)
 		return -ENXIO;
 	}
 
-	pwrdm_pre_transition();
+	pwrdm_pre_transition(NULL);
 
 	/*
 	 * Check MPUSS next state and save interrupt controller if needed.
 	 * In MPUSS OSWR or device OFF, interrupt controller  contest is lost.
 	 */
 	mpuss_clear_prev_logic_pwrst();
-	pwrdm_clear_all_prev_pwrst(mpuss_pd);
 	if ((pwrdm_read_next_pwrst(mpuss_pd) == PWRDM_POWER_RET) &&
 		(pwrdm_read_logic_retst(mpuss_pd) == PWRDM_POWER_OFF))
 		save_state = 2;
 
-	clear_cpu_prev_pwrst(cpu);
 	cpu_clear_prev_logic_pwrst(cpu);
 	set_cpu_next_pwrst(cpu, power_state);
 	set_cpu_wakeup_addr(cpu, virt_to_phys(omap4_cpu_resume));
@@ -290,7 +287,7 @@ int omap4_enter_lowpower(unsigned int cpu, unsigned int power_state)
 	wakeup_cpu = smp_processor_id();
 	set_cpu_next_pwrst(wakeup_cpu, PWRDM_POWER_ON);
 
-	pwrdm_post_transition();
+	pwrdm_post_transition(NULL);
 
 	return 0;
 }
@@ -300,7 +297,7 @@ int omap4_enter_lowpower(unsigned int cpu, unsigned int power_state)
  * @cpu : CPU ID
  * @power_state: CPU low power state.
  */
-int omap4_hotplug_cpu(unsigned int cpu, unsigned int power_state)
+int __cpuinit omap4_hotplug_cpu(unsigned int cpu, unsigned int power_state)
 {
 	unsigned int cpu_state = 0;
 
@@ -316,7 +313,7 @@ int omap4_hotplug_cpu(unsigned int cpu, unsigned int power_state)
 	scu_pwrst_prepare(cpu, power_state);
 
 	/*
-	 * CPU never retuns back if targetted power state is OFF mode.
+	 * CPU never retuns back if targeted power state is OFF mode.
 	 * CPU ONLINE follows normal CPU ONLINE ptah via
 	 * omap_secondary_startup().
 	 */

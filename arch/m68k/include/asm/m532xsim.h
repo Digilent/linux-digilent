@@ -24,6 +24,19 @@
 #define MCFINT_UART1        27          /* Interrupt number for UART1 */
 #define MCFINT_UART2        28          /* Interrupt number for UART2 */
 #define MCFINT_QSPI         31          /* Interrupt number for QSPI */
+#define MCFINT_FECRX0	    36		/* Interrupt number for FEC */
+#define MCFINT_FECTX0	    40		/* Interrupt number for FEC */
+#define MCFINT_FECENTC0	    42		/* Interrupt number for FEC */
+
+#define MCF_IRQ_UART0       (MCFINT_VECBASE + MCFINT_UART0)
+#define MCF_IRQ_UART1       (MCFINT_VECBASE + MCFINT_UART1)
+#define MCF_IRQ_UART2       (MCFINT_VECBASE + MCFINT_UART2)
+
+#define MCF_IRQ_FECRX0	    (MCFINT_VECBASE + MCFINT_FECRX0)
+#define MCF_IRQ_FECTX0	    (MCFINT_VECBASE + MCFINT_FECTX0)
+#define MCF_IRQ_FECENTC0    (MCFINT_VECBASE + MCFINT_FECENTC0)
+
+#define	MCF_IRQ_QSPI	    (MCFINT_VECBASE + MCFINT_QSPI)
 
 #define MCF_WTM_WCR	MCF_REG16(0xFC098000)
 
@@ -69,6 +82,9 @@
 #define	MCFINTC1_SIMR		0xFC04C01C
 #define	MCFINTC1_CIMR		0xFC04C01D
 #define	MCFINTC1_ICR0		0xFC04C040
+#define MCFINTC2_SIMR		(0)
+#define MCFINTC2_CIMR		(0)
+#define MCFINTC2_ICR0		(0)
 
 #define MCFSIM_ICR_TIMER1	(0xFC048040+32)
 #define MCFSIM_ICR_TIMER2	(0xFC048040+33)
@@ -82,9 +98,25 @@
 /*
  *  UART module.
  */
-#define MCFUART_BASE1		0xFC060000	/* Base address of UART1 */
-#define MCFUART_BASE2		0xFC064000	/* Base address of UART2 */
-#define MCFUART_BASE3		0xFC068000	/* Base address of UART3 */
+#define MCFUART_BASE0		0xFC060000	/* Base address of UART1 */
+#define MCFUART_BASE1		0xFC064000	/* Base address of UART2 */
+#define MCFUART_BASE2		0xFC068000	/* Base address of UART3 */
+
+/*
+ *  FEC module.
+ */
+#define	MCFFEC_BASE0		0xFC030000	/* Base address of FEC0 */
+#define	MCFFEC_SIZE0		0x800		/* Size of FEC0 region */
+
+/*
+ *  QSPI module.
+ */
+#define	MCFQSPI_BASE		0xFC058000	/* Base address of QSPI */
+#define	MCFQSPI_SIZE		0x40		/* Size of QSPI region */
+
+#define	MCFQSPI_CS0		84
+#define	MCFQSPI_CS1		85
+#define	MCFQSPI_CS2		86
 
 /*
  *  Timer module.
@@ -105,6 +137,20 @@
 
 #define	MCF_RCR_SWRESET		0x80		/* Software reset bit */
 #define	MCF_RCR_FRCSTOUT	0x40		/* Force external reset */
+
+
+/*
+ * Power Management
+ */
+#define MCFPM_WCR		0xfc040013
+#define MCFPM_PPMSR0		0xfc04002c
+#define MCFPM_PPMCR0		0xfc04002d
+#define MCFPM_PPMSR1		0xfc04002e
+#define MCFPM_PPMCR1		0xfc04002f
+#define MCFPM_PPMHR0		0xfc040030
+#define MCFPM_PPMLR0		0xfc040034
+#define MCFPM_PPMHR1		0xfc040038
+#define MCFPM_LPCR		0xec090007
 
 /*********************************************************************
  *

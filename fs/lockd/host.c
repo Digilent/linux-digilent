@@ -17,7 +17,11 @@
 #include <linux/lockd/lockd.h>
 #include <linux/mutex.h>
 
+#include <linux/sunrpc/svc_xprt.h>
+
 #include <net/ipv6.h>
+
+#include "netns.h"
 
 #define NLMDBG_FACILITY		NLMDBG_HOSTCACHE
 #define NLM_HOST_NRHASH		32
@@ -39,11 +43,10 @@ static struct hlist_head	nlm_client_hosts[NLM_HOST_NRHASH];
 		hlist_for_each_entry_safe((host), (pos), (next), \
 						(chain), h_hash)
 
-static unsigned long		next_gc;
 static unsigned long		nrhosts;
 static DEFINE_MUTEX(nlm_host_mutex);
 
-static void			nlm_gc_hosts(void);
+static void			nlm_gc_hosts(struct net *net);
 
 struct nlm_lookup_host_info {
 	const int		server;		/* search for server|client */
@@ -54,6 +57,7 @@ struct nlm_lookup_host_info {
 	const char		*hostname;	/* remote's hostname */
 	const size_t		hostname_len;	/* it's length */
 	const int		noresvport;	/* use non-priv port */
+	struct net		*net;		/* network namespace to bind */
 };
 
 /*
@@ -155,6 +159,7 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	INIT_LIST_HEAD(&host->h_reclaim);
 	host->h_nsmhandle  = nsm;
 	host->h_addrbuf    = nsm->sm_addrbuf;
+	host->net	   = ni->net;
 
 out:
 	return host;
@@ -168,6 +173,7 @@ out:
 static void nlm_destroy_host_locked(struct nlm_host *host)
 {
 	struct rpc_clnt	*clnt;
+	struct lockd_net *ln = net_generic(host->net, lockd_net_id);
 
 	dprintk("lockd: destroy host %s\n", host->h_name);
 
@@ -184,6 +190,7 @@ static void nlm_destroy_host_locked(struct nlm_host *host)
 		rpc_shutdown_client(clnt);
 	kfree(host);
 
+	ln->nrhosts--;
 	nrhosts--;
 }
 
@@ -206,7 +213,8 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 				     const unsigned short protocol,
 				     const u32 version,
 				     const char *hostname,
-				     int noresvport)
+				     int noresvport,
+				     struct net *net)
 {
 	struct nlm_lookup_host_info ni = {
 		.server		= 0,
@@ -217,11 +225,13 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 		.hostname	= hostname,
 		.hostname_len	= strlen(hostname),
 		.noresvport	= noresvport,
+		.net		= net,
 	};
 	struct hlist_head *chain;
 	struct hlist_node *pos;
 	struct nlm_host	*host;
 	struct nsm_handle *nsm = NULL;
+	struct lockd_net *ln = net_generic(net, lockd_net_id);
 
 	dprintk("lockd: %s(host='%s', vers=%u, proto=%s)\n", __func__,
 			(hostname ? hostname : "<none>"), version,
@@ -231,6 +241,8 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 
 	chain = &nlm_client_hosts[nlm_hash_address(sap)];
 	hlist_for_each_entry(host, pos, chain, h_hash) {
+		if (host->net != net)
+			continue;
 		if (!rpc_cmp_addr(nlm_addr(host), sap))
 			continue;
 
@@ -254,6 +266,7 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 		goto out;
 
 	hlist_add_head(&host->h_hash, chain);
+	ln->nrhosts++;
 	nrhosts++;
 
 	dprintk("lockd: %s created host %s (%s)\n", __func__,
@@ -318,6 +331,7 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 	struct nsm_handle *nsm = NULL;
 	struct sockaddr *src_sap = svc_daddr(rqstp);
 	size_t src_len = rqstp->rq_daddrlen;
+	struct net *net = SVC_NET(rqstp);
 	struct nlm_lookup_host_info ni = {
 		.server		= 1,
 		.sap		= svc_addr(rqstp),
@@ -326,7 +340,9 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 		.version	= rqstp->rq_vers,
 		.hostname	= hostname,
 		.hostname_len	= hostname_len,
+		.net		= net,
 	};
+	struct lockd_net *ln = net_generic(net, lockd_net_id);
 
 	dprintk("lockd: %s(host='%*s', vers=%u, proto=%s)\n", __func__,
 			(int)hostname_len, hostname, rqstp->rq_vers,
@@ -334,11 +350,13 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 
 	mutex_lock(&nlm_host_mutex);
 
-	if (time_after_eq(jiffies, next_gc))
-		nlm_gc_hosts();
+	if (time_after_eq(jiffies, ln->next_gc))
+		nlm_gc_hosts(net);
 
 	chain = &nlm_server_hosts[nlm_hash_address(ni.sap)];
 	hlist_for_each_entry(host, pos, chain, h_hash) {
+		if (host->net != net)
+			continue;
 		if (!rpc_cmp_addr(nlm_addr(host), ni.sap))
 			continue;
 
@@ -370,6 +388,7 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 	memcpy(nlm_srcaddr(host), src_sap, src_len);
 	host->h_srcaddrlen = src_len;
 	hlist_add_head(&host->h_hash, chain);
+	ln->nrhosts++;
 	nrhosts++;
 
 	dprintk("lockd: %s created host %s (%s)\n",
@@ -431,7 +450,7 @@ nlm_bind_host(struct nlm_host *host)
 			.to_retries	= 5U,
 		};
 		struct rpc_create_args args = {
-			.net		= &init_net,
+			.net		= host->net,
 			.protocol	= host->h_proto,
 			.address	= nlm_addr(host),
 			.addrsize	= host->h_addrlen,
@@ -553,23 +572,49 @@ void nlm_host_rebooted(const struct nlm_reboot *info)
 	nsm_release(nsm);
 }
 
-/*
- * Shut down the hosts module.
- * Note that this routine is called only at server shutdown time.
- */
-void
-nlm_shutdown_hosts(void)
+static void nlm_complain_hosts(struct net *net)
 {
 	struct hlist_head *chain;
 	struct hlist_node *pos;
 	struct nlm_host	*host;
 
-	dprintk("lockd: shutting down host module\n");
+	if (net) {
+		struct lockd_net *ln = net_generic(net, lockd_net_id);
+
+		if (ln->nrhosts == 0)
+			return;
+		printk(KERN_WARNING "lockd: couldn't shutdown host module for net %p!\n", net);
+		dprintk("lockd: %lu hosts left in net %p:\n", ln->nrhosts, net);
+	} else {
+		if (nrhosts == 0)
+			return;
+		printk(KERN_WARNING "lockd: couldn't shutdown host module!\n");
+		dprintk("lockd: %lu hosts left:\n", nrhosts);
+	}
+
+	for_each_host(host, pos, chain, nlm_server_hosts) {
+		if (net && host->net != net)
+			continue;
+		dprintk("       %s (cnt %d use %d exp %ld net %p)\n",
+			host->h_name, atomic_read(&host->h_count),
+			host->h_inuse, host->h_expires, host->net);
+	}
+}
+
+void
+nlm_shutdown_hosts_net(struct net *net)
+{
+	struct hlist_head *chain;
+	struct hlist_node *pos;
+	struct nlm_host	*host;
+
 	mutex_lock(&nlm_host_mutex);
 
 	/* First, make all hosts eligible for gc */
-	dprintk("lockd: nuking all hosts...\n");
+	dprintk("lockd: nuking all hosts in net %p...\n", net);
 	for_each_host(host, pos, chain, nlm_server_hosts) {
+		if (net && host->net != net)
+			continue;
 		host->h_expires = jiffies - 1;
 		if (host->h_rpcclnt) {
 			rpc_shutdown_client(host->h_rpcclnt);
@@ -578,19 +623,21 @@ nlm_shutdown_hosts(void)
 	}
 
 	/* Then, perform a garbage collection pass */
-	nlm_gc_hosts();
+	nlm_gc_hosts(net);
 	mutex_unlock(&nlm_host_mutex);
 
-	/* complain if any hosts are left */
-	if (nrhosts != 0) {
-		printk(KERN_WARNING "lockd: couldn't shutdown host module!\n");
-		dprintk("lockd: %lu hosts left:\n", nrhosts);
-		for_each_host(host, pos, chain, nlm_server_hosts) {
-			dprintk("       %s (cnt %d use %d exp %ld)\n",
-				host->h_name, atomic_read(&host->h_count),
-				host->h_inuse, host->h_expires);
-		}
-	}
+	nlm_complain_hosts(net);
+}
+
+/*
+ * Shut down the hosts module.
+ * Note that this routine is called only at server shutdown time.
+ */
+void
+nlm_shutdown_hosts(void)
+{
+	dprintk("lockd: shutting down host module\n");
+	nlm_shutdown_hosts_net(NULL);
 }
 
 /*
@@ -599,30 +646,39 @@ nlm_shutdown_hosts(void)
  * mark & sweep for resources held by remote clients.
  */
 static void
-nlm_gc_hosts(void)
+nlm_gc_hosts(struct net *net)
 {
 	struct hlist_head *chain;
 	struct hlist_node *pos, *next;
 	struct nlm_host	*host;
 
-	dprintk("lockd: host garbage collection\n");
-	for_each_host(host, pos, chain, nlm_server_hosts)
+	dprintk("lockd: host garbage collection for net %p\n", net);
+	for_each_host(host, pos, chain, nlm_server_hosts) {
+		if (net && host->net != net)
+			continue;
 		host->h_inuse = 0;
+	}
 
 	/* Mark all hosts that hold locks, blocks or shares */
-	nlmsvc_mark_resources();
+	nlmsvc_mark_resources(net);
 
 	for_each_host_safe(host, pos, next, chain, nlm_server_hosts) {
+		if (net && host->net != net)
+			continue;
 		if (atomic_read(&host->h_count) || host->h_inuse
 		 || time_before(jiffies, host->h_expires)) {
 			dprintk("nlm_gc_hosts skipping %s "
-				"(cnt %d use %d exp %ld)\n",
+				"(cnt %d use %d exp %ld net %p)\n",
 				host->h_name, atomic_read(&host->h_count),
-				host->h_inuse, host->h_expires);
+				host->h_inuse, host->h_expires, host->net);
 			continue;
 		}
 		nlm_destroy_host_locked(host);
 	}
 
-	next_gc = jiffies + NLM_HOST_COLLECT;
+	if (net) {
+		struct lockd_net *ln = net_generic(net, lockd_net_id);
+
+		ln->next_gc = jiffies + NLM_HOST_COLLECT;
+	}
 }

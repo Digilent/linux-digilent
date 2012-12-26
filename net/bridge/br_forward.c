@@ -34,7 +34,7 @@ static inline int should_deliver(const struct net_bridge_port *p,
 		p->state == BR_STATE_FORWARDING);
 }
 
-static inline unsigned packet_length(const struct sk_buff *skb)
+static inline unsigned int packet_length(const struct sk_buff *skb)
 {
 	return skb->len - (skb->protocol == htons(ETH_P_8021Q) ? VLAN_HLEN : 0);
 }
@@ -47,6 +47,7 @@ int br_dev_queue_push_xmit(struct sk_buff *skb)
 		kfree_skb(skb);
 	} else {
 		skb_push(skb, ETH_HLEN);
+		br_drop_fake_rtable(skb);
 		dev_queue_xmit(skb);
 	}
 
@@ -64,7 +65,7 @@ static void __br_deliver(const struct net_bridge_port *to, struct sk_buff *skb)
 {
 	skb->dev = to->dev;
 
-	if (unlikely(netpoll_tx_running(to->dev))) {
+	if (unlikely(netpoll_tx_running(to->br->dev))) {
 		if (packet_length(skb) > skb->dev->mtu && !skb_is_gso(skb))
 			kfree_skb(skb);
 		else {

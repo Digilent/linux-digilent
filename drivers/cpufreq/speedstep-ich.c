@@ -25,6 +25,8 @@
 #include <linux/pci.h>
 #include <linux/sched.h>
 
+#include <asm/cpu_device_id.h>
+
 #include "speedstep-lib.h"
 
 
@@ -201,7 +203,7 @@ static unsigned int speedstep_detect_chipset(void)
 	if (speedstep_chipset_dev) {
 		/* speedstep.c causes lockups on Dell Inspirons 8000 and
 		 * 8100 which use a pretty old revision of the 82815
-		 * host brige. Abort on these systems.
+		 * host bridge. Abort on these systems.
 		 */
 		static struct pci_dev *hostbridge;
 
@@ -388,6 +390,16 @@ static struct cpufreq_driver speedstep_driver = {
 	.attr	= speedstep_attr,
 };
 
+static const struct x86_cpu_id ss_smi_ids[] = {
+	{ X86_VENDOR_INTEL, 6, 0xb, },
+	{ X86_VENDOR_INTEL, 6, 0x8, },
+	{ X86_VENDOR_INTEL, 15, 2 },
+	{}
+};
+#if 0
+/* Autoload or not? Do not for now. */
+MODULE_DEVICE_TABLE(x86cpu, ss_smi_ids);
+#endif
 
 /**
  * speedstep_init - initializes the SpeedStep CPUFreq driver
@@ -398,6 +410,9 @@ static struct cpufreq_driver speedstep_driver = {
  */
 static int __init speedstep_init(void)
 {
+	if (!x86_match_cpu(ss_smi_ids))
+		return -ENODEV;
+
 	/* detect processor */
 	speedstep_processor = speedstep_detect_processor();
 	if (!speedstep_processor) {

@@ -267,7 +267,8 @@ static int tmp421_probe(struct i2c_client *client,
 	struct tmp421_data *data;
 	int err;
 
-	data = kzalloc(sizeof(struct tmp421_data), GFP_KERNEL);
+	data = devm_kzalloc(&client->dev, sizeof(struct tmp421_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -277,11 +278,11 @@ static int tmp421_probe(struct i2c_client *client,
 
 	err = tmp421_init_client(client);
 	if (err)
-		goto exit_free;
+		return err;
 
 	err = sysfs_create_group(&client->dev.kobj, &tmp421_group);
 	if (err)
-		goto exit_free;
+		return err;
 
 	data->hwmon_dev = hwmon_device_register(&client->dev);
 	if (IS_ERR(data->hwmon_dev)) {
@@ -293,10 +294,6 @@ static int tmp421_probe(struct i2c_client *client,
 
 exit_remove:
 	sysfs_remove_group(&client->dev.kobj, &tmp421_group);
-
-exit_free:
-	kfree(data);
-
 	return err;
 }
 
@@ -306,8 +303,6 @@ static int tmp421_remove(struct i2c_client *client)
 
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &tmp421_group);
-
-	kfree(data);
 
 	return 0;
 }
@@ -324,20 +319,9 @@ static struct i2c_driver tmp421_driver = {
 	.address_list = normal_i2c,
 };
 
-static int __init tmp421_init(void)
-{
-	return i2c_add_driver(&tmp421_driver);
-}
-
-static void __exit tmp421_exit(void)
-{
-	i2c_del_driver(&tmp421_driver);
-}
+module_i2c_driver(tmp421_driver);
 
 MODULE_AUTHOR("Andre Prendel <andre.prendel@gmx.de>");
 MODULE_DESCRIPTION("Texas Instruments TMP421/422/423 temperature sensor"
 		   " driver");
 MODULE_LICENSE("GPL");
-
-module_init(tmp421_init);
-module_exit(tmp421_exit);

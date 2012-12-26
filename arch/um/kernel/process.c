@@ -18,6 +18,7 @@
 #include <linux/seq_file.h>
 #include <linux/tick.h>
 #include <linux/threads.h>
+#include <linux/tracehook.h>
 #include <asm/current.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
@@ -88,11 +89,8 @@ static inline void set_current(struct task_struct *task)
 
 extern void arch_switch_to(struct task_struct *to);
 
-void *_switch_to(void *prev, void *next, void *last)
+void *__switch_to(struct task_struct *from, struct task_struct *to)
 {
-	struct task_struct *from = prev;
-	struct task_struct *to = next;
-
 	to->thread.prev_sched = from;
 	set_current(to);
 
@@ -111,24 +109,25 @@ void *_switch_to(void *prev, void *next, void *last)
 	} while (current->thread.saved_task);
 
 	return current->thread.prev_sched;
-
 }
 
 void interrupt_end(void)
 {
 	if (need_resched())
 		schedule();
-	if (test_tsk_thread_flag(current, TIF_SIGPENDING))
+	if (test_thread_flag(TIF_SIGPENDING))
 		do_signal();
+	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME))
+		tracehook_notify_resume(&current->thread.regs);
 }
 
 void exit_thread(void)
 {
 }
 
-void *get_current(void)
+int get_current_pid(void)
 {
-	return current;
+	return task_pid_nr(current);
 }
 
 /*
@@ -152,12 +151,10 @@ void new_thread_handler(void)
 	 * 0 if it just exits
 	 */
 	n = run_kernel_thread(fn, arg, &current->thread.exec_buf);
-	if (n == 1) {
-		/* Handle any immediate reschedules or signals */
-		interrupt_end();
+	if (n == 1)
 		userspace(&current->thread.regs.regs);
-	}
-	else do_exit(0);
+	else
+		do_exit(0);
 }
 
 /* Called magically, see new_thread_handler above */
@@ -176,9 +173,6 @@ void fork_handler(void)
 
 	current->thread.prev_sched = NULL;
 
-	/* Handle any immediate reschedules or signals */
-	interrupt_end();
-
 	userspace(&current->thread.regs.regs);
 }
 
@@ -187,22 +181,22 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 		struct pt_regs *regs)
 {
 	void (*handler)(void);
+	int kthread = current->flags & PF_KTHREAD;
 	int ret = 0;
 
 	p->thread = (struct thread_struct) INIT_THREAD;
 
-	if (current->thread.forking) {
+	if (!kthread) {
 	  	memcpy(&p->thread.regs.regs, &regs->regs,
 		       sizeof(p->thread.regs.regs));
-		REGS_SET_SYSCALL_RETURN(p->thread.regs.regs.gp, 0);
+		PT_REGS_SET_SYSCALL_RETURN(&p->thread.regs, 0);
 		if (sp != 0)
 			REGS_SP(p->thread.regs.regs.gp) = sp;
 
 		handler = fork_handler;
 
 		arch_copy_thread(&current->thread.arch, &p->thread.arch);
-	}
-	else {
+	} else {
 		get_safe_registers(p->thread.regs.regs.gp, p->thread.regs.regs.fp);
 		p->thread.request.u.thread = current->thread.request.u.thread;
 		handler = new_thread_handler;
@@ -210,7 +204,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 
 	new_thread(task_stack_page(p), &p->thread.switch_buf, handler);
 
-	if (current->thread.forking) {
+	if (!kthread) {
 		clear_flushed_tls(p);
 
 		/*

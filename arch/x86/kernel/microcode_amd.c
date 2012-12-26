@@ -82,11 +82,6 @@ static int collect_cpu_info_amd(int cpu, struct cpu_signature *csig)
 {
 	struct cpuinfo_x86 *c = &cpu_data(cpu);
 
-	if (c->x86_vendor != X86_VENDOR_AMD || c->x86 < 0x10) {
-		pr_warning("CPU%d: family %d not supported\n", cpu, c->x86);
-		return -1;
-	}
-
 	csig->rev = c->microcode;
 	pr_info("CPU%d: patch_level=0x%08x\n", cpu, csig->rev);
 
@@ -148,11 +143,12 @@ static int get_matching_microcode(int cpu, const u8 *ucode_ptr,
 				  unsigned int *current_size)
 {
 	struct microcode_header_amd *mc_hdr;
-	unsigned int actual_size;
+	unsigned int actual_size, patch_size;
 	u16 equiv_cpu_id;
 
 	/* size of the current patch we're staring at */
-	*current_size = *(u32 *)(ucode_ptr + 4) + SECTION_HDR_SIZE;
+	patch_size = *(u32 *)(ucode_ptr + 4);
+	*current_size = patch_size + SECTION_HDR_SIZE;
 
 	equiv_cpu_id = find_equiv_id();
 	if (!equiv_cpu_id)
@@ -179,7 +175,7 @@ static int get_matching_microcode(int cpu, const u8 *ucode_ptr,
 	/*
 	 * now that the header looks sane, verify its size
 	 */
-	actual_size = verify_ucode_size(cpu, *current_size, leftover_size);
+	actual_size = verify_ucode_size(cpu, patch_size, leftover_size);
 	if (!actual_size)
 		return 0;
 
@@ -380,6 +376,13 @@ static struct microcode_ops microcode_amd_ops = {
 
 struct microcode_ops * __init init_amd_microcode(void)
 {
+	struct cpuinfo_x86 *c = &cpu_data(0);
+
+	if (c->x86_vendor != X86_VENDOR_AMD || c->x86 < 0x10) {
+		pr_warning("AMD CPU family 0x%x not supported\n", c->x86);
+		return NULL;
+	}
+
 	patch = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!patch)
 		return NULL;

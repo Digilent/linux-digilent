@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/ctype.h>
 #include <linux/etherdevice.h>
-#include <asm/system.h>
 #include <asm/setup.h>
 #include <asm/soc.h>
 
@@ -81,7 +80,7 @@ int soc_mac_addr(unsigned int index, u8 *addr)
 		if (have_fuse_mac)
 			memcpy(addr, c6x_fuse_mac, 6);
 		else
-			random_ether_addr(addr);
+			eth_random_addr(addr);
 	}
 
 	/* adjust for specific EMAC device */

@@ -3,7 +3,7 @@ Xilinx IIC controller:
 Required properties:
 - compatible : Must be "xlnx,xps-iic-2.00.a"
 - reg : IIC Register location and length
-- interrupts : IIC Interrupt
+- interrupts : IIC controller interrupt
 - #address-cells = <1>
 - #size-cells = <0>
 
@@ -13,7 +13,7 @@ Optional properties:
 Example:
 
 	axi_iic_0: i2c@40800000 {
-		compatible = "xlnx,axi-iic-1.01.b" "xlnx,xps-iic-2.00.a";
+		compatible = "xlnx,xps-iic-2.00.a";
 		interrupts = < 1 2 >;
 		reg = < 0x40800000 0x10000 >;
 

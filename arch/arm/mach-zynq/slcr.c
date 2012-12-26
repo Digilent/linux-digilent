@@ -66,6 +66,8 @@
 #define XSLCR_OCM_RST_CTRL_OFFSET	0x238 /* OCM Software Reset Control */
 #define XSLCR_DEVC_RST_CTRL_OFFSET	0x23C /* Dev Cfg SW Reset Control */
 #define XSLCR_FPGA_RST_CTRL_OFFSET	0x240 /* FPGA Software Reset Control */
+#define XSLCR_A9_CPU_RST_CTRL		0x244 /* CPU Software Reset Control */
+#define XSLCR_REBOOT_STATUS		0x258 /* PS Reboot Status */
 #define XSLCR_MIO_PIN_00_OFFSET		0x700 /* MIO PIN0 control register */
 #define XSLCR_MIO_PIN(x)		(0x700 + (x) * 4) /* MIO PIN0 control register */
 #define XSLCR_LVL_SHFTR_EN_OFFSET	0x900 /* Level Shifters Enable */
@@ -1597,11 +1599,20 @@ static const struct xslcr_periph_reset reset_info[] = {
  **/
 void xslcr_system_reset(void)
 {
+	u32 reboot;
+
 	/* Unlock the SLCR then reset the system.
 	 * Note that this seems to require raw i/o
 	 * functions or there's a lockup?
 	 */
-	xslcr_writereg(slcr->regs + 8, 0xDF0D);
+	xslcr_writereg(slcr->regs + XSLCR_UNLOCK, 0xDF0D);
+
+	/* Clear 0x0F000000 bits of reboot status register to workaround
+	 * the FSBL not loading the bitstream after soft-reboot
+	 * This is a temporary solution until we know more.
+	 */
+	reboot = xslcr_readreg(slcr->regs + XSLCR_REBOOT_STATUS);
+	xslcr_writereg(slcr->regs + XSLCR_REBOOT_STATUS, reboot & 0xF0FFFFFF);
 	xslcr_writereg(slcr->regs + XSLCR_PSS_RST_CTRL_OFFSET, 1);
 }
 
@@ -2149,13 +2160,13 @@ static ssize_t xslcr_reset_periph(struct device *dev,
 	/* reset the peripheral */
 	spin_lock_irqsave(&slcr->io_lock, flags);
 
-	/* read the register and modify only the specified bit */	
+	/* read the register and modify only the specified bit */
 	reg = xslcr_readreg(slcr->regs + reset_info[i].reg_offset);
 	if (!rst)
-		reg &= ~(reset_info[i].reset_mask);	
+		reg &= ~(reset_info[i].reset_mask);
 	else
 		reg |= reset_info[i].reset_mask;
-		
+
 	xslcr_writereg(slcr->regs + reset_info[i].reg_offset, reg);
 
 	spin_unlock_irqrestore(&slcr->io_lock, flags);
@@ -2454,13 +2465,6 @@ static int __devinit xslcr_probe(struct platform_device *pdev)
 
 	/* unlock the SLCR so that registers can be changed */
 	xslcr_writereg(slcr->regs + XSLCR_UNLOCK, 0xDF0D);
-
-	xslcr_writereg(slcr->regs + XSLCR_FPGA0_CLK_CTRL_OFFSET, 0x100a00);
-	xslcr_writereg(slcr->regs + XSLCR_FPGA1_CLK_CTRL_OFFSET, 0x100500);
-	xslcr_writereg(slcr->regs + XSLCR_FPGA2_CLK_CTRL_OFFSET, 0x100700);
-	xslcr_writereg(slcr->regs + XSLCR_FPGA3_CLK_CTRL_OFFSET, 0x102900);
-	xslcr_writereg(slcr->regs + XSLCR_MIO_PIN(50), 0x200);
-	xslcr_writereg(slcr->regs + XSLCR_MIO_PIN(51), 0x200);
 
 	dev_info(&pdev->dev, "at 0x%08X mapped to 0x%08X\n", res.start,
 		 (u32 __force)slcr->regs);

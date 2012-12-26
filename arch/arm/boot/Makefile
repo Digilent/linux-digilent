@@ -11,6 +11,26 @@
 # Copyright (C) 1995-2002 Russell King
 #
 
+obj-y += linked_dtb.o
+
+# Ensure system.dtb exists
+$(obj)/linked_dtb.o: $(obj)/system.dtb
+
+# Generate system.dtb from $(DTB).dtb
+ifneq ($(DTB),system)
+$(obj)/system.dtb: $(obj)/$(DTB).dtb
+	$(call if_changed,cp)
+endif
+
+quiet_cmd_cp = CP      $< $@$2
+	cmd_cp = cat $< >$@$2 || (rm -f $@ && echo false)
+
+# Rule to build device tree blobs
+DTC_FLAGS := -p 1024
+
+$(obj)/%.dtb: $(src)/dts/%.dts FORCE
+	$(call cmd,dtc)
+
 MKIMAGE         := $(srctree)/scripts/mkuboot.sh
 
 ifneq ($(MACHINE),)
@@ -27,7 +47,17 @@ INITRD_PHYS := $(initrd_phys-y)
 
 export ZRELADDR INITRD_PHYS PARAMS_PHYS
 
-targets := Image zImage xipImage bootpImage uImage
+targets := zImage Image xipImage bootpImage uImage zImage% uImage.% dtbImage% simpleImage.%
+
+# Where the DTS files live
+dtstree         := $(srctree)/$(src)/dts
+
+# Rule to build device tree blobs
+DTC = $(objtree)/scripts/dtc/dtc
+
+quiet_cmd_strip = STRIP   $@.elf
+	cmd_strip = $(STRIP) -K arm_start -K _end -K __log_buf \
+				-K _fdt_start vmlinux -o $@.elf
 
 ifeq ($(CONFIG_XIP_KERNEL),y)
 
@@ -57,6 +87,15 @@ $(obj)/zImage:	$(obj)/compressed/vmlinux FORCE
 	$(call if_changed,objcopy)
 	@echo '  Kernel: $@ is ready'
 
+$(obj)/simpleImage.%: vmlinux FORCE
+	$(call if_changed,strip)
+	$(call if_changed,objcopy)
+	@echo 'Kernel: $@ is ready' ' (#'`cat .version`')'
+
+$(obj)/zImage.%: $(obj)/compressed/vmlinux FORCE
+	$(call if_changed,objcopy)
+	@echo '  Kernel: $@ is ready'
+
 endif
 
 targets += $(dtb-y)
@@ -69,22 +108,19 @@ $(obj)/dtbs: $(addprefix $(obj)/, $(dtb-y))
 
 clean-files := *.dtb
 
-quiet_cmd_uimage = UIMAGE  $@
-      cmd_uimage = $(CONFIG_SHELL) $(MKIMAGE) -A arm -O linux -T kernel \
-		   -C none -a $(LOADADDR) -e $(STARTADDR) \
-		   -n 'Linux-$(KERNELRELEASE)' -d $< $@
-
-ifeq ($(CONFIG_ZBOOT_ROM),y)
-$(obj)/uImage: LOADADDR=$(CONFIG_ZBOOT_ROM_TEXT)
+ifneq ($(LOADADDR),)
+  UIMAGE_LOADADDR=$(LOADADDR)
 else
-$(obj)/uImage: LOADADDR=$(ZRELADDR)
+  ifeq ($(CONFIG_ZBOOT_ROM),y)
+    UIMAGE_LOADADDR=$(CONFIG_ZBOOT_ROM_TEXT)
+  else
+    UIMAGE_LOADADDR=$(ZRELADDR)
+  endif
 endif
 
-$(obj)/uImage: STARTADDR=$(LOADADDR)
-
 check_for_multiple_loadaddr = \
-if [ $(words $(LOADADDR)) -gt 1 ]; then \
-	echo 'multiple load addresses: $(LOADADDR)'; \
+if [ $(words $(UIMAGE_LOADADDR)) -gt 1 ]; then \
+	echo 'multiple load addresses: $(UIMAGE_LOADADDR)'; \
 	echo 'This is incompatible with uImages'; \
 	echo 'Specify LOADADDR on the commandline to build an uImage'; \
 	false; \
@@ -92,6 +128,10 @@ fi
 
 $(obj)/uImage:	$(obj)/zImage FORCE
 	@$(check_for_multiple_loadaddr)
+	$(call if_changed,uimage)
+	@echo '  Image $@ is ready'
+
+$(obj)/uImage.%: $(obj)/zImage FORCE
 	$(call if_changed,uimage)
 	@echo '  Image $@ is ready'
 
@@ -131,3 +171,5 @@ i:
 	$(obj)/Image System.map "$(INSTALL_PATH)"
 
 subdir-	    := bootp compressed
+
+clean-files += *.dtb simpleImage.* linux.bin.ub

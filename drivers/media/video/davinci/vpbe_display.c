@@ -1083,7 +1083,7 @@ vpbe_display_s_dv_preset(struct file *file, void *priv,
 	}
 
 	/* Set the given standard in the encoder */
-	if (NULL != vpbe_dev->ops.s_dv_preset)
+	if (!vpbe_dev->ops.s_dv_preset)
 		return -EINVAL;
 
 	ret = vpbe_dev->ops.s_dv_preset(vpbe_dev, preset);
@@ -1517,6 +1517,8 @@ static int vpbe_display_g_register(struct file *file, void *priv,
 			struct v4l2_dbg_register *reg)
 {
 	struct v4l2_dbg_match *match = &reg->match;
+	struct vpbe_fh *fh = file->private_data;
+	struct vpbe_device *vpbe_dev = fh->disp_dev->vpbe_dev;
 
 	if (match->type >= 2) {
 		v4l2_subdev_call(vpbe_dev->venc,
@@ -1618,6 +1620,10 @@ static __devinit int init_vpbe_layer(int i, struct vpbe_display *disp_dev,
 	vbd->ioctl_ops	= &vpbe_ioctl_ops;
 	vbd->minor	= -1;
 	vbd->v4l2_dev   = &disp_dev->vpbe_dev->v4l2_dev;
+	/* Locking in file operations other than ioctl should be done
+	   by the driver, not the V4L2 core.
+	   This driver needs auditing so that this flag can be removed. */
+	set_bit(V4L2_FL_LOCK_ALL_FOPS, &vbd->flags);
 	vbd->lock	= &vpbe_display_layer->opslock;
 
 	if (disp_dev->vpbe_dev->current_timings.timings_type &

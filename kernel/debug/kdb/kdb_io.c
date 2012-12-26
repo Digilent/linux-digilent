@@ -689,7 +689,7 @@ kdb_printit:
 	if (!dbg_kdb_mode && kgdb_connected) {
 		gdbstub_msg_write(kdb_buffer, retlen);
 	} else {
-		if (!dbg_io_ops->is_console) {
+		if (dbg_io_ops && !dbg_io_ops->is_console) {
 			len = strlen(kdb_buffer);
 			cp = kdb_buffer;
 			while (len--) {
@@ -715,9 +715,6 @@ kdb_printit:
 	/* check for having reached the LINES number of printed lines */
 	if (kdb_nextline == linecount) {
 		char buf1[16] = "";
-#if defined(CONFIG_SMP)
-		char buf2[32];
-#endif
 
 		/* Watch out for recursion here.  Any routine that calls
 		 * kdb_printf will come back through here.  And kdb_read
@@ -732,18 +729,10 @@ kdb_printit:
 		if (moreprompt == NULL)
 			moreprompt = "more> ";
 
-#if defined(CONFIG_SMP)
-		if (strchr(moreprompt, '%')) {
-			sprintf(buf2, moreprompt, get_cpu());
-			put_cpu();
-			moreprompt = buf2;
-		}
-#endif
-
 		kdb_input_flush();
 		c = console_drivers;
 
-		if (!dbg_io_ops->is_console) {
+		if (dbg_io_ops && !dbg_io_ops->is_console) {
 			len = strlen(moreprompt);
 			cp = moreprompt;
 			while (len--) {

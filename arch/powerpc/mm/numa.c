@@ -24,11 +24,11 @@
 #include <linux/node.h>
 #include <asm/sparsemem.h>
 #include <asm/prom.h>
-#include <asm/system.h>
 #include <asm/smp.h>
 #include <asm/firmware.h>
 #include <asm/paca.h>
 #include <asm/hvcall.h>
+#include <asm/setup.h>
 
 static int numa_enabled = 1;
 
@@ -340,6 +340,8 @@ static int __init find_min_common_depth(void)
 				dbg("Using form 1 affinity\n");
 				form1_affinity = 1;
 			}
+
+			of_node_put(chosen);
 		}
 	}
 
@@ -635,11 +637,11 @@ static inline int __init read_usm_ranges(const u32 **usm)
  */
 static void __init parse_drconf_memory(struct device_node *memory)
 {
-	const u32 *dm, *usm;
+	const u32 *uninitialized_var(dm), *usm;
 	unsigned int n, rc, ranges, is_kexec_kdump = 0;
 	unsigned long lmb_size, base, size, sz;
 	int nid;
-	struct assoc_arrays aa;
+	struct assoc_arrays aa = { .arrays = NULL };
 
 	n = of_get_drconf_memory(memory, &dm);
 	if (!n)
@@ -1434,11 +1436,11 @@ static long vphn_get_associativity(unsigned long cpu,
 
 /*
  * Update the node maps and sysfs entries for each cpu whose home node
- * has changed.
+ * has changed. Returns 1 when the topology has changed, and 0 otherwise.
  */
 int arch_update_cpu_topology(void)
 {
-	int cpu, nid, old_nid;
+	int cpu, nid, old_nid, changed = 0;
 	unsigned int associativity[VPHN_ASSOC_BUFSIZE] = {0};
 	struct device *dev;
 
@@ -1464,9 +1466,10 @@ int arch_update_cpu_topology(void)
 		dev = get_cpu_device(cpu);
 		if (dev)
 			kobject_uevent(&dev->kobj, KOBJ_CHANGE);
+		changed = 1;
 	}
 
-	return 1;
+	return changed;
 }
 
 static void topology_work_fn(struct work_struct *work)

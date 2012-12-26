@@ -12,6 +12,8 @@
  * option) any later version.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/smp.h>
@@ -21,7 +23,6 @@
 #include <linux/uaccess.h>
 
 #include <asm/reg_booke.h>
-#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/div64.h>
 
@@ -36,7 +37,7 @@
 u32 booke_wdt_enabled;
 u32 booke_wdt_period = CONFIG_BOOKE_WDT_DEFAULT_TIMEOUT;
 
-#ifdef	CONFIG_FSL_BOOKE
+#ifdef	CONFIG_PPC_FSL_BOOK3E
 #define WDTP(x)		((((x)&0x3)<<30)|(((x)&0x3c)<<15))
 #define WDTP_MASK	(WDTP(0x3f))
 #else
@@ -165,18 +166,17 @@ static long booke_wdt_ioctl(struct file *file,
 
 	switch (cmd) {
 	case WDIOC_GETSUPPORT:
-		if (copy_to_user((void *)arg, &ident, sizeof(ident)))
-			return -EFAULT;
+		return copy_to_user(p, &ident, sizeof(ident)) ? -EFAULT : 0;
 	case WDIOC_GETSTATUS:
 		return put_user(0, p);
 	case WDIOC_GETBOOTSTATUS:
 		/* XXX: something is clearing TSR */
 		tmp = mfspr(SPRN_TSR) & TSR_WRS(3);
 		/* returns CARDRESET if last reset was caused by the WDT */
-		return (tmp ? WDIOF_CARDRESET : 0);
+		return put_user((tmp ? WDIOF_CARDRESET : 0), p);
 	case WDIOC_SETOPTIONS:
 		if (get_user(tmp, p))
-			return -EINVAL;
+			return -EFAULT;
 		if (tmp == WDIOS_ENABLECARD) {
 			booke_wdt_ping();
 			break;
@@ -189,7 +189,7 @@ static long booke_wdt_ioctl(struct file *file,
 	case WDIOC_SETTIMEOUT:
 		if (get_user(tmp, p))
 			return -EFAULT;
-#ifdef	CONFIG_FSL_BOOKE
+#ifdef	CONFIG_PPC_FSL_BOOK3E
 		/* period of 1 gives the largest possible timeout */
 		if (tmp > period_to_sec(1))
 			return -EINVAL;
@@ -225,8 +225,8 @@ static int booke_wdt_open(struct inode *inode, struct file *file)
 	if (booke_wdt_enabled == 0) {
 		booke_wdt_enabled = 1;
 		on_each_cpu(__booke_wdt_enable, NULL, 0);
-		pr_debug("booke_wdt: watchdog enabled (timeout = %llu sec)\n",
-			period_to_sec(booke_wdt_period));
+		pr_debug("watchdog enabled (timeout = %llu sec)\n",
+			 period_to_sec(booke_wdt_period));
 	}
 	spin_unlock(&booke_wdt_lock);
 
@@ -243,7 +243,7 @@ static int booke_wdt_release(struct inode *inode, struct file *file)
 	 */
 	on_each_cpu(__booke_wdt_disable, NULL, 0);
 	booke_wdt_enabled = 0;
-	pr_debug("booke_wdt: watchdog disabled\n");
+	pr_debug("watchdog disabled\n");
 #endif
 
 	clear_bit(0, &wdt_is_active);
@@ -275,19 +275,19 @@ static int __init booke_wdt_init(void)
 {
 	int ret = 0;
 
-	pr_info("booke_wdt: powerpc book-e watchdog driver loaded\n");
+	pr_info("powerpc book-e watchdog driver loaded\n");
 	ident.firmware_version = cur_cpu_spec->pvr_value;
 
 	ret = misc_register(&booke_wdt_miscdev);
 	if (ret) {
-		pr_err("booke_wdt: cannot register device (minor=%u, ret=%i)\n",
+		pr_err("cannot register device (minor=%u, ret=%i)\n",
 		       WATCHDOG_MINOR, ret);
 		return ret;
 	}
 
 	spin_lock(&booke_wdt_lock);
 	if (booke_wdt_enabled == 1) {
-		pr_info("booke_wdt: watchdog enabled (timeout = %llu sec)\n",
+		pr_info("watchdog enabled (timeout = %llu sec)\n",
 			period_to_sec(booke_wdt_period));
 		on_each_cpu(__booke_wdt_enable, NULL, 0);
 	}

@@ -29,6 +29,8 @@
 #include <linux/usb/ulpi.h>
 #include <linux/mtd/physmap.h>
 #include <linux/delay.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -41,7 +43,6 @@
 #include <mach/common.h>
 #include <mach/board-mx31lite.h>
 #include <mach/iomux-mx3.h>
-#include <mach/irqs.h>
 #include <mach/ulpi.h>
 
 #include "devices-imx31.h"
@@ -81,8 +82,7 @@ static struct resource smsc911x_resources[] = {
 		.end		= MX31_CS4_BASE_ADDR + 0x100,
 		.flags		= IORESOURCE_MEM,
 	}, {
-		.start		= IOMUX_TO_IRQ(MX31_PIN_SFS6),
-		.end		= IOMUX_TO_IRQ(MX31_PIN_SFS6),
+		/* irq number is run-time assigned */
 		.flags		= IORESOURCE_IRQ,
 	},
 };
@@ -122,7 +122,7 @@ static struct spi_board_info mc13783_spi_dev __initdata = {
 	.bus_num	= 1,
 	.chip_select    = 0,
 	.platform_data  = &mc13783_pdata,
-	.irq		= IOMUX_TO_IRQ(MX31_PIN_GPIO1_3),
+	/* irq number is run-time assigned */
 };
 
 /*
@@ -226,6 +226,11 @@ void __init mx31lite_map_io(void)
 static int mx31lite_baseboard;
 core_param(mx31lite_baseboard, mx31lite_baseboard, int, 0444);
 
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+};
+
 static void __init mx31lite_init(void)
 {
 	int ret;
@@ -251,6 +256,7 @@ static void __init mx31lite_init(void)
 	imx31_add_mxc_nand(&mx31lite_nand_board_info);
 
 	imx31_add_spi_imx1(&spi1_pdata);
+	mc13783_spi_dev.irq = gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_3));
 	spi_register_board_info(&mc13783_spi_dev, 1);
 
 	/* USB */
@@ -259,12 +265,18 @@ static void __init mx31lite_init(void)
 	if (usbh2_pdata.otg)
 		imx31_add_mxc_ehci_hs(2, &usbh2_pdata);
 
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
 	/* SMSC9117 IRQ pin */
 	ret = gpio_request(IOMUX_TO_GPIO(MX31_PIN_SFS6), "sms9117-irq");
 	if (ret)
 		pr_warning("could not get LAN irq gpio\n");
 	else {
 		gpio_direction_input(IOMUX_TO_GPIO(MX31_PIN_SFS6));
+		smsc911x_resources[1].start =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_SFS6));
+		smsc911x_resources[1].end =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_SFS6));
 		platform_device_register(&smsc911x_device);
 	}
 }
@@ -274,7 +286,7 @@ static void __init mx31lite_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
-struct sys_timer mx31lite_timer = {
+static struct sys_timer mx31lite_timer = {
 	.init	= mx31lite_timer_init,
 };
 

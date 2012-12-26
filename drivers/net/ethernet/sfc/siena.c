@@ -18,7 +18,6 @@
 #include "bitfield.h"
 #include "efx.h"
 #include "nic.h"
-#include "mac.h"
 #include "spi.h"
 #include "regs.h"
 #include "io.h"
@@ -26,17 +25,17 @@
 #include "workarounds.h"
 #include "mcdi.h"
 #include "mcdi_pcol.h"
+#include "selftest.h"
 
 /* Hardware control for SFC9000 family including SFL9021 (aka Siena). */
 
 static void siena_init_wol(struct efx_nic *efx);
+static int siena_reset_hw(struct efx_nic *efx, enum reset_type method);
 
 
 static void siena_push_irq_moderation(struct efx_channel *channel)
 {
 	efx_dword_t timer_cmd;
-
-	BUILD_BUG_ON(EFX_IRQ_MOD_MAX > (1 << FRF_CZ_TC_TIMER_VAL_WIDTH));
 
 	if (channel->irq_moderation)
 		EFX_POPULATE_DWORD_2(timer_cmd,
@@ -51,15 +50,6 @@ static void siena_push_irq_moderation(struct efx_channel *channel)
 				     FRF_CZ_TC_TIMER_VAL, 0);
 	efx_writed_page_locked(channel->efx, &timer_cmd, FR_BZ_TIMER_COMMAND_P0,
 			       channel->channel);
-}
-
-static void siena_push_multicast_hash(struct efx_nic *efx)
-{
-	WARN_ON(!mutex_is_locked(&efx->mac_lock));
-
-	efx_mcdi_rpc(efx, MC_CMD_SET_MCAST_HASH,
-		     efx->multicast_hash.byte, sizeof(efx->multicast_hash),
-		     NULL, 0, NULL);
 }
 
 static int siena_mdio_write(struct net_device *net_dev,
@@ -166,10 +156,29 @@ static const struct efx_nic_register_test siena_register_tests[] = {
 	  EFX_OWORD32(0xFFFFFFFF, 0xFFFFFFFF, 0x00000007, 0x00000000) },
 };
 
-static int siena_test_registers(struct efx_nic *efx)
+static int siena_test_chip(struct efx_nic *efx, struct efx_self_tests *tests)
 {
-	return efx_nic_test_registers(efx, siena_register_tests,
-				      ARRAY_SIZE(siena_register_tests));
+	enum reset_type reset_method = reset_method;
+	int rc, rc2;
+
+	efx_reset_down(efx, reset_method);
+
+	/* Reset the chip immediately so that it is completely
+	 * quiescent regardless of what any VF driver does.
+	 */
+	rc = siena_reset_hw(efx, reset_method);
+	if (rc)
+		goto out;
+
+	tests->registers =
+		efx_nic_test_registers(efx, siena_register_tests,
+				       ARRAY_SIZE(siena_register_tests))
+		? -1 : 1;
+
+	rc = siena_reset_hw(efx, reset_method);
+out:
+	rc2 = efx_reset_up(efx, reset_method, rc == 0);
+	return rc ? rc : rc2;
 }
 
 /**************************************************************************
@@ -226,7 +235,24 @@ static int siena_reset_hw(struct efx_nic *efx, enum reset_type method)
 
 static int siena_probe_nvconfig(struct efx_nic *efx)
 {
-	return efx_mcdi_get_board_cfg(efx, efx->net_dev->perm_addr, NULL);
+	u32 caps = 0;
+	int rc;
+
+	rc = efx_mcdi_get_board_cfg(efx, efx->net_dev->perm_addr, NULL, &caps);
+
+	efx->timer_quantum_ns =
+		(caps & (1 << MC_CMD_CAPABILITIES_TURBO_ACTIVE_LBN)) ?
+		3072 : 6144; /* 768 cycles */
+	return rc;
+}
+
+static void siena_dimension_resources(struct efx_nic *efx)
+{
+	/* Each port has a small block of internal SRAM dedicated to
+	 * the buffer table and descriptor caches.  In theory we can
+	 * map both blocks to one port, but we don't.
+	 */
+	efx_nic_dimension_resources(efx, FR_CZ_BUF_FULL_TBL_ROWS / 2);
 }
 
 static int siena_probe_nic(struct efx_nic *efx)
@@ -303,6 +329,12 @@ static int siena_probe_nic(struct efx_nic *efx)
 	} else if (rc) {
 		goto fail5;
 	}
+
+	rc = efx_mcdi_mon_probe(efx);
+	if (rc)
+		goto fail5;
+
+	efx_sriov_probe(efx);
 
 	return 0;
 
@@ -391,13 +423,14 @@ static int siena_init_nic(struct efx_nic *efx)
 
 static void siena_remove_nic(struct efx_nic *efx)
 {
+	efx_mcdi_mon_remove(efx);
+
 	efx_nic_free_buffer(efx, &efx->irq_status);
 
 	siena_reset_hw(efx, RESET_TYPE_ALL);
 
 	/* Relinquish the device back to the BMC */
-	if (efx_nic_has_mc(efx))
-		efx_mcdi_drv_attach(efx, false, NULL);
+	efx_mcdi_drv_attach(efx, false, NULL);
 
 	/* Tear down the private nic state */
 	kfree(efx->nic_data);
@@ -425,8 +458,8 @@ static int siena_try_update_nic_stats(struct efx_nic *efx)
 
 	MAC_STAT(tx_bytes, TX_BYTES);
 	MAC_STAT(tx_bad_bytes, TX_BAD_BYTES);
-	mac_stats->tx_good_bytes = (mac_stats->tx_bytes -
-				    mac_stats->tx_bad_bytes);
+	efx_update_diff_stat(&mac_stats->tx_good_bytes,
+			     mac_stats->tx_bytes - mac_stats->tx_bad_bytes);
 	MAC_STAT(tx_packets, TX_PKTS);
 	MAC_STAT(tx_bad, TX_BAD_FCS_PKTS);
 	MAC_STAT(tx_pause, TX_PAUSE_PKTS);
@@ -459,8 +492,8 @@ static int siena_try_update_nic_stats(struct efx_nic *efx)
 	MAC_STAT(tx_ip_src_error, TX_IP_SRC_ERR_PKTS);
 	MAC_STAT(rx_bytes, RX_BYTES);
 	MAC_STAT(rx_bad_bytes, RX_BAD_BYTES);
-	mac_stats->rx_good_bytes = (mac_stats->rx_bytes -
-				    mac_stats->rx_bad_bytes);
+	efx_update_diff_stat(&mac_stats->rx_good_bytes,
+			     mac_stats->rx_bytes - mac_stats->rx_bad_bytes);
 	MAC_STAT(rx_packets, RX_PKTS);
 	MAC_STAT(rx_good, RX_GOOD_PKTS);
 	MAC_STAT(rx_bad, RX_BAD_FCS_PKTS);
@@ -617,6 +650,7 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.probe = siena_probe_nic,
 	.remove = siena_remove_nic,
 	.init = siena_init_nic,
+	.dimension_resources = siena_dimension_resources,
 	.fini = efx_port_dummy_op_void,
 	.monitor = NULL,
 	.map_reset_reason = siena_map_reset_reason,
@@ -630,14 +664,14 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.stop_stats = siena_stop_nic_stats,
 	.set_id_led = efx_mcdi_set_id_led,
 	.push_irq_moderation = siena_push_irq_moderation,
-	.push_multicast_hash = siena_push_multicast_hash,
+	.reconfigure_mac = efx_mcdi_mac_reconfigure,
+	.check_mac_fault = efx_mcdi_mac_check_fault,
 	.reconfigure_port = efx_mcdi_phy_reconfigure,
 	.get_wol = siena_get_wol,
 	.set_wol = siena_set_wol,
 	.resume_wol = siena_init_wol,
-	.test_registers = siena_test_registers,
+	.test_chip = siena_test_chip,
 	.test_nvram = efx_mcdi_nvram_test_all,
-	.default_mac_ops = &efx_mcdi_mac_operations,
 
 	.revision = EFX_REV_SIENA_A0,
 	.mem_map_size = (FR_CZ_MC_TREG_SMEM +
@@ -654,8 +688,7 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.phys_addr_channels = 32, /* Hardware limit is 64, but the legacy
 				   * interrupt handler only supports 32
 				   * channels */
-	.tx_dc_base = 0x88000,
-	.rx_dc_base = 0x68000,
+	.timer_period_max = 1 << FRF_CZ_TC_TIMER_VAL_WIDTH,
 	.offload_features = (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			     NETIF_F_RXHASH | NETIF_F_NTUPLE),
 };

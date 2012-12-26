@@ -41,7 +41,6 @@
 #include <linux/mm.h>
 #include <linux/gfp.h>
 
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/byteorder.h>
 #include <asm/uaccess.h>
@@ -402,7 +401,7 @@ static int gem_rxmac_reset(struct gem *gp)
 		return 1;
 	}
 
-	udelay(5000);
+	mdelay(5);
 
 	/* Execute RX reset command. */
 	writel(gp->swrst_base | GREG_SWRST_RXRST,
@@ -753,7 +752,6 @@ static __inline__ struct sk_buff *gem_alloc_skb(struct net_device *dev, int size
 	if (likely(skb)) {
 		unsigned long offset = ALIGNED_RX_SKB_ADDR(skb->data);
 		skb_reserve(skb, offset);
-		skb->dev = dev;
 	}
 	return skb;
 }
@@ -2340,7 +2338,7 @@ static int gem_suspend(struct pci_dev *pdev, pm_message_t state)
 	netif_device_detach(dev);
 
 	/* Switch off chip, remember WOL setting */
-	gp->asleep_wol = gp->wake_on_lan;
+	gp->asleep_wol = !!gp->wake_on_lan;
 	gem_do_stop(dev, gp->asleep_wol);
 
 	/* Unlock the network stack */
@@ -2885,7 +2883,6 @@ static int __devinit gem_init_one(struct pci_dev *pdev,
 
 	dev = alloc_etherdev(sizeof(*gp));
 	if (!dev) {
-		pr_err("Etherdev alloc failed, aborting\n");
 		err = -ENOMEM;
 		goto err_disable_device;
 	}
@@ -2900,7 +2897,6 @@ static int __devinit gem_init_one(struct pci_dev *pdev,
 	}
 
 	gp->pdev = pdev;
-	dev->base_addr = (long) pdev;
 	gp->dev = dev;
 
 	gp->msg_enable = DEFAULT_MSG;
@@ -2974,7 +2970,6 @@ static int __devinit gem_init_one(struct pci_dev *pdev,
 	netif_napi_add(dev, &gp->napi, gem_poll, 64);
 	dev->ethtool_ops = &gem_ethtool_ops;
 	dev->watchdog_timeo = 5 * HZ;
-	dev->irq = pdev->irq;
 	dev->dma = 0;
 
 	/* Set that now, in case PM kicks in now */

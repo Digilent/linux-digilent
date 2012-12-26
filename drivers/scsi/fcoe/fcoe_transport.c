@@ -89,7 +89,7 @@ void __fcoe_get_lesb(struct fc_lport *lport,
 {
 	unsigned int cpu;
 	u32 lfc, vlfc, mdac;
-	struct fcoe_dev_stats *devst;
+	struct fc_stats *stats;
 	struct fcoe_fc_els_lesb *lesb;
 	struct rtnl_link_stats64 temp;
 
@@ -99,10 +99,10 @@ void __fcoe_get_lesb(struct fc_lport *lport,
 	lesb = (struct fcoe_fc_els_lesb *)fc_lesb;
 	memset(lesb, 0, sizeof(*lesb));
 	for_each_possible_cpu(cpu) {
-		devst = per_cpu_ptr(lport->dev_stats, cpu);
-		lfc += devst->LinkFailureCount;
-		vlfc += devst->VLinkFailureCount;
-		mdac += devst->MissDiscAdvCount;
+		stats = per_cpu_ptr(lport->stats, cpu);
+		lfc += stats->LinkFailureCount;
+		vlfc += stats->VLinkFailureCount;
+		mdac += stats->MissDiscAdvCount;
 	}
 	lesb->lesb_link_fail = htonl(lfc);
 	lesb->lesb_vlink_fail = htonl(vlfc);
@@ -210,10 +210,9 @@ u32 fcoe_fc_crc(struct fc_frame *fp)
 		while (len > 0) {
 			clen = min(len, PAGE_SIZE - (off & ~PAGE_MASK));
 			data = kmap_atomic(
-				skb_frag_page(frag) + (off >> PAGE_SHIFT),
-				KM_SKB_DATA_SOFTIRQ);
+				skb_frag_page(frag) + (off >> PAGE_SHIFT));
 			crc = crc32(crc, data + (off & ~PAGE_MASK), clen);
-			kunmap_atomic(data, KM_SKB_DATA_SOFTIRQ);
+			kunmap_atomic(data);
 			off += clen;
 			len -= clen;
 		}
@@ -503,7 +502,7 @@ static int __init fcoe_transport_init(void)
 	return 0;
 }
 
-static int __exit fcoe_transport_exit(void)
+static int fcoe_transport_exit(void)
 {
 	struct fcoe_transport *ft;
 
@@ -620,8 +619,8 @@ static int libfcoe_device_notification(struct notifier_block *notifier,
 
 	switch (event) {
 	case NETDEV_UNREGISTER:
-		printk(KERN_ERR "libfcoe_device_notification: NETDEV_UNREGISTER %s\n",
-				netdev->name);
+		LIBFCOE_TRANSPORT_DBG("NETDEV_UNREGISTER %s\n",
+				      netdev->name);
 		fcoe_del_netdev_mapping(netdev);
 		break;
 	}
@@ -816,9 +815,17 @@ out_nodev:
  */
 static int __init libfcoe_init(void)
 {
-	fcoe_transport_init();
+	int rc = 0;
 
-	return 0;
+	rc = fcoe_transport_init();
+	if (rc)
+		return rc;
+
+	rc = fcoe_sysfs_setup();
+	if (rc)
+		fcoe_transport_exit();
+
+	return rc;
 }
 module_init(libfcoe_init);
 
@@ -827,6 +834,7 @@ module_init(libfcoe_init);
  */
 static void __exit libfcoe_exit(void)
 {
+	fcoe_sysfs_teardown();
 	fcoe_transport_exit();
 }
 module_exit(libfcoe_exit);

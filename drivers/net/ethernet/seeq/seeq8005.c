@@ -47,7 +47,6 @@ static const char version[] =
 #include <linux/bitops.h>
 #include <linux/jiffies.h>
 
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 
@@ -548,7 +547,7 @@ static void seeq8005_rx(struct net_device *dev)
 			struct sk_buff *skb;
 			unsigned char *buf;
 
-			skb = dev_alloc_skb(pkt_len);
+			skb = netdev_alloc_skb(dev, pkt_len);
 			if (skb == NULL) {
 				printk("%s: Memory squeeze, dropping packet.\n", dev->name);
 				dev->stats.rx_dropped++;
@@ -737,9 +736,7 @@ MODULE_PARM_DESC(irq, "SEEQ 8005 IRQ number");
 int __init init_module(void)
 {
 	dev_seeq = seeq8005_probe(-1);
-	if (IS_ERR(dev_seeq))
-		return PTR_ERR(dev_seeq);
-	return 0;
+	return PTR_RET(dev_seeq);
 }
 
 void __exit cleanup_module(void)

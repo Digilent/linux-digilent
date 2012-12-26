@@ -86,6 +86,8 @@ struct fib6_table;
 struct rt6_info {
 	struct dst_entry		dst;
 
+	struct neighbour		*n;
+
 	/*
 	 * Tail elements of dst_entry (__refcnt etc.)
 	 * and these elements (rarely used in hot path) are in
@@ -107,20 +109,97 @@ struct rt6_info {
 	u32				rt6i_peer_genid;
 
 	struct inet6_dev		*rt6i_idev;
-	struct inet_peer		*rt6i_peer;
+	unsigned long			_rt6i_peer;
 
-#ifdef CONFIG_XFRM
-	u32				rt6i_flow_cache_genid;
-#endif
+	u32				rt6i_genid;
+
 	/* more non-fragment space at head required */
 	unsigned short			rt6i_nfheader_len;
 
 	u8				rt6i_protocol;
 };
 
+static inline struct inet_peer *rt6_peer_ptr(struct rt6_info *rt)
+{
+	return inetpeer_ptr(rt->_rt6i_peer);
+}
+
+static inline bool rt6_has_peer(struct rt6_info *rt)
+{
+	return inetpeer_ptr_is_peer(rt->_rt6i_peer);
+}
+
+static inline void __rt6_set_peer(struct rt6_info *rt, struct inet_peer *peer)
+{
+	__inetpeer_ptr_set_peer(&rt->_rt6i_peer, peer);
+}
+
+static inline bool rt6_set_peer(struct rt6_info *rt, struct inet_peer *peer)
+{
+	return inetpeer_ptr_set_peer(&rt->_rt6i_peer, peer);
+}
+
+static inline void rt6_init_peer(struct rt6_info *rt, struct inet_peer_base *base)
+{
+	inetpeer_init_ptr(&rt->_rt6i_peer, base);
+}
+
+static inline void rt6_transfer_peer(struct rt6_info *rt, struct rt6_info *ort)
+{
+	inetpeer_transfer_peer(&rt->_rt6i_peer, &ort->_rt6i_peer);
+}
+
 static inline struct inet6_dev *ip6_dst_idev(struct dst_entry *dst)
 {
 	return ((struct rt6_info *)dst)->rt6i_idev;
+}
+
+static inline void rt6_clean_expires(struct rt6_info *rt)
+{
+	if (!(rt->rt6i_flags & RTF_EXPIRES) && rt->dst.from)
+		dst_release(rt->dst.from);
+
+	rt->rt6i_flags &= ~RTF_EXPIRES;
+	rt->dst.from = NULL;
+}
+
+static inline void rt6_set_expires(struct rt6_info *rt, unsigned long expires)
+{
+	if (!(rt->rt6i_flags & RTF_EXPIRES) && rt->dst.from)
+		dst_release(rt->dst.from);
+
+	rt->rt6i_flags |= RTF_EXPIRES;
+	rt->dst.expires = expires;
+}
+
+static inline void rt6_update_expires(struct rt6_info *rt, int timeout)
+{
+	if (!(rt->rt6i_flags & RTF_EXPIRES)) {
+		if (rt->dst.from)
+			dst_release(rt->dst.from);
+		/* dst_set_expires relies on expires == 0 
+		 * if it has not been set previously.
+		 */
+		rt->dst.expires = 0;
+	}
+
+	dst_set_expires(&rt->dst, timeout);
+	rt->rt6i_flags |= RTF_EXPIRES;
+}
+
+static inline void rt6_set_from(struct rt6_info *rt, struct rt6_info *from)
+{
+	struct dst_entry *new = (struct dst_entry *) from;
+
+	if (!(rt->rt6i_flags & RTF_EXPIRES) && rt->dst.from) {
+		if (new == rt->dst.from)
+			return;
+		dst_release(rt->dst.from);
+	}
+
+	rt->rt6i_flags &= ~RTF_EXPIRES;
+	rt->dst.from = new;
+	dst_hold(new);
 }
 
 struct fib6_walker_t {
@@ -159,6 +238,7 @@ struct fib6_table {
 	u32			tb6_id;
 	rwlock_t		tb6_lock;
 	struct fib6_node	tb6_root;
+	struct inet_peer_base	tb6_peers;
 };
 
 #define RT6_TABLE_UNSPEC	RT_TABLE_UNSPEC

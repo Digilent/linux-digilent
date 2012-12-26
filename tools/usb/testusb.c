@@ -3,7 +3,7 @@
 /*
  * Copyright (c) 2002 by David Brownell
  * Copyright (c) 2010 by Samsung Electronics
- * Author: Michal Nazarewicz <m.nazarewicz@samsung.com>
+ * Author: Michal Nazarewicz <mina86@mina86.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -358,6 +358,7 @@ static const char *usbfs_dir_find(void)
 {
 	static char usbfs_path_0[] = "/dev/usb/devices";
 	static char usbfs_path_1[] = "/proc/bus/usb/devices";
+	static char udev_usb_path[] = "/dev/bus/usb";
 
 	static char *const usbfs_paths[] = {
 		usbfs_path_0, usbfs_path_1
@@ -375,6 +376,10 @@ static const char *usbfs_dir_find(void)
 			return *it;
 		}
 	} while (++it != end);
+
+	/* real device-nodes managed by udev */
+	if (access(udev_usb_path, F_OK) == 0)
+		return udev_usb_path;
 
 	return NULL;
 }
@@ -420,7 +425,7 @@ int main (int argc, char **argv)
 	/* for easy use when hotplugging */
 	device = getenv ("DEVICE");
 
-	while ((c = getopt (argc, argv, "D:aA:c:g:hns:t:v:")) != EOF)
+	while ((c = getopt (argc, argv, "D:aA:c:g:hlns:t:v:")) != EOF)
 	switch (c) {
 	case 'D':	/* device, if only one */
 		device = optarg;
@@ -463,10 +468,21 @@ int main (int argc, char **argv)
 	case 'h':
 	default:
 usage:
-		fprintf (stderr, "usage: %s [-n] [-D dev | -a | -A usbfs-dir]\n"
-			"\t[-c iterations]  [-t testnum]\n"
-			"\t[-s packetsize] [-g sglen] [-v vary]\n",
-			argv [0]);
+		fprintf (stderr,
+			"usage: %s [options]\n"
+			"Options:\n"
+			"\t-D dev		only test specific device\n"
+			"\t-A usbfs-dir\n"
+			"\t-a		test all recognized devices\n"
+			"\t-l		loop forever(for stress test)\n"
+			"\t-t testnum	only run specified case\n"
+			"\t-n		no test running, show devices to be tested\n"
+			"Case arguments:\n"
+			"\t-c iterations	default 1000\n"
+			"\t-s packetsize	default 512\n"
+			"\t-g sglen	default 32\n"
+			"\t-v vary		default 512\n",
+			argv[0]);
 		return 1;
 	}
 	if (optind != argc)

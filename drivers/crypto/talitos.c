@@ -53,114 +53,6 @@
 
 #include "talitos.h"
 
-#define TALITOS_TIMEOUT 100000
-#define TALITOS_MAX_DATA_LEN 65535
-
-#define DESC_TYPE(desc_hdr) ((be32_to_cpu(desc_hdr) >> 3) & 0x1f)
-#define PRIMARY_EU(desc_hdr) ((be32_to_cpu(desc_hdr) >> 28) & 0xf)
-#define SECONDARY_EU(desc_hdr) ((be32_to_cpu(desc_hdr) >> 16) & 0xf)
-
-/* descriptor pointer entry */
-struct talitos_ptr {
-	__be16 len;	/* length */
-	u8 j_extent;	/* jump to sg link table and/or extent */
-	u8 eptr;	/* extended address */
-	__be32 ptr;	/* address */
-};
-
-static const struct talitos_ptr zero_entry = {
-	.len = 0,
-	.j_extent = 0,
-	.eptr = 0,
-	.ptr = 0
-};
-
-/* descriptor */
-struct talitos_desc {
-	__be32 hdr;			/* header high bits */
-	__be32 hdr_lo;			/* header low bits */
-	struct talitos_ptr ptr[7];	/* ptr/len pair array */
-};
-
-/**
- * talitos_request - descriptor submission request
- * @desc: descriptor pointer (kernel virtual)
- * @dma_desc: descriptor's physical bus address
- * @callback: whom to call when descriptor processing is done
- * @context: caller context (optional)
- */
-struct talitos_request {
-	struct talitos_desc *desc;
-	dma_addr_t dma_desc;
-	void (*callback) (struct device *dev, struct talitos_desc *desc,
-	                  void *context, int error);
-	void *context;
-};
-
-/* per-channel fifo management */
-struct talitos_channel {
-	void __iomem *reg;
-
-	/* request fifo */
-	struct talitos_request *fifo;
-
-	/* number of requests pending in channel h/w fifo */
-	atomic_t submit_count ____cacheline_aligned;
-
-	/* request submission (head) lock */
-	spinlock_t head_lock ____cacheline_aligned;
-	/* index to next free descriptor request */
-	int head;
-
-	/* request release (tail) lock */
-	spinlock_t tail_lock ____cacheline_aligned;
-	/* index to next in-progress/done descriptor request */
-	int tail;
-};
-
-struct talitos_private {
-	struct device *dev;
-	struct platform_device *ofdev;
-	void __iomem *reg;
-	int irq[2];
-
-	/* SEC version geometry (from device tree node) */
-	unsigned int num_channels;
-	unsigned int chfifo_len;
-	unsigned int exec_units;
-	unsigned int desc_types;
-
-	/* SEC Compatibility info */
-	unsigned long features;
-
-	/*
-	 * length of the request fifo
-	 * fifo_len is chfifo_len rounded up to next power of 2
-	 * so we can use bitwise ops to wrap
-	 */
-	unsigned int fifo_len;
-
-	struct talitos_channel *chan;
-
-	/* next channel to be assigned next incoming descriptor */
-	atomic_t last_chan ____cacheline_aligned;
-
-	/* request callback tasklet */
-	struct tasklet_struct done_task[2];
-
-	/* list of registered algorithms */
-	struct list_head alg_list;
-
-	/* hwrng device */
-	struct hwrng rng;
-};
-
-/* .features flag */
-#define TALITOS_FTR_SRC_LINK_TBL_LEN_INCLUDES_EXTENT 0x00000001
-#define TALITOS_FTR_HW_AUTH_CHECK 0x00000002
-#define TALITOS_FTR_SHA224_HWINIT 0x00000004
-#define TALITOS_FTR_HMAC_OK 0x00000008
-
 static void to_talitos_ptr(struct talitos_ptr *talitos_ptr, dma_addr_t dma_addr)
 {
 	talitos_ptr->ptr = cpu_to_be32(lower_32_bits(dma_addr));
@@ -300,11 +192,11 @@ static int init_device(struct device *dev)
  * callback must check err and feedback in descriptor header
  * for device processing status.
  */
-static int talitos_submit(struct device *dev, int ch, struct talitos_desc *desc,
-			  void (*callback)(struct device *dev,
-					   struct talitos_desc *desc,
-					   void *context, int error),
-			  void *context)
+int talitos_submit(struct device *dev, int ch, struct talitos_desc *desc,
+		   void (*callback)(struct device *dev,
+				    struct talitos_desc *desc,
+				    void *context, int error),
+		   void *context)
 {
 	struct talitos_private *priv = dev_get_drvdata(dev);
 	struct talitos_request *request;
@@ -345,6 +237,7 @@ static int talitos_submit(struct device *dev, int ch, struct talitos_desc *desc,
 
 	return -EINPROGRESS;
 }
+EXPORT_SYMBOL(talitos_submit);
 
 /*
  * process what was done, notify callback of error if not
@@ -412,6 +305,7 @@ static void talitos_done_##name(unsigned long data)			\
 {									\
 	struct device *dev = (struct device *)data;			\
 	struct talitos_private *priv = dev_get_drvdata(dev);		\
+	unsigned long flags;						\
 									\
 	if (ch_done_mask & 1)						\
 		flush_channel(dev, 0, 0, 0);				\
@@ -427,8 +321,10 @@ static void talitos_done_##name(unsigned long data)			\
 out:									\
 	/* At this point, all completed channels have been processed */	\
 	/* Unmask done interrupts for channels completed later on. */	\
+	spin_lock_irqsave(&priv->reg_lock, flags);			\
 	setbits32(priv->reg + TALITOS_IMR, ch_done_mask);		\
 	setbits32(priv->reg + TALITOS_IMR_LO, TALITOS_IMR_LO_INIT);	\
+	spin_unlock_irqrestore(&priv->reg_lock, flags);			\
 }
 DEF_TALITOS_DONE(4ch, TALITOS_ISR_4CHDONE)
 DEF_TALITOS_DONE(ch0_2, TALITOS_ISR_CH_0_2_DONE)
@@ -619,22 +515,28 @@ static irqreturn_t talitos_interrupt_##name(int irq, void *data)	       \
 	struct device *dev = data;					       \
 	struct talitos_private *priv = dev_get_drvdata(dev);		       \
 	u32 isr, isr_lo;						       \
+	unsigned long flags;						       \
 									       \
+	spin_lock_irqsave(&priv->reg_lock, flags);			       \
 	isr = in_be32(priv->reg + TALITOS_ISR);				       \
 	isr_lo = in_be32(priv->reg + TALITOS_ISR_LO);			       \
 	/* Acknowledge interrupt */					       \
 	out_be32(priv->reg + TALITOS_ICR, isr & (ch_done_mask | ch_err_mask)); \
 	out_be32(priv->reg + TALITOS_ICR_LO, isr_lo);			       \
 									       \
-	if (unlikely((isr & ~TALITOS_ISR_4CHDONE) & ch_err_mask || isr_lo))    \
-		talitos_error(dev, isr, isr_lo);			       \
-	else								       \
+	if (unlikely(isr & ch_err_mask || isr_lo)) {			       \
+		spin_unlock_irqrestore(&priv->reg_lock, flags);		       \
+		talitos_error(dev, isr & ch_err_mask, isr_lo);		       \
+	}								       \
+	else {								       \
 		if (likely(isr & ch_done_mask)) {			       \
 			/* mask further done interrupts. */		       \
 			clrbits32(priv->reg + TALITOS_IMR, ch_done_mask);      \
 			/* done_task will unmask done interrupts at exit */    \
 			tasklet_schedule(&priv->done_task[tlet]);	       \
 		}							       \
+		spin_unlock_irqrestore(&priv->reg_lock, flags);		       \
+	}								       \
 									       \
 	return (isr & (ch_done_mask | ch_err_mask) || isr_lo) ? IRQ_HANDLED :  \
 								IRQ_NONE;      \
@@ -721,7 +623,7 @@ static void talitos_unregister_rng(struct device *dev)
  * crypto alg
  */
 #define TALITOS_CRA_PRIORITY		3000
-#define TALITOS_MAX_KEY_SIZE		64
+#define TALITOS_MAX_KEY_SIZE		96
 #define TALITOS_MAX_IV_LENGTH		16 /* max of AES_BLOCK_SIZE, DES3_EDE_BLOCK_SIZE */
 
 #define MD5_BLOCK_SIZE    64
@@ -2054,6 +1956,59 @@ static struct talitos_alg_template driver_algs[] = {
 		                     DESC_HDR_MODE1_MDEU_PAD |
 		                     DESC_HDR_MODE1_MDEU_SHA1_HMAC,
 	},
+	{       .type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha224),cbc(aes))",
+			.cra_driver_name = "authenc-hmac-sha224-cbc-aes-talitos",
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = AES_BLOCK_SIZE,
+				.maxauthsize = SHA224_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+				     DESC_HDR_SEL0_AESU |
+				     DESC_HDR_MODE0_AESU_CBC |
+				     DESC_HDR_SEL1_MDEUA |
+				     DESC_HDR_MODE1_MDEU_INIT |
+				     DESC_HDR_MODE1_MDEU_PAD |
+				     DESC_HDR_MODE1_MDEU_SHA224_HMAC,
+	},
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha224),cbc(des3_ede))",
+			.cra_driver_name = "authenc-hmac-sha224-cbc-3des-talitos",
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = DES3_EDE_BLOCK_SIZE,
+				.maxauthsize = SHA224_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+			             DESC_HDR_SEL0_DEU |
+		                     DESC_HDR_MODE0_DEU_CBC |
+		                     DESC_HDR_MODE0_DEU_3DES |
+		                     DESC_HDR_SEL1_MDEUA |
+		                     DESC_HDR_MODE1_MDEU_INIT |
+		                     DESC_HDR_MODE1_MDEU_PAD |
+		                     DESC_HDR_MODE1_MDEU_SHA224_HMAC,
+	},
 	{	.type = CRYPTO_ALG_TYPE_AEAD,
 		.alg.crypto = {
 			.cra_name = "authenc(hmac(sha256),cbc(aes))",
@@ -2106,6 +2061,112 @@ static struct talitos_alg_template driver_algs[] = {
 		                     DESC_HDR_MODE1_MDEU_INIT |
 		                     DESC_HDR_MODE1_MDEU_PAD |
 		                     DESC_HDR_MODE1_MDEU_SHA256_HMAC,
+	},
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha384),cbc(aes))",
+			.cra_driver_name = "authenc-hmac-sha384-cbc-aes-talitos",
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = AES_BLOCK_SIZE,
+				.maxauthsize = SHA384_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+			             DESC_HDR_SEL0_AESU |
+		                     DESC_HDR_MODE0_AESU_CBC |
+		                     DESC_HDR_SEL1_MDEUB |
+		                     DESC_HDR_MODE1_MDEU_INIT |
+		                     DESC_HDR_MODE1_MDEU_PAD |
+		                     DESC_HDR_MODE1_MDEUB_SHA384_HMAC,
+	},
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha384),cbc(des3_ede))",
+			.cra_driver_name = "authenc-hmac-sha384-cbc-3des-talitos",
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = DES3_EDE_BLOCK_SIZE,
+				.maxauthsize = SHA384_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+			             DESC_HDR_SEL0_DEU |
+		                     DESC_HDR_MODE0_DEU_CBC |
+		                     DESC_HDR_MODE0_DEU_3DES |
+		                     DESC_HDR_SEL1_MDEUB |
+		                     DESC_HDR_MODE1_MDEU_INIT |
+		                     DESC_HDR_MODE1_MDEU_PAD |
+		                     DESC_HDR_MODE1_MDEUB_SHA384_HMAC,
+	},
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha512),cbc(aes))",
+			.cra_driver_name = "authenc-hmac-sha512-cbc-aes-talitos",
+			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = AES_BLOCK_SIZE,
+				.maxauthsize = SHA512_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+			             DESC_HDR_SEL0_AESU |
+		                     DESC_HDR_MODE0_AESU_CBC |
+		                     DESC_HDR_SEL1_MDEUB |
+		                     DESC_HDR_MODE1_MDEU_INIT |
+		                     DESC_HDR_MODE1_MDEU_PAD |
+		                     DESC_HDR_MODE1_MDEUB_SHA512_HMAC,
+	},
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.crypto = {
+			.cra_name = "authenc(hmac(sha512),cbc(des3_ede))",
+			.cra_driver_name = "authenc-hmac-sha512-cbc-3des-talitos",
+			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+			.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC,
+			.cra_type = &crypto_aead_type,
+			.cra_aead = {
+				.setkey = aead_setkey,
+				.setauthsize = aead_setauthsize,
+				.encrypt = aead_encrypt,
+				.decrypt = aead_decrypt,
+				.givencrypt = aead_givencrypt,
+				.geniv = "<built-in>",
+				.ivsize = DES3_EDE_BLOCK_SIZE,
+				.maxauthsize = SHA512_DIGEST_SIZE,
+			}
+		},
+		.desc_hdr_template = DESC_HDR_TYPE_IPSEC_ESP |
+			             DESC_HDR_SEL0_DEU |
+		                     DESC_HDR_MODE0_DEU_CBC |
+		                     DESC_HDR_MODE0_DEU_3DES |
+		                     DESC_HDR_SEL1_MDEUB |
+		                     DESC_HDR_MODE1_MDEU_INIT |
+		                     DESC_HDR_MODE1_MDEU_PAD |
+		                     DESC_HDR_MODE1_MDEUB_SHA512_HMAC,
 	},
 	{	.type = CRYPTO_ALG_TYPE_AEAD,
 		.alg.crypto = {
@@ -2648,6 +2709,7 @@ static struct talitos_crypto_alg *talitos_alg_alloc(struct device *dev,
 	alg->cra_priority = TALITOS_CRA_PRIORITY;
 	alg->cra_alignmask = 0;
 	alg->cra_ctxsize = sizeof(struct talitos_ctx);
+	alg->cra_flags |= CRYPTO_ALG_KERN_DRIVER_ONLY;
 
 	t_alg->dev = dev;
 
@@ -2717,6 +2779,8 @@ static int talitos_probe(struct platform_device *ofdev)
 	dev_set_drvdata(dev, priv);
 
 	priv->ofdev = ofdev;
+
+	spin_lock_init(&priv->reg_lock);
 
 	err = talitos_probe_irq(ofdev);
 	if (err)

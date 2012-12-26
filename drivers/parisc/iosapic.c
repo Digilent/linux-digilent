@@ -140,14 +140,13 @@
 #include <asm/pdc.h>
 #include <asm/pdcpat.h>
 #include <asm/page.h>
-#include <asm/system.h>
 #include <asm/io.h>		/* read/write functions */
 #ifdef CONFIG_SUPERIO
 #include <asm/superio.h>
 #endif
 
 #include <asm/ropes.h>
-#include "./iosapic_private.h"
+#include "iosapic_private.h"
 
 #define MODULE_NAME "iosapic"
 
@@ -533,7 +532,7 @@ iosapic_xlate_pin(struct iosapic_info *isi, struct pci_dev *pcidev)
 		intr_slot = PCI_SLOT(pcidev->devfn);
 	}
 	DBG_IRT("iosapic_xlate_pin:  bus %d slot %d pin %d\n",
-				pcidev->bus->secondary, intr_slot, intr_pin);
+			pcidev->bus->busn_res.start, intr_slot, intr_pin);
 
 	return irt_find_irqline(isi, intr_slot, intr_pin);
 }

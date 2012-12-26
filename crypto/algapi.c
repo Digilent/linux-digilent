@@ -24,22 +24,6 @@
 
 static LIST_HEAD(crypto_template_list);
 
-void crypto_larval_error(const char *name, u32 type, u32 mask)
-{
-	struct crypto_alg *alg;
-
-	alg = crypto_alg_lookup(name, type, mask);
-
-	if (alg) {
-		if (crypto_is_larval(alg)) {
-			struct crypto_larval *larval = (void *)alg;
-			complete_all(&larval->completion);
-		}
-		crypto_mod_put(alg);
-	}
-}
-EXPORT_SYMBOL_GPL(crypto_larval_error);
-
 static inline int crypto_set_driver_name(struct crypto_alg *alg)
 {
 	static const char suffix[] = "-generic";
@@ -295,7 +279,6 @@ found:
 				continue;
 
 			larval->adult = alg;
-			complete_all(&larval->completion);
 			continue;
 		}
 
@@ -404,6 +387,41 @@ int crypto_unregister_alg(struct crypto_alg *alg)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(crypto_unregister_alg);
+
+int crypto_register_algs(struct crypto_alg *algs, int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = crypto_register_alg(&algs[i]);
+		if (ret)
+			goto err;
+	}
+
+	return 0;
+
+err:
+	for (--i; i >= 0; --i)
+		crypto_unregister_alg(&algs[i]);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(crypto_register_algs);
+
+int crypto_unregister_algs(struct crypto_alg *algs, int count)
+{
+	int i, ret;
+
+	for (i = 0; i < count; i++) {
+		ret = crypto_unregister_alg(&algs[i]);
+		if (ret)
+			pr_err("Failed to unregister %s %s: %d\n",
+			       algs[i].cra_driver_name, algs[i].cra_name, ret);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(crypto_unregister_algs);
 
 int crypto_register_template(struct crypto_template *tmpl)
 {

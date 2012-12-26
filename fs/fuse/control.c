@@ -75,19 +75,13 @@ static ssize_t fuse_conn_limit_write(struct file *file, const char __user *buf,
 				     unsigned global_limit)
 {
 	unsigned long t;
-	char tmp[32];
 	unsigned limit = (1 << 16) - 1;
 	int err;
 
-	if (*ppos || count >= sizeof(tmp) - 1)
+	if (*ppos)
 		return -EINVAL;
 
-	if (copy_from_user(tmp, buf, count))
-		return -EINVAL;
-
-	tmp[count] = '\0';
-
-	err = strict_strtoul(tmp, 0, &t);
+	err = kstrtoul_from_user(buf, count, 0, &t);
 	if (err)
 		return err;
 
@@ -123,7 +117,7 @@ static ssize_t fuse_conn_max_background_write(struct file *file,
 					      const char __user *buf,
 					      size_t count, loff_t *ppos)
 {
-	unsigned val;
+	unsigned uninitialized_var(val);
 	ssize_t ret;
 
 	ret = fuse_conn_limit_write(file, buf, count, ppos, &val,
@@ -160,7 +154,7 @@ static ssize_t fuse_conn_congestion_threshold_write(struct file *file,
 						    const char __user *buf,
 						    size_t count, loff_t *ppos)
 {
-	unsigned val;
+	unsigned uninitialized_var(val);
 	ssize_t ret;
 
 	ret = fuse_conn_limit_write(file, buf, count, ppos, &val,

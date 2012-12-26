@@ -405,6 +405,9 @@ static void sd_stop0(struct gspca_dev *gspca_dev)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
 
+	if (!sd->gspca_dev.present)
+		return;
+
 	return sd->dev_post_unset_alt(gspca_dev);
 }
 
@@ -518,6 +521,7 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend    = gspca_suspend,
 	.resume     = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 

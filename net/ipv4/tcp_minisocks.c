@@ -49,62 +49,12 @@ struct inet_timewait_death_row tcp_death_row = {
 };
 EXPORT_SYMBOL_GPL(tcp_death_row);
 
-/* VJ's idea. Save last timestamp seen from this destination
- * and hold it at least for normal timewait interval to use for duplicate
- * segment detection in subsequent connections, before they enter synchronized
- * state.
- */
-
-static int tcp_remember_stamp(struct sock *sk)
-{
-	const struct inet_connection_sock *icsk = inet_csk(sk);
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct inet_peer *peer;
-	bool release_it;
-
-	peer = icsk->icsk_af_ops->get_peer(sk, &release_it);
-	if (peer) {
-		if ((s32)(peer->tcp_ts - tp->rx_opt.ts_recent) <= 0 ||
-		    ((u32)get_seconds() - peer->tcp_ts_stamp > TCP_PAWS_MSL &&
-		     peer->tcp_ts_stamp <= (u32)tp->rx_opt.ts_recent_stamp)) {
-			peer->tcp_ts_stamp = (u32)tp->rx_opt.ts_recent_stamp;
-			peer->tcp_ts = tp->rx_opt.ts_recent;
-		}
-		if (release_it)
-			inet_putpeer(peer);
-		return 1;
-	}
-
-	return 0;
-}
-
-static int tcp_tw_remember_stamp(struct inet_timewait_sock *tw)
-{
-	struct sock *sk = (struct sock *) tw;
-	struct inet_peer *peer;
-
-	peer = twsk_getpeer(sk);
-	if (peer) {
-		const struct tcp_timewait_sock *tcptw = tcp_twsk(sk);
-
-		if ((s32)(peer->tcp_ts - tcptw->tw_ts_recent) <= 0 ||
-		    ((u32)get_seconds() - peer->tcp_ts_stamp > TCP_PAWS_MSL &&
-		     peer->tcp_ts_stamp <= (u32)tcptw->tw_ts_recent_stamp)) {
-			peer->tcp_ts_stamp = (u32)tcptw->tw_ts_recent_stamp;
-			peer->tcp_ts	   = tcptw->tw_ts_recent;
-		}
-		inet_putpeer(peer);
-		return 1;
-	}
-	return 0;
-}
-
-static __inline__ int tcp_in_window(u32 seq, u32 end_seq, u32 s_win, u32 e_win)
+static bool tcp_in_window(u32 seq, u32 end_seq, u32 s_win, u32 e_win)
 {
 	if (seq == s_win)
-		return 1;
+		return true;
 	if (after(end_seq, s_win) && before(seq, e_win))
-		return 1;
+		return true;
 	return seq == e_win && seq == end_seq;
 }
 
@@ -143,11 +93,11 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 	struct tcp_options_received tmp_opt;
 	const u8 *hash_location;
 	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
-	int paws_reject = 0;
+	bool paws_reject = false;
 
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
-		tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
+		tcp_parse_options(skb, &tmp_opt, &hash_location, 0, NULL);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent	= tcptw->tw_ts_recent;
@@ -316,7 +266,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	struct inet_timewait_sock *tw = NULL;
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	const struct tcp_sock *tp = tcp_sk(sk);
-	int recycle_ok = 0;
+	bool recycle_ok = false;
 
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
 		recycle_ok = tcp_remember_stamp(sk);
@@ -327,8 +277,9 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	if (tw != NULL) {
 		struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
 		const int rto = (icsk->icsk_rto << 2) - (icsk->icsk_rto >> 1);
+		struct inet_sock *inet = inet_sk(sk);
 
-		tw->tw_transparent	= inet_sk(sk)->transparent;
+		tw->tw_transparent	= inet->transparent;
 		tw->tw_rcv_wscale	= tp->rx_opt.rcv_wscale;
 		tcptw->tw_rcv_nxt	= tp->rcv_nxt;
 		tcptw->tw_snd_nxt	= tp->snd_nxt;
@@ -359,13 +310,11 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		 */
 		do {
 			struct tcp_md5sig_key *key;
-			memset(tcptw->tw_md5_key, 0, sizeof(tcptw->tw_md5_key));
-			tcptw->tw_md5_keylen = 0;
+			tcptw->tw_md5_key = NULL;
 			key = tp->af_specific->md5_lookup(sk, sk);
 			if (key != NULL) {
-				memcpy(&tcptw->tw_md5_key, key->key, key->keylen);
-				tcptw->tw_md5_keylen = key->keylen;
-				if (tcp_alloc_md5sig_pool(sk) == NULL)
+				tcptw->tw_md5_key = kmemdup(key, sizeof(*key), GFP_ATOMIC);
+				if (tcptw->tw_md5_key && tcp_alloc_md5sig_pool(sk) == NULL)
 					BUG();
 			}
 		} while (0);
@@ -405,8 +354,11 @@ void tcp_twsk_destructor(struct sock *sk)
 {
 #ifdef CONFIG_TCP_MD5SIG
 	struct tcp_timewait_sock *twsk = tcp_twsk(sk);
-	if (twsk->tw_md5_keylen)
+
+	if (twsk->tw_md5_key) {
 		tcp_free_md5sig_pool();
+		kfree_rcu(twsk->tw_md5_key, rcu);
+	}
 #endif
 }
 EXPORT_SYMBOL_GPL(tcp_twsk_destructor);
@@ -470,6 +422,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 			treq->snt_isn + 1 + tcp_s_data_size(oldtp);
 
 		tcp_prequeue_init(newtp);
+		INIT_LIST_HEAD(&newtp->tsq_node);
 
 		tcp_init_wl(newtp, treq->rcv_isn);
 
@@ -482,6 +435,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		newtp->sacked_out = 0;
 		newtp->fackets_out = 0;
 		newtp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+		tcp_enable_early_retrans(newtp);
 
 		/* So many TCP implementations out there (incorrectly) count the
 		 * initial SYN frame in their delayed-ACK and congestion control
@@ -574,11 +528,11 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	struct sock *child;
 	const struct tcphdr *th = tcp_hdr(skb);
 	__be32 flg = tcp_flag_word(th) & (TCP_FLAG_RST|TCP_FLAG_SYN|TCP_FLAG_ACK);
-	int paws_reject = 0;
+	bool paws_reject = false;
 
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(struct tcphdr)>>2)) {
-		tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
+		tcp_parse_options(skb, &tmp_opt, &hash_location, 0, NULL);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent = req->ts_recent;

@@ -1,3 +1,11 @@
+/**
+ * Analog Devices ADV7511 HDMI transmitter driver
+ *
+ * Copyright 2012 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2.
+ */
+
 #ifndef __ADV7511_H__
 #define __ADV7511_H__
 
@@ -15,6 +23,15 @@
 #define ADV7511_REG_AUDIO_CONFIG		0x0b
 #define ADV7511_REG_I2S_CONFIG			0x0c
 #define ADV7511_REG_I2S_WIDTH			0x0d
+#define ADV7511_REG_AUDIO_SUB_SRC0		0x0e
+#define ADV7511_REG_AUDIO_SUB_SRC1		0x0f
+#define ADV7511_REG_AUDIO_SUB_SRC2		0x10
+#define ADV7511_REG_AUDIO_SUB_SRC3		0x11
+#define ADV7511_REG_AUDIO_CFG1			0x12
+#define ADV7511_REG_AUDIO_CFG2			0x13
+#define ADV7511_REG_AUDIO_CFG3			0x14
+#define ADV7511_REG_I2C_FREQ_ID_CFG		0x15
+#define ADV7511_REG_VIDEO_INPUT_CFG1		0x16
 #define ADV7511_REG_CSC_UPPER(x)		(0x18 + (x) * 2)
 #define ADV7511_REG_CSC_LOWER(x)		(0x19 + (x) * 2)
 #define ADV7511_REG_SYNC_DECODER(x)		(0x30 + (x))
@@ -31,6 +48,7 @@
 #define ADV7511_REG_PACKET_ENABLE1		0x44
 #define ADV7511_REG_PACKET_I2C_ADDR		0x45
 #define ADV7511_REG_DSD_ENABLE			0x46
+#define ADV7511_REG_VIDEO_INPUT_CFG2		0x48
 #define ADV7511_REG_GC(x)			(0x4b + (x)) /* 0x4b - 0x51 */
 #define ADV7511_REG_AVI_INFOFRAME_VERSION	0x52
 #define ADV7511_REG_AVI_INFOFRAME_LENGTH	0x53
@@ -44,16 +62,19 @@
 #define ADV7511_REG_INT(x)			(0x96 + (x))
 #define ADV7511_REG_INPUT_CLK_DIV		0x9d
 #define ADV7511_REG_PLL_STATUS			0x9e
-#define ADV7511_REG_POWER_DOWN			0xa1
+#define ADV7511_REG_HDMI_POWER			0xa1
+#define ADV7511_REG_HDCP_HDMI_CFG		0xaf
 #define ADV7511_REG_AN(x)			(0xb0 + (x)) /* 0xb0 - 0xb7 */
 #define ADV7511_REG_HDCP_STATUS			0xb8
 #define ADV7511_REG_BCAPS			0xbe
 #define ADV7511_REG_BKSV(x)			(0xc0 + (x)) /* 0xc0 - 0xc3 */
 #define ADV7511_REG_EDID_SEGMENT		0xc4
-#define ADV7511_REG_DDC_CONTROLLER_STATUS	0xc8
+#define ADV7511_REG_DDC_STATUS			0xc8
 #define ADV7511_REG_EDID_READ_CTRL		0xc9
 #define ADV7511_REG_BSTATUS(x)			(0xca + (x)) /* 0xca - 0xcb */
-#define ADV7511_REG_		0xd0
+#define ADV7511_REG_TIMING_GEN_SEQ		0xd0
+#define ADV7511_REG_POWER2			0xd6
+#define ADV7511_REG_HSYNC_PLACEMENT_MSB		0xfa
 
 #define ADV7511_REG_SYNC_ADJUSTMENT(x)		(0xd7 + (x)) /* 0xd7 - 0xdc */
 #define ADV7511_REG_TMDS_CLOCK_INV		0xde
@@ -129,10 +150,28 @@
 #define ADV7511_PACKET_ENABLE_SPARE2		BIT(1)
 #define ADV7511_PACKET_ENABLE_SPARE1		BIT(0)
 
-#define ADV7511_LOW_REFRESH_RATE_NONE 0x0
-#define ADV7511_LOW_REFRESH_RATE_24HZ 0x1
-#define ADV7511_LOW_REFRESH_RATE_25HZ 0x2
-#define ADV7511_LOW_REFRESH_RATE_30HZ 0x3
+#define ADV7511_REG_POWER2_HDP_SRC_MASK		0xc0
+#define ADV7511_REG_POWER2_HDP_SRC_BOTH		0x00
+#define ADV7511_REG_POWER2_HDP_SRC_HDP		0x40
+#define ADV7511_REG_POWER2_HDP_SRC_CEC		0x80
+#define ADV7511_REG_POWER2_HDP_SRC_NONE		0xc0
+#define ADV7511_REG_POWER2_TDMS_ENABLE		BIT(4)
+#define ADV7511_REG_POWER2_GATE_INPUT_CLK	BIT(0)
+
+#define ADV7511_LOW_REFRESH_RATE_NONE		0x0
+#define ADV7511_LOW_REFRESH_RATE_24HZ		0x1
+#define ADV7511_LOW_REFRESH_RATE_25HZ		0x2
+#define ADV7511_LOW_REFRESH_RATE_30HZ		0x3
+
+#define ADV7511_AUDIO_CFG3_LEN_MASK		0x0f
+#define ADV7511_I2C_FREQ_ID_CFG_RATE_MASK	0xf0
+
+#define ADV7511_AUDIO_SOURCE_I2S		0
+#define ADV7511_AUDIO_SOURCE_SPDIF		1
+
+#define ADV7511_I2S_FORMAT_I2S			0
+#define ADV7511_I2S_FORMAT_RIGHT_J		1
+#define ADV7511_I2S_FORMAT_LEFT_J		2
 
 #include <drm/drmP.h>
 
@@ -159,6 +198,8 @@ struct adv7511 {
 
 	wait_queue_head_t wq;
 	struct drm_encoder *encoder;
+
+	bool embedded_sync;
 };
 
 int adv7511_packet_enable(struct adv7511 *adv7511, unsigned int packet);
@@ -174,9 +215,6 @@ enum adv7511_input_id {
 	ADV7511_INPUT_ID_8_10_12BIT_YCbCr422_SEPARATE_SYNC = 3,
 	ADV7511_INPUT_ID_8_10_12BIT_YCbCr422_EMBEDDED_SYNC = 4,
 	ADV7511_INPUT_ID_12_15_16BIT_RGB444_YCbCr444 = 5,
-	ADV7511_INPUT_ID_8_10_12BIT_YCbCr422_DDR_SEPARATE_SYNC1 = 6,
-	ADV7511_INPUT_ID_8_10_12BIT_YCbCr422_DDR_SEPARATE_SYNC2 = 7,
-	ADV7511_INPUT_ID_8_10_12BIT_YCbCr422_DDR_EMBEDDED_SYNC = 8,
 };
 
 enum adv7511_input_color_depth {
@@ -209,22 +247,6 @@ enum adv7511_input_clock_delay {
 	ADV7511_INPUT_CLOCK_DELAY_PLUS_1600PS = 7,
 };
 
-enum adv7511_input_adjust_delay {
-	ADV7511_INPUT_ADJUST_DELAY_MINUS_1200PS = 0,
-	ADV7511_INPUT_ADJUST_DELAY_MINUS_800PS = 1,
-	ADV7511_INPUT_ADJUST_DELAY_MINUS_400PS = 2,
-	ADV7511_INPUT_ADJUST_DELAY_NONE = 3,
-	ADV7511_INPUT_ADJUST_DELAY_PLUS_400PS = 4,
-	ADV7511_INPUT_ADJUST_DELAY_PLUS_800PS = 5,
-	ADV7511_INPUT_ADJUST_DELAY_PLUS_1200PS = 6,
-	ADV7511_INPUT_ADJUST_DELAY_INVERT_CLK = 7,
-};
-
-enum adv7511_input_ddr_alignment {
-	ADV7511_INPUT_DDR_ALIGNMENT_17_0 = 0,
-	ADV7511_INPUT_DDR_ALIGNMENT_35_18 = 1,
-};
-
 enum adv7511_input_bit_justifiction {
 	ADV7511_INPUT_BIT_JUSTIFICATION_EVENLY = 0,
 	ADV7511_INPUT_BIT_JUSTIFICATION_RIGHT = 1,
@@ -237,29 +259,52 @@ enum adv7511_output_format {
 	ADV7511_OUTPUT_FORMAT_YCBCR_444 = 2,
 };
 
+enum adv7511_csc_scaling {
+	ADV7511_CSC_SCALING_1 = 0,
+	ADV7511_CSC_SCALING_2 = 1,
+	ADV7511_CSC_SCALING_4 = 2,
+};
+
+/**
+ * struct adv7511_video_input_config - Describes adv7511 hardware configuration
+ * @id:				Video input format id
+ * @input_style:		Video input format style
+ * @sync_pulse:			Select the sync pulse
+ * @clock_delay:		Clock delay for the input clock
+ * @reverse_bitorder:		Reverse video input signal bitorder
+ * @bit_justification:		Video input format bit justification
+ * @up_conversion_first_order_interpolation:
+ * @input_color_depth:		Input video format color depth
+ * @tmds_clock_inversion:	Whether to invert the TDMS clock
+ * @vsync_polartity_low:	Whether the vsync polarity is low
+ * @hsync_polartity_low:	Whether the hsync polarity is low
+ * @csc_enable:			Whether to enable color space conversion
+ * @csc_scaling_factor:		Color space conversion scaling factor
+ * @csc_coefficents:		Color space conversion coefficents
+ * @output_format:		Video output format
+ * @timing_gen_sequence:
+ * @hdmi_mode:			Whether to use HDMI or DVI output mode
+ **/
 struct adv7511_video_input_config {
 	enum adv7511_input_id id;
 	enum adv7511_input_style input_style;
 	enum adv7511_input_sync_pulse sync_pulse;
 	enum adv7511_input_clock_delay clock_delay;
-	enum adv7511_input_adjust_delay ddr_negative_clock_delay;
 	bool reverse_bitorder;
-	enum adv7511_input_ddr_alignment ddr_alignment;
 	enum adv7511_input_bit_justifiction bit_justification;
-	bool ddr_edge_rising;
-	bool vsync_polartity_low;
-	bool hsync_polartity_low;
 	bool up_conversion_first_order_interpolation;
-	bool enable_ddr_negative_clock_delay;
 	enum adv7511_input_color_depth input_color_depth;
 	bool tmds_clock_inversion;
 
+	bool vsync_polartity_low;
+	bool hsync_polartity_low;
+
 	bool csc_enable;
-	int csc_scaling_factor;
+	enum adv7511_csc_scaling csc_scaling_factor;
 	uint16_t *csc_coefficents;
 
 	enum adv7511_output_format output_format;
-	int timing_generation_sequence;
+	int timing_gen_sequence;
 	bool hdmi_mode;
 };
 

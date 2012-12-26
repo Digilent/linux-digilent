@@ -4,7 +4,7 @@
  * Author: Xilinx, Inc.
  *
  * 2010 (c) Xilinx, Inc. This file is licensed uner the terms of the GNU
- * General Public License version 2.1. This program is licensed "as is"
+ * General Public License version 2. This program is licensed "as is"
  * without any warranty of any kind, whether express or implied.
  *
  * This is a driver for xilinx processor sub-system (ps) ethernet device.
@@ -20,11 +20,7 @@
  *    it is fixed. The speed cannot be changed to 10 Mbps or 1000 Mbps. However
  *    for Zynq there is no such issue and it can work at all 3 speeds after
  *    autonegotiation.
- * 3. The SLCR clock divisors are hard coded for Zynq board for the time being.
- *    The assumption is IO PLL output is 1000 MHz. However, this will not
- *    be the case always. Ideally the divisors need to be calculated at
- *    runtime depending upon the IO PLL output frequency. Hence this
- *    needs to be revsited.
+ * 3. The SLCR clock divisors are hard coded for PEEP board.
  */
 
 #include <linux/module.h>
@@ -43,35 +39,35 @@
 #include <linux/vmalloc.h>
 #include <linux/version.h>
 #include <linux/of.h>
-#include <mach/board.h>
 #include <mach/slcr.h>
 #include <linux/interrupt.h>
 #include <linux/clocksource.h>
 #include <linux/timecompare.h>
 #include <linux/net_tstamp.h>
-#ifdef CONFIG_OF
+#include <linux/pm_runtime.h>
+#include <linux/clk.h>
+#include <linux/of_net.h>
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
-#endif
 
 /************************** Constant Definitions *****************************/
 
 /* Must be shorter than length of ethtool_drvinfo.driver field to fit */
-#define DRIVER_NAME		"xemacps"
-#define DRIVER_DESCRIPTION	"Xilinx Tri-Mode Ethernet MAC driver"
-#define DRIVER_VERSION		"1.00a"
+#define DRIVER_NAME			"xemacps"
+#define DRIVER_DESCRIPTION		"Xilinx Tri-Mode Ethernet MAC driver"
+#define DRIVER_VERSION			"1.00a"
 
 /* Transmission timeout is 3 seconds. */
-#define TX_TIMEOUT		(3*HZ)
+#define TX_TIMEOUT			(3*HZ)
 
 /* for RX skb IP header word-aligned */
-#define RX_IP_ALIGN_OFFSET	2
+#define RX_IP_ALIGN_OFFSET		2
 
 /* DMA buffer descriptors must be aligned on a 4-byte boundary. */
-#define ALIGNMENT_BD		8
+#define ALIGNMENT_BD			8
 
 /* Maximum value for hash bits. 2**6 */
-#define XEMACPS_MAX_HASH_BITS	64
+#define XEMACPS_MAX_HASH_BITS		64
 
 /* MDC clock division
  * currently supporting 8, 16, 32, 48, 64, 96, 128, 224.
@@ -79,11 +75,11 @@
 enum { MDC_DIV_8 = 0, MDC_DIV_16, MDC_DIV_32, MDC_DIV_48,
 MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
 
-/* Specify the receive buffer size in bytes, 64, 128, 192, ... 10240 */
-#define XEMACPS_RX_BUF_SIZE	1600
+/* Specify the receive buffer size in bytes, 64, 128, 192, 10240 */
+#define XEMACPS_RX_BUF_SIZE		1600
 
 /* Number of receive buffer bytes as a unit, this is HW setup */
-#define XEMACPS_RX_BUF_UNIT	64
+#define XEMACPS_RX_BUF_UNIT		64
 
 /* Default SEND and RECV buffer descriptors (BD) numbers.
  * BD Space needed is (XEMACPS_SEND_BD_CNT+XEMACPS_RECV_BD_CNT)*8
@@ -91,265 +87,264 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
 #undef  DEBUG
 #define DEBUG
 
-#define XEMACPS_SEND_BD_CNT	32
-#define XEMACPS_RECV_BD_CNT	32
+#define XEMACPS_SEND_BD_CNT		32
+#define XEMACPS_RECV_BD_CNT		32
 
-#define XEMACPS_NAPI_WEIGHT	64
+#define XEMACPS_NAPI_WEIGHT		64
 
 /* Register offset definitions. Unless otherwise noted, register access is
  * 32 bit. Names are self explained here.
  */
-#define XEMACPS_NWCTRL_OFFSET        0x00000000 /* Network Control reg */
-#define XEMACPS_NWCFG_OFFSET         0x00000004 /* Network Config reg */
-#define XEMACPS_NWSR_OFFSET          0x00000008 /* Network Status reg */
-#define XEMACPS_USERIO_OFFSET        0x0000000C /* User IO reg */
-#define XEMACPS_DMACR_OFFSET         0x00000010 /* DMA Control reg */
-#define XEMACPS_TXSR_OFFSET          0x00000014 /* TX Status reg */
-#define XEMACPS_RXQBASE_OFFSET       0x00000018 /* RX Q Base address reg */
-#define XEMACPS_TXQBASE_OFFSET       0x0000001C /* TX Q Base address reg */
-#define XEMACPS_RXSR_OFFSET          0x00000020 /* RX Status reg */
-#define XEMACPS_ISR_OFFSET           0x00000024 /* Interrupt Status reg */
-#define XEMACPS_IER_OFFSET           0x00000028 /* Interrupt Enable reg */
-#define XEMACPS_IDR_OFFSET           0x0000002C /* Interrupt Disable reg */
-#define XEMACPS_IMR_OFFSET           0x00000030 /* Interrupt Mask reg */
-#define XEMACPS_PHYMNTNC_OFFSET      0x00000034 /* Phy Maintaince reg */
-#define XEMACPS_RXPAUSE_OFFSET       0x00000038 /* RX Pause Time reg */
-#define XEMACPS_TXPAUSE_OFFSET       0x0000003C /* TX Pause Time reg */
-#define XEMACPS_HASHL_OFFSET         0x00000080 /* Hash Low address reg */
-#define XEMACPS_HASHH_OFFSET         0x00000084 /* Hash High address reg */
-#define XEMACPS_LADDR1L_OFFSET       0x00000088 /* Specific1 addr low reg */
-#define XEMACPS_LADDR1H_OFFSET       0x0000008C /* Specific1 addr high reg */
-#define XEMACPS_LADDR2L_OFFSET       0x00000090 /* Specific2 addr low reg */
-#define XEMACPS_LADDR2H_OFFSET       0x00000094 /* Specific2 addr high reg */
-#define XEMACPS_LADDR3L_OFFSET       0x00000098 /* Specific3 addr low reg */
-#define XEMACPS_LADDR3H_OFFSET       0x0000009C /* Specific3 addr high reg */
-#define XEMACPS_LADDR4L_OFFSET       0x000000A0 /* Specific4 addr low reg */
-#define XEMACPS_LADDR4H_OFFSET       0x000000A4 /* Specific4 addr high reg */
-#define XEMACPS_MATCH1_OFFSET        0x000000A8 /* Type ID1 Match reg */
-#define XEMACPS_MATCH2_OFFSET        0x000000AC /* Type ID2 Match reg */
-#define XEMACPS_MATCH3_OFFSET        0x000000B0 /* Type ID3 Match reg */
-#define XEMACPS_MATCH4_OFFSET        0x000000B4 /* Type ID4 Match reg */
-#define XEMACPS_WOL_OFFSET           0x000000B8 /* Wake on LAN reg */
-#define XEMACPS_STRETCH_OFFSET       0x000000BC /* IPG Stretch reg */
-#define XEMACPS_SVLAN_OFFSET         0x000000C0 /* Stacked VLAN reg */
-#define XEMACPS_MODID_OFFSET         0x000000FC /* Module ID reg */
-#define XEMACPS_OCTTXL_OFFSET        0x00000100 /* Octects transmitted Low
+#define XEMACPS_NWCTRL_OFFSET		0x00000000 /* Network Control reg */
+#define XEMACPS_NWCFG_OFFSET		0x00000004 /* Network Config reg */
+#define XEMACPS_NWSR_OFFSET		0x00000008 /* Network Status reg */
+#define XEMACPS_USERIO_OFFSET		0x0000000C /* User IO reg */
+#define XEMACPS_DMACR_OFFSET		0x00000010 /* DMA Control reg */
+#define XEMACPS_TXSR_OFFSET		0x00000014 /* TX Status reg */
+#define XEMACPS_RXQBASE_OFFSET		0x00000018 /* RX Q Base address reg */
+#define XEMACPS_TXQBASE_OFFSET		0x0000001C /* TX Q Base address reg */
+#define XEMACPS_RXSR_OFFSET		0x00000020 /* RX Status reg */
+#define XEMACPS_ISR_OFFSET		0x00000024 /* Interrupt Status reg */
+#define XEMACPS_IER_OFFSET		0x00000028 /* Interrupt Enable reg */
+#define XEMACPS_IDR_OFFSET		0x0000002C /* Interrupt Disable reg */
+#define XEMACPS_IMR_OFFSET		0x00000030 /* Interrupt Mask reg */
+#define XEMACPS_PHYMNTNC_OFFSET		0x00000034 /* Phy Maintaince reg */
+#define XEMACPS_RXPAUSE_OFFSET		0x00000038 /* RX Pause Time reg */
+#define XEMACPS_TXPAUSE_OFFSET		0x0000003C /* TX Pause Time reg */
+#define XEMACPS_HASHL_OFFSET		0x00000080 /* Hash Low address reg */
+#define XEMACPS_HASHH_OFFSET		0x00000084 /* Hash High address reg */
+#define XEMACPS_LADDR1L_OFFSET		0x00000088 /* Specific1 addr low */
+#define XEMACPS_LADDR1H_OFFSET		0x0000008C /* Specific1 addr high */
+#define XEMACPS_LADDR2L_OFFSET		0x00000090 /* Specific2 addr low */
+#define XEMACPS_LADDR2H_OFFSET		0x00000094 /* Specific2 addr high */
+#define XEMACPS_LADDR3L_OFFSET		0x00000098 /* Specific3 addr low */
+#define XEMACPS_LADDR3H_OFFSET		0x0000009C /* Specific3 addr high */
+#define XEMACPS_LADDR4L_OFFSET		0x000000A0 /* Specific4 addr low */
+#define XEMACPS_LADDR4H_OFFSET		0x000000A4 /* Specific4 addr high */
+#define XEMACPS_MATCH1_OFFSET		0x000000A8 /* Type ID1 Match reg */
+#define XEMACPS_MATCH2_OFFSET		0x000000AC /* Type ID2 Match reg */
+#define XEMACPS_MATCH3_OFFSET		0x000000B0 /* Type ID3 Match reg */
+#define XEMACPS_MATCH4_OFFSET		0x000000B4 /* Type ID4 Match reg */
+#define XEMACPS_WOL_OFFSET		0x000000B8 /* Wake on LAN reg */
+#define XEMACPS_STRETCH_OFFSET		0x000000BC /* IPG Stretch reg */
+#define XEMACPS_SVLAN_OFFSET		0x000000C0 /* Stacked VLAN reg */
+#define XEMACPS_MODID_OFFSET		0x000000FC /* Module ID reg */
+#define XEMACPS_OCTTXL_OFFSET		0x00000100 /* Octects transmitted Low
 						reg */
-#define XEMACPS_OCTTXH_OFFSET        0x00000104 /* Octects transmitted High
+#define XEMACPS_OCTTXH_OFFSET		0x00000104 /* Octects transmitted High
 						reg */
-#define XEMACPS_TXCNT_OFFSET         0x00000108 /* Error-free Frmaes
+#define XEMACPS_TXCNT_OFFSET		0x00000108 /* Error-free Frmaes
 						transmitted counter */
-#define XEMACPS_TXBCCNT_OFFSET       0x0000010C /* Error-free Broadcast
+#define XEMACPS_TXBCCNT_OFFSET		0x0000010C /* Error-free Broadcast
 						Frames counter*/
-#define XEMACPS_TXMCCNT_OFFSET       0x00000110 /* Error-free Multicast
+#define XEMACPS_TXMCCNT_OFFSET		0x00000110 /* Error-free Multicast
 						Frame counter */
-#define XEMACPS_TXPAUSECNT_OFFSET    0x00000114 /* Pause Frames Transmitted
+#define XEMACPS_TXPAUSECNT_OFFSET	0x00000114 /* Pause Frames Transmitted
 						Counter */
-#define XEMACPS_TX64CNT_OFFSET       0x00000118 /* Error-free 64 byte Frames
+#define XEMACPS_TX64CNT_OFFSET		0x00000118 /* Error-free 64 byte Frames
 						Transmitted counter */
-#define XEMACPS_TX65CNT_OFFSET       0x0000011C /* Error-free 65-127 byte
+#define XEMACPS_TX65CNT_OFFSET		0x0000011C /* Error-free 65-127 byte
 						Frames Transmitted counter */
-#define XEMACPS_TX128CNT_OFFSET      0x00000120 /* Error-free 128-255 byte
+#define XEMACPS_TX128CNT_OFFSET		0x00000120 /* Error-free 128-255 byte
 						Frames Transmitted counter */
-#define XEMACPS_TX256CNT_OFFSET      0x00000124 /* Error-free 256-511 byte
+#define XEMACPS_TX256CNT_OFFSET		0x00000124 /* Error-free 256-511 byte
 						Frames transmitted counter */
-#define XEMACPS_TX512CNT_OFFSET      0x00000128 /* Error-free 512-1023 byte
+#define XEMACPS_TX512CNT_OFFSET		0x00000128 /* Error-free 512-1023 byte
 						Frames transmitted counter */
-#define XEMACPS_TX1024CNT_OFFSET     0x0000012C /* Error-free 1024-1518 byte
+#define XEMACPS_TX1024CNT_OFFSET	0x0000012C /* Error-free 1024-1518 byte
 						Frames transmitted counter */
-#define XEMACPS_TX1519CNT_OFFSET     0x00000130 /* Error-free larger than 1519
-						byte Frames transmitted
-						   counter */
-#define XEMACPS_TXURUNCNT_OFFSET     0x00000134 /* TX under run error
-						    counter */
-#define XEMACPS_SNGLCOLLCNT_OFFSET   0x00000138 /* Single Collision Frame
+#define XEMACPS_TX1519CNT_OFFSET	0x00000130 /* Error-free larger than
+						1519 byte Frames transmitted
 						Counter */
-#define XEMACPS_MULTICOLLCNT_OFFSET  0x0000013C /* Multiple Collision Frame
+#define XEMACPS_TXURUNCNT_OFFSET	0x00000134 /* TX under run error
 						Counter */
-#define XEMACPS_EXCESSCOLLCNT_OFFSET 0x00000140 /* Excessive Collision Frame
+#define XEMACPS_SNGLCOLLCNT_OFFSET	0x00000138 /* Single Collision Frame
 						Counter */
-#define XEMACPS_LATECOLLCNT_OFFSET   0x00000144 /* Late Collision Frame
+#define XEMACPS_MULTICOLLCNT_OFFSET	0x0000013C /* Multiple Collision Frame
 						Counter */
-#define XEMACPS_TXDEFERCNT_OFFSET    0x00000148 /* Deferred Transmission
+#define XEMACPS_EXCESSCOLLCNT_OFFSET	0x00000140 /* Excessive Collision Frame
+						Counter */
+#define XEMACPS_LATECOLLCNT_OFFSET	0x00000144 /* Late Collision Frame
+						Counter */
+#define XEMACPS_TXDEFERCNT_OFFSET	0x00000148 /* Deferred Transmission
 						Frame Counter */
-#define XEMACPS_CSENSECNT_OFFSET     0x0000014C /* Carrier Sense Error
+#define XEMACPS_CSENSECNT_OFFSET	0x0000014C /* Carrier Sense Error
 						Counter */
-#define XEMACPS_OCTRXL_OFFSET        0x00000150 /* Octects Received register
+#define XEMACPS_OCTRXL_OFFSET		0x00000150 /* Octects Received register
 						Low */
-#define XEMACPS_OCTRXH_OFFSET        0x00000154 /* Octects Received register
+#define XEMACPS_OCTRXH_OFFSET		0x00000154 /* Octects Received register
 						High */
-#define XEMACPS_RXCNT_OFFSET         0x00000158 /* Error-free Frames
+#define XEMACPS_RXCNT_OFFSET		0x00000158 /* Error-free Frames
 						Received Counter */
-#define XEMACPS_RXBROADCNT_OFFSET    0x0000015C /* Error-free Broadcast
+#define XEMACPS_RXBROADCNT_OFFSET	0x0000015C /* Error-free Broadcast
 						Frames Received Counter */
-#define XEMACPS_RXMULTICNT_OFFSET    0x00000160 /* Error-free Multicast
+#define XEMACPS_RXMULTICNT_OFFSET	0x00000160 /* Error-free Multicast
 						Frames Received Counter */
-#define XEMACPS_RXPAUSECNT_OFFSET    0x00000164 /* Pause Frames
+#define XEMACPS_RXPAUSECNT_OFFSET	0x00000164 /* Pause Frames
 						Received Counter */
-#define XEMACPS_RX64CNT_OFFSET       0x00000168 /* Error-free 64 byte Frames
+#define XEMACPS_RX64CNT_OFFSET		0x00000168 /* Error-free 64 byte Frames
 						Received Counter */
-#define XEMACPS_RX65CNT_OFFSET       0x0000016C /* Error-free 65-127 byte
+#define XEMACPS_RX65CNT_OFFSET		0x0000016C /* Error-free 65-127 byte
 						Frames Received Counter */
-#define XEMACPS_RX128CNT_OFFSET      0x00000170 /* Error-free 128-255 byte
+#define XEMACPS_RX128CNT_OFFSET		0x00000170 /* Error-free 128-255 byte
 						Frames Received Counter */
-#define XEMACPS_RX256CNT_OFFSET      0x00000174 /* Error-free 256-512 byte
+#define XEMACPS_RX256CNT_OFFSET		0x00000174 /* Error-free 256-512 byte
 						Frames Received Counter */
-#define XEMACPS_RX512CNT_OFFSET      0x00000178 /* Error-free 512-1023 byte
+#define XEMACPS_RX512CNT_OFFSET		0x00000178 /* Error-free 512-1023 byte
 						Frames Received Counter */
-#define XEMACPS_RX1024CNT_OFFSET     0x0000017C /* Error-free 1024-1518 byte
+#define XEMACPS_RX1024CNT_OFFSET	0x0000017C /* Error-free 1024-1518 byte
 						Frames Received Counter */
-#define XEMACPS_RX1519CNT_OFFSET     0x00000180 /* Error-free 1519-max byte
+#define XEMACPS_RX1519CNT_OFFSET	0x00000180 /* Error-free 1519-max byte
 						Frames Received Counter */
-#define XEMACPS_RXUNDRCNT_OFFSET     0x00000184 /* Undersize Frames Received
+#define XEMACPS_RXUNDRCNT_OFFSET	0x00000184 /* Undersize Frames Received
 						Counter */
-#define XEMACPS_RXOVRCNT_OFFSET      0x00000188 /* Oversize Frames Received
+#define XEMACPS_RXOVRCNT_OFFSET		0x00000188 /* Oversize Frames Received
 						Counter */
-#define XEMACPS_RXJABCNT_OFFSET      0x0000018C /* Jabbers Received
+#define XEMACPS_RXJABCNT_OFFSET		0x0000018C /* Jabbers Received
 						Counter */
-#define XEMACPS_RXFCSCNT_OFFSET      0x00000190 /* Frame Check Sequence
+#define XEMACPS_RXFCSCNT_OFFSET		0x00000190 /* Frame Check Sequence
 						Error Counter */
-#define XEMACPS_RXLENGTHCNT_OFFSET   0x00000194 /* Length Field Error
+#define XEMACPS_RXLENGTHCNT_OFFSET	0x00000194 /* Length Field Error
 						Counter */
-#define XEMACPS_RXSYMBCNT_OFFSET     0x00000198 /* Symbol Error Counter */
-#define XEMACPS_RXALIGNCNT_OFFSET    0x0000019C /* Alignment Error Counter */
-#define XEMACPS_RXRESERRCNT_OFFSET   0x000001A0 /* Receive Resource Error
+#define XEMACPS_RXSYMBCNT_OFFSET	0x00000198 /* Symbol Error Counter */
+#define XEMACPS_RXALIGNCNT_OFFSET	0x0000019C /* Alignment Error
 						Counter */
-#define XEMACPS_RXORCNT_OFFSET       0x000001A4 /* Receive Overrun Counter */
-#define XEMACPS_RXIPCCNT_OFFSET      0x000001A8 /* IP header Checksum Error
+#define XEMACPS_RXRESERRCNT_OFFSET	0x000001A0 /* Receive Resource Error
 						Counter */
-#define XEMACPS_RXTCPCCNT_OFFSET     0x000001AC /* TCP Checksum Error
+#define XEMACPS_RXORCNT_OFFSET		0x000001A4 /* Receive Overrun */
+#define XEMACPS_RXIPCCNT_OFFSET		0x000001A8 /* IP header Checksum Error
 						Counter */
-#define XEMACPS_RXUDPCCNT_OFFSET     0x000001B0 /* UDP Checksum Error
+#define XEMACPS_RXTCPCCNT_OFFSET	0x000001AC /* TCP Checksum Error
+						Counter */
+#define XEMACPS_RXUDPCCNT_OFFSET	0x000001B0 /* UDP Checksum Error
 						Counter */
 
-#define XEMACPS_1588S_OFFSET         0x000001D0 /* 1588 Timer Seconds */
-#define XEMACPS_1588NS_OFFSET        0x000001D4 /* 1588 Timer Nanoseconds */
-#define XEMACPS_1588ADJ_OFFSET       0x000001D8 /* 1588 Timer Adjust */
-#define XEMACPS_1588INC_OFFSET       0x000001DC /* 1588 Timer Increment */
-#define XEMACPS_PTPETXS_OFFSET       0x000001E0 /* PTP Event Frame
+#define XEMACPS_1588S_OFFSET		0x000001D0 /* 1588 Timer Seconds */
+#define XEMACPS_1588NS_OFFSET		0x000001D4 /* 1588 Timer Nanoseconds */
+#define XEMACPS_1588ADJ_OFFSET		0x000001D8 /* 1588 Timer Adjust */
+#define XEMACPS_1588INC_OFFSET		0x000001DC /* 1588 Timer Increment */
+#define XEMACPS_PTPETXS_OFFSET		0x000001E0 /* PTP Event Frame
 						Transmitted Seconds */
-#define XEMACPS_PTPETXNS_OFFSET      0x000001E4 /* PTP Event Frame
+#define XEMACPS_PTPETXNS_OFFSET		0x000001E4 /* PTP Event Frame
 						Transmitted Nanoseconds */
-#define XEMACPS_PTPERXS_OFFSET       0x000001E8 /* PTP Event Frame Received
+#define XEMACPS_PTPERXS_OFFSET		0x000001E8 /* PTP Event Frame Received
 						Seconds */
-#define XEMACPS_PTPERXNS_OFFSET      0x000001EC /* PTP Event Frame Received
+#define XEMACPS_PTPERXNS_OFFSET		0x000001EC /* PTP Event Frame Received
 						Nanoseconds */
-#define XEMACPS_PTPPTXS_OFFSET       0x000001E0 /* PTP Peer Frame
+#define XEMACPS_PTPPTXS_OFFSET		0x000001E0 /* PTP Peer Frame
 						Transmitted Seconds */
-#define XEMACPS_PTPPTXNS_OFFSET      0x000001E4 /* PTP Peer Frame
+#define XEMACPS_PTPPTXNS_OFFSET		0x000001E4 /* PTP Peer Frame
 						Transmitted Nanoseconds */
-#define XEMACPS_PTPPRXS_OFFSET       0x000001E8 /* PTP Peer Frame Received
+#define XEMACPS_PTPPRXS_OFFSET		0x000001E8 /* PTP Peer Frame Received
 						Seconds */
-#define XEMACPS_PTPPRXNS_OFFSET      0x000001EC /* PTP Peer Frame Received
+#define XEMACPS_PTPPRXNS_OFFSET		0x000001EC /* PTP Peer Frame Received
 						Nanoseconds */
 
 /* network control register bit definitions */
-#define XEMACPS_NWCTRL_RXTSTAMP_MASK    0x00008000 /* RX Timestamp in CRC */
-#define XEMACPS_NWCTRL_ZEROPAUSETX_MASK 0x00001000 /* Transmit zero quantum
+#define XEMACPS_NWCTRL_RXTSTAMP_MASK	0x00008000 /* RX Timestamp in CRC */
+#define XEMACPS_NWCTRL_ZEROPAUSETX_MASK	0x00001000 /* Transmit zero quantum
 						pause frame */
-#define XEMACPS_NWCTRL_PAUSETX_MASK     0x00000800 /* Transmit pause frame */
-#define XEMACPS_NWCTRL_HALTTX_MASK      0x00000400 /* Halt transmission
+#define XEMACPS_NWCTRL_PAUSETX_MASK	0x00000800 /* Transmit pause frame */
+#define XEMACPS_NWCTRL_HALTTX_MASK	0x00000400 /* Halt transmission
 						after current frame */
-#define XEMACPS_NWCTRL_STARTTX_MASK     0x00000200 /* Start tx (tx_go) */
+#define XEMACPS_NWCTRL_STARTTX_MASK	0x00000200 /* Start tx (tx_go) */
 
-#define XEMACPS_NWCTRL_STATWEN_MASK     0x00000080 /* Enable writing to
+#define XEMACPS_NWCTRL_STATWEN_MASK	0x00000080 /* Enable writing to
 						stat counters */
-#define XEMACPS_NWCTRL_STATINC_MASK     0x00000040 /* Increment statistic
+#define XEMACPS_NWCTRL_STATINC_MASK	0x00000040 /* Increment statistic
 						registers */
-#define XEMACPS_NWCTRL_STATCLR_MASK     0x00000020 /* Clear statistic
+#define XEMACPS_NWCTRL_STATCLR_MASK	0x00000020 /* Clear statistic
 						registers */
-#define XEMACPS_NWCTRL_MDEN_MASK        0x00000010 /* Enable MDIO port */
-#define XEMACPS_NWCTRL_TXEN_MASK        0x00000008 /* Enable transmit */
-#define XEMACPS_NWCTRL_RXEN_MASK        0x00000004 /* Enable receive */
-#define XEMACPS_NWCTRL_LOOPEN_MASK      0x00000002 /* local loopback */
+#define XEMACPS_NWCTRL_MDEN_MASK	0x00000010 /* Enable MDIO port */
+#define XEMACPS_NWCTRL_TXEN_MASK	0x00000008 /* Enable transmit */
+#define XEMACPS_NWCTRL_RXEN_MASK	0x00000004 /* Enable receive */
+#define XEMACPS_NWCTRL_LOOPEN_MASK	0x00000002 /* local loopback */
 
 /* name network configuration register bit definitions */
-#define XEMACPS_NWCFG_BADPREAMBEN_MASK 0x20000000 /* disable rejection of
+#define XEMACPS_NWCFG_BADPREAMBEN_MASK	0x20000000 /* disable rejection of
 						non-standard preamble */
-#define XEMACPS_NWCFG_IPDSTRETCH_MASK  0x10000000 /* enable transmit IPG */
-#define XEMACPS_NWCFG_FCSIGNORE_MASK   0x04000000 /* disable rejection of
+#define XEMACPS_NWCFG_IPDSTRETCH_MASK	0x10000000 /* enable transmit IPG */
+#define XEMACPS_NWCFG_FCSIGNORE_MASK	0x04000000 /* disable rejection of
 						FCS error */
-#define XEMACPS_NWCFG_HDRXEN_MASK      0x02000000 /* RX half duplex */
-#define XEMACPS_NWCFG_RXCHKSUMEN_MASK  0x01000000 /* enable RX checksum
+#define XEMACPS_NWCFG_HDRXEN_MASK	0x02000000 /* RX half duplex */
+#define XEMACPS_NWCFG_RXCHKSUMEN_MASK	0x01000000 /* enable RX checksum
 						offload */
-#define XEMACPS_NWCFG_PAUSECOPYDI_MASK 0x00800000 /* Do not copy pause
+#define XEMACPS_NWCFG_PAUSECOPYDI_MASK	0x00800000 /* Do not copy pause
 						Frames to memory */
-#define XEMACPS_NWCFG_MDC_SHIFT_MASK   18         /* shift bits for MDC */
-#define XEMACPS_NWCFG_MDCCLKDIV_MASK   0x001C0000 /* MDC Mask PCLK divisor */
-#define XEMACPS_NWCFG_FCSREM_MASK      0x00020000 /* Discard FCS from
+#define XEMACPS_NWCFG_MDC_SHIFT_MASK	18 /* shift bits for MDC */
+#define XEMACPS_NWCFG_MDCCLKDIV_MASK	0x001C0000 /* MDC Mask PCLK divisor */
+#define XEMACPS_NWCFG_FCSREM_MASK	0x00020000 /* Discard FCS from
 						received frames */
 #define XEMACPS_NWCFG_LENGTHERRDSCRD_MASK 0x00010000
 /* RX length error discard */
-#define XEMACPS_NWCFG_RXOFFS_MASK      0x0000C000 /* RX buffer offset */
-#define XEMACPS_NWCFG_PAUSEEN_MASK     0x00002000 /* Enable pause TX */
-#define XEMACPS_NWCFG_RETRYTESTEN_MASK 0x00001000 /* Retry test */
-#define XEMACPS_NWCFG_1000_MASK        0x00000400 /* Gigbit mode */
-#define XEMACPS_NWCFG_EXTADDRMATCHEN_MASK 0x00000200
+#define XEMACPS_NWCFG_RXOFFS_MASK	0x0000C000 /* RX buffer offset */
+#define XEMACPS_NWCFG_PAUSEEN_MASK	0x00002000 /* Enable pause TX */
+#define XEMACPS_NWCFG_RETRYTESTEN_MASK	0x00001000 /* Retry test */
+#define XEMACPS_NWCFG_1000_MASK		0x00000400 /* Gigbit mode */
+#define XEMACPS_NWCFG_EXTADDRMATCHEN_MASK	0x00000200
 /* External address match enable */
-#define XEMACPS_NWCFG_1536RXEN_MASK    0x00000100 /* Enable 1536 byte
-						frames reception */
-#define XEMACPS_NWCFG_UCASTHASHEN_MASK 0x00000080 /* Receive unicast hash
+#define XEMACPS_NWCFG_UCASTHASHEN_MASK	0x00000080 /* Receive unicast hash
 						frames */
-#define XEMACPS_NWCFG_MCASTHASHEN_MASK 0x00000040 /* Receive multicast hash
+#define XEMACPS_NWCFG_MCASTHASHEN_MASK	0x00000040 /* Receive multicast hash
 						frames */
-#define XEMACPS_NWCFG_BCASTDI_MASK     0x00000020 /* Do not receive
+#define XEMACPS_NWCFG_BCASTDI_MASK	0x00000020 /* Do not receive
 						broadcast frames */
-#define XEMACPS_NWCFG_COPYALLEN_MASK   0x00000010 /* Copy all frames */
+#define XEMACPS_NWCFG_COPYALLEN_MASK	0x00000010 /* Copy all frames */
 
-#define XEMACPS_NWCFG_NVLANDISC_MASK   0x00000004 /* Receive only VLAN
+#define XEMACPS_NWCFG_NVLANDISC_MASK	0x00000004 /* Receive only VLAN
 						frames */
-#define XEMACPS_NWCFG_FDEN_MASK        0x00000002 /* Full duplex */
-#define XEMACPS_NWCFG_100_MASK         0x00000001 /* 10 or 100 Mbs */
+#define XEMACPS_NWCFG_FDEN_MASK		0x00000002 /* Full duplex */
+#define XEMACPS_NWCFG_100_MASK		0x00000001 /* 10 or 100 Mbs */
 
 /* network status register bit definitaions */
-#define XEMACPS_NWSR_MDIOIDLE_MASK     0x00000004 /* PHY management idle */
-#define XEMACPS_NWSR_MDIO_MASK         0x00000002 /* Status of mdio_in */
+#define XEMACPS_NWSR_MDIOIDLE_MASK	0x00000004 /* PHY management idle */
+#define XEMACPS_NWSR_MDIO_MASK		0x00000002 /* Status of mdio_in */
 
 /* MAC address register word 1 mask */
-#define XEMACPS_LADDR_MACH_MASK        0x0000FFFF /* Address bits[47:32]
+#define XEMACPS_LADDR_MACH_MASK		0x0000FFFF /* Address bits[47:32]
 						bit[31:0] are in BOTTOM */
 
 /* DMA control register bit definitions */
-#define XEMACPS_DMACR_RXBUF_MASK     0x00FF0000 /* Mask bit for RX buffer
+#define XEMACPS_DMACR_RXBUF_MASK	0x00FF0000 /* Mask bit for RX buffer
 						size */
-#define XEMACPS_DMACR_RXBUF_SHIFT    16         /* Shift bit for RX buffer
+#define XEMACPS_DMACR_RXBUF_SHIFT	16 /* Shift bit for RX buffer
 						size */
-#define XEMACPS_DMACR_TCPCKSUM_MASK  0x00000800 /* enable/disable TX
+#define XEMACPS_DMACR_TCPCKSUM_MASK	0x00000800 /* enable/disable TX
 						checksum offload */
-#define XEMACPS_DMACR_TXSIZE_MASK    0x00000400 /* TX buffer memory size */
-#define XEMACPS_DMACR_RXSIZE_MASK    0x00000300 /* RX buffer memory size */
-#define XEMACPS_DMACR_ENDIAN_MASK    0x00000080 /* Endian configuration */
-#define XEMACPS_DMACR_BLENGTH_MASK   0x0000001F /* Buffer burst length */
-#define XEMACPS_DMACR_BLENGTH_INCR16 0x00000010 /* Buffer burst length */
-#define XEMACPS_DMACR_BLENGTH_INCR8  0x00000008 /* Buffer burst length */
-#define XEMACPS_DMACR_BLENGTH_INCR4  0x00000004 /* Buffer burst length */
-#define XEMACPS_DMACR_BLENGTH_SINGLE 0x00000002 /* Buffer burst length */
+#define XEMACPS_DMACR_TXSIZE_MASK	0x00000400 /* TX buffer memory size */
+#define XEMACPS_DMACR_RXSIZE_MASK	0x00000300 /* RX buffer memory size */
+#define XEMACPS_DMACR_ENDIAN_MASK	0x00000080 /* Endian configuration */
+#define XEMACPS_DMACR_BLENGTH_MASK	0x0000001F /* Buffer burst length */
+#define XEMACPS_DMACR_BLENGTH_INCR16	0x00000010 /* Buffer burst length */
+#define XEMACPS_DMACR_BLENGTH_INCR8	0x00000008 /* Buffer burst length */
+#define XEMACPS_DMACR_BLENGTH_INCR4	0x00000004 /* Buffer burst length */
+#define XEMACPS_DMACR_BLENGTH_SINGLE	0x00000002 /* Buffer burst length */
 
 /* transmit status register bit definitions */
-#define XEMACPS_TXSR_HRESPNOK_MASK   0x00000100 /* Transmit hresp not OK */
-#define XEMACPS_TXSR_COL1000_MASK    0x00000080 /* Collision Gbs mode */
-#define XEMACPS_TXSR_URUN_MASK       0x00000040 /* Transmit underrun */
-#define XEMACPS_TXSR_TXCOMPL_MASK    0x00000020 /* Transmit completed OK */
-#define XEMACPS_TXSR_BUFEXH_MASK     0x00000010 /* Transmit buffs exhausted
+#define XEMACPS_TXSR_HRESPNOK_MASK	0x00000100 /* Transmit hresp not OK */
+#define XEMACPS_TXSR_COL1000_MASK	0x00000080 /* Collision Gbs mode */
+#define XEMACPS_TXSR_URUN_MASK		0x00000040 /* Transmit underrun */
+#define XEMACPS_TXSR_TXCOMPL_MASK	0x00000020 /* Transmit completed OK */
+#define XEMACPS_TXSR_BUFEXH_MASK	0x00000010 /* Transmit buffs exhausted
 						mid frame */
-#define XEMACPS_TXSR_TXGO_MASK       0x00000008 /* Status of go flag */
-#define XEMACPS_TXSR_RXOVR_MASK      0x00000004 /* Retry limit exceeded */
-#define XEMACPS_TXSR_COL100_MASK     0x00000002 /* Collision 10/100  mode */
-#define XEMACPS_TXSR_USEDREAD_MASK   0x00000001 /* TX buffer used bit set */
+#define XEMACPS_TXSR_TXGO_MASK		0x00000008 /* Status of go flag */
+#define XEMACPS_TXSR_RXOVR_MASK		0x00000004 /* Retry limit exceeded */
+#define XEMACPS_TXSR_COL100_MASK	0x00000002 /* Collision 10/100  mode */
+#define XEMACPS_TXSR_USEDREAD_MASK	0x00000001 /* TX buffer used bit set */
 
-#define XEMACPS_TXSR_ERROR_MASK	(XEMACPS_TXSR_HRESPNOK_MASK | \
-					XEMACPS_TXSR_COL1000_MASK | \
-					XEMACPS_TXSR_URUN_MASK |   \
-					XEMACPS_TXSR_BUFEXH_MASK | \
-					XEMACPS_TXSR_RXOVR_MASK |  \
-					XEMACPS_TXSR_COL100_MASK | \
+#define XEMACPS_TXSR_ERROR_MASK	(XEMACPS_TXSR_HRESPNOK_MASK |		\
+					XEMACPS_TXSR_COL1000_MASK |	\
+					XEMACPS_TXSR_URUN_MASK |	\
+					XEMACPS_TXSR_BUFEXH_MASK |	\
+					XEMACPS_TXSR_RXOVR_MASK |	\
+					XEMACPS_TXSR_COL100_MASK |	\
 					XEMACPS_TXSR_USEDREAD_MASK)
 
 /* receive status register bit definitions */
-#define XEMACPS_RXSR_HRESPNOK_MASK   0x00000008 /* Receive hresp not OK */
-#define XEMACPS_RXSR_RXOVR_MASK      0x00000004 /* Receive overrun */
-#define XEMACPS_RXSR_FRAMERX_MASK    0x00000002 /* Frame received OK */
-#define XEMACPS_RXSR_BUFFNA_MASK     0x00000001 /* RX buffer used bit set */
+#define XEMACPS_RXSR_HRESPNOK_MASK	0x00000008 /* Receive hresp not OK */
+#define XEMACPS_RXSR_RXOVR_MASK		0x00000004 /* Receive overrun */
+#define XEMACPS_RXSR_FRAMERX_MASK	0x00000002 /* Frame received OK */
+#define XEMACPS_RXSR_BUFFNA_MASK	0x00000001 /* RX buffer used bit set */
 
 #define XEMACPS_RXSR_ERROR_MASK	(XEMACPS_RXSR_HRESPNOK_MASK | \
 					XEMACPS_RXSR_RXOVR_MASK | \
@@ -359,59 +354,64 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
  * Bits definitions are same in XEMACPS_ISR_OFFSET,
  * XEMACPS_IER_OFFSET, XEMACPS_IDR_OFFSET, and XEMACPS_IMR_OFFSET
  */
-#define XEMACPS_IXR_PTPPSTX_MASK    0x02000000	/* PTP Psync transmitted */
-#define XEMACPS_IXR_PTPPDRTX_MASK   0x01000000	/* PTP Pdelay_req transmitted */
-#define XEMACPS_IXR_PTPSTX_MASK     0x00800000	/* PTP Sync transmitted */
-#define XEMACPS_IXR_PTPDRTX_MASK    0x00400000	/* PTP Delay_req transmitted */
-#define XEMACPS_IXR_PTPPSRX_MASK    0x00200000	/* PTP Psync received */
-#define XEMACPS_IXR_PTPPDRRX_MASK   0x00100000	/* PTP Pdelay_req received */
-#define XEMACPS_IXR_PTPSRX_MASK     0x00080000	/* PTP Sync received */
-#define XEMACPS_IXR_PTPDRRX_MASK    0x00040000	/* PTP Delay_req received */
-#define XEMACPS_IXR_PAUSETX_MASK    0x00004000	/* Pause frame transmitted */
-#define XEMACPS_IXR_PAUSEZERO_MASK  0x00002000	/* Pause time has reached
-						zero */
-#define XEMACPS_IXR_PAUSENZERO_MASK 0x00001000	/* Pause frame received */
-#define XEMACPS_IXR_HRESPNOK_MASK   0x00000800	/* hresp not ok */
-#define XEMACPS_IXR_RXOVR_MASK      0x00000400	/* Receive overrun occurred */
-#define XEMACPS_IXR_TXCOMPL_MASK    0x00000080	/* Frame transmitted ok */
-#define XEMACPS_IXR_TXEXH_MASK      0x00000040	/* Transmit err occurred or
-						no buffers*/
-#define XEMACPS_IXR_RETRY_MASK      0x00000020	/* Retry limit exceeded */
-#define XEMACPS_IXR_URUN_MASK       0x00000010	/* Transmit underrun */
-#define XEMACPS_IXR_TXUSED_MASK     0x00000008	/* Tx buffer used bit read */
-#define XEMACPS_IXR_RXUSED_MASK     0x00000004	/* Rx buffer used bit read */
-#define XEMACPS_IXR_FRAMERX_MASK    0x00000002	/* Frame received ok */
-#define XEMACPS_IXR_MGMNT_MASK      0x00000001	/* PHY management complete */
-#define XEMACPS_IXR_ALL_MASK        0x03FC7FFF	/* Everything! */
+#define XEMACPS_IXR_PTPPSTX_MASK	0x02000000 /* PTP Psync transmitted */
+#define XEMACPS_IXR_PTPPDRTX_MASK	0x01000000 /* PTP Pdelay_req
+							transmitted */
+#define XEMACPS_IXR_PTPSTX_MASK		0x00800000 /* PTP Sync transmitted */
+#define XEMACPS_IXR_PTPDRTX_MASK	0x00400000 /* PTP Delay_req
+							transmitted */
+#define XEMACPS_IXR_PTPPSRX_MASK	0x00200000 /* PTP Psync received */
+#define XEMACPS_IXR_PTPPDRRX_MASK	0x00100000 /* PTP Pdelay_req
+							received */
+#define XEMACPS_IXR_PTPSRX_MASK		0x00080000 /* PTP Sync received */
+#define XEMACPS_IXR_PTPDRRX_MASK	0x00040000 /* PTP Delay_req received */
+#define XEMACPS_IXR_PAUSETX_MASK	0x00004000 /* Pause frame
+							transmitted */
+#define XEMACPS_IXR_PAUSEZERO_MASK	0x00002000 /* Pause time has reached
+							zero */
+#define XEMACPS_IXR_PAUSENZERO_MASK	0x00001000 /* Pause frame received */
+#define XEMACPS_IXR_HRESPNOK_MASK	0x00000800 /* hresp not ok */
+#define XEMACPS_IXR_RXOVR_MASK		0x00000400 /* Receive overrun
+							occurred */
+#define XEMACPS_IXR_TXCOMPL_MASK	0x00000080 /* Frame transmitted ok */
+#define XEMACPS_IXR_TXEXH_MASK		0x00000040 /* Transmit err occurred or
+							no buffers*/
+#define XEMACPS_IXR_RETRY_MASK		0x00000020 /* Retry limit exceeded */
+#define XEMACPS_IXR_URUN_MASK		0x00000010 /* Transmit underrun */
+#define XEMACPS_IXR_TXUSED_MASK		0x00000008 /* Tx buffer used bit read */
+#define XEMACPS_IXR_RXUSED_MASK		0x00000004 /* Rx buffer used bit read */
+#define XEMACPS_IXR_FRAMERX_MASK	0x00000002 /* Frame received ok */
+#define XEMACPS_IXR_MGMNT_MASK		0x00000001 /* PHY management complete */
+#define XEMACPS_IXR_ALL_MASK		0x03FC7FFF /* Everything! */
 
-#define XEMACPS_IXR_TX_ERR_MASK	(XEMACPS_IXR_TXEXH_MASK |    \
-					XEMACPS_IXR_RETRY_MASK |    \
-					XEMACPS_IXR_URUN_MASK  |    \
+#define XEMACPS_IXR_TX_ERR_MASK	(XEMACPS_IXR_TXEXH_MASK |		\
+					XEMACPS_IXR_RETRY_MASK |	\
+					XEMACPS_IXR_URUN_MASK |		\
 					XEMACPS_IXR_TXUSED_MASK)
 
-#define XEMACPS_IXR_RX_ERR_MASK	(XEMACPS_IXR_HRESPNOK_MASK | \
-					XEMACPS_IXR_RXUSED_MASK |  \
+#define XEMACPS_IXR_RX_ERR_MASK	(XEMACPS_IXR_HRESPNOK_MASK |		\
+					XEMACPS_IXR_RXUSED_MASK |	\
 					XEMACPS_IXR_RXOVR_MASK)
 /* PHY Maintenance bit definitions */
-#define XEMACPS_PHYMNTNC_OP_MASK    0x40020000	/* operation mask bits */
-#define XEMACPS_PHYMNTNC_OP_R_MASK  0x20000000	/* read operation */
-#define XEMACPS_PHYMNTNC_OP_W_MASK  0x10000000	/* write operation */
-#define XEMACPS_PHYMNTNC_ADDR_MASK  0x0F800000	/* Address bits */
-#define XEMACPS_PHYMNTNC_REG_MASK   0x007C0000	/* register bits */
-#define XEMACPS_PHYMNTNC_DATA_MASK  0x0000FFFF	/* data bits */
-#define XEMACPS_PHYMNTNC_PHYAD_SHIFT_MASK   23	/* Shift bits for PHYAD */
-#define XEMACPS_PHYMNTNC_PHREG_SHIFT_MASK   18	/* Shift bits for PHREG */
+#define XEMACPS_PHYMNTNC_OP_MASK	0x40020000 /* operation mask bits */
+#define XEMACPS_PHYMNTNC_OP_R_MASK	0x20000000 /* read operation */
+#define XEMACPS_PHYMNTNC_OP_W_MASK	0x10000000 /* write operation */
+#define XEMACPS_PHYMNTNC_ADDR_MASK	0x0F800000 /* Address bits */
+#define XEMACPS_PHYMNTNC_REG_MASK	0x007C0000 /* register bits */
+#define XEMACPS_PHYMNTNC_DATA_MASK	0x0000FFFF /* data bits */
+#define XEMACPS_PHYMNTNC_PHYAD_SHIFT_MASK	23 /* Shift bits for PHYAD */
+#define XEMACPS_PHYMNTNC_PHREG_SHIFT_MASK	18 /* Shift bits for PHREG */
 
 /* Wake on LAN bit definition */
-#define XEMACPS_WOL_MCAST_MASK      0x00080000
-#define XEMACPS_WOL_SPEREG1_MASK    0x00040000
-#define XEMACPS_WOL_ARP_MASK        0x00020000
-#define XEMACPS_WOL_MAGIC_MASK      0x00010000
-#define XEMACPS_WOL_ARP_ADDR_MASK   0x0000FFFF
+#define XEMACPS_WOL_MCAST_MASK		0x00080000
+#define XEMACPS_WOL_SPEREG1_MASK	0x00040000
+#define XEMACPS_WOL_ARP_MASK		0x00020000
+#define XEMACPS_WOL_MAGIC_MASK		0x00010000
+#define XEMACPS_WOL_ARP_ADDR_MASK	0x0000FFFF
 
 /* Buffer descriptor status words offset */
-#define XEMACPS_BD_ADDR_OFFSET     0x00000000 /**< word 0/addr of BDs */
-#define XEMACPS_BD_STAT_OFFSET     0x00000004 /**< word 1/status of BDs */
+#define XEMACPS_BD_ADDR_OFFSET		0x00000000 /**< word 0/addr of BDs */
+#define XEMACPS_BD_STAT_OFFSET		0x00000004 /**< word 1/status of BDs */
 
 /* Transmit buffer descriptor status words bit positions.
  * Transmit buffer descriptor consists of two 32-bit registers,
@@ -421,17 +421,17 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
  * control transmit process.  After transmit, this is updated with status
  * information, whether the frame was transmitted OK or why it had failed.
  */
-#define XEMACPS_TXBUF_USED_MASK  0x80000000 /* Used bit. */
-#define XEMACPS_TXBUF_WRAP_MASK  0x40000000 /* Wrap bit, last descriptor */
-#define XEMACPS_TXBUF_RETRY_MASK 0x20000000 /* Retry limit exceeded */
-#define XEMACPS_TXBUF_URUN_MASK  0x10000000 /* Transmit underrun occurred */
-#define XEMACPS_TXBUF_EXH_MASK   0x08000000 /* Buffers exhausted */
-#define XEMACPS_TXBUF_LAC_MASK   0x04000000 /* Late collision. */
-#define XEMACPS_TXBUF_NOCRC_MASK 0x00010000 /* No CRC */
-#define XEMACPS_TXBUF_LAST_MASK  0x00008000 /* Last buffer */
-#define XEMACPS_TXBUF_LEN_MASK   0x00003FFF /* Mask for length field */
+#define XEMACPS_TXBUF_USED_MASK		0x80000000 /* Used bit. */
+#define XEMACPS_TXBUF_WRAP_MASK		0x40000000 /* Wrap bit, last
+							descriptor */
+#define XEMACPS_TXBUF_RETRY_MASK	0x20000000 /* Retry limit exceeded */
+#define XEMACPS_TXBUF_EXH_MASK		0x08000000 /* Buffers exhausted */
+#define XEMACPS_TXBUF_LAC_MASK		0x04000000 /* Late collision. */
+#define XEMACPS_TXBUF_NOCRC_MASK	0x00010000 /* No CRC */
+#define XEMACPS_TXBUF_LAST_MASK		0x00008000 /* Last buffer */
+#define XEMACPS_TXBUF_LEN_MASK		0x00003FFF /* Mask for length field */
 
-#define XEMACPS_TXBUF_ERR_MASK   0x3C000000 /* Mask for length field */
+#define XEMACPS_TXBUF_ERR_MASK		0x3C000000 /* Mask for length field */
 
 /* Receive buffer descriptor status words bit positions.
  * Receive buffer descriptor consists of two 32-bit registers,
@@ -442,25 +442,25 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
  * the frame was received (the filter match condition) as well as other
  * useful info.
  */
-#define XEMACPS_RXBUF_BCAST_MASK     0x80000000 /* Broadcast frame */
-#define XEMACPS_RXBUF_MULTIHASH_MASK 0x40000000 /* Multicast hashed frame */
-#define XEMACPS_RXBUF_UNIHASH_MASK   0x20000000 /* Unicast hashed frame */
-#define XEMACPS_RXBUF_EXH_MASK       0x08000000 /* buffer exhausted */
-#define XEMACPS_RXBUF_AMATCH_MASK    0x06000000 /* Specific address
+#define XEMACPS_RXBUF_BCAST_MASK	0x80000000 /* Broadcast frame */
+#define XEMACPS_RXBUF_MULTIHASH_MASK	0x40000000 /* Multicast hashed frame */
+#define XEMACPS_RXBUF_UNIHASH_MASK	0x20000000 /* Unicast hashed frame */
+#define XEMACPS_RXBUF_EXH_MASK		0x08000000 /* buffer exhausted */
+#define XEMACPS_RXBUF_AMATCH_MASK	0x06000000 /* Specific address
 						matched */
-#define XEMACPS_RXBUF_IDFOUND_MASK   0x01000000 /* Type ID matched */
-#define XEMACPS_RXBUF_IDMATCH_MASK   0x00C00000 /* ID matched mask */
-#define XEMACPS_RXBUF_VLAN_MASK      0x00200000 /* VLAN tagged */
-#define XEMACPS_RXBUF_PRI_MASK       0x00100000 /* Priority tagged */
-#define XEMACPS_RXBUF_VPRI_MASK      0x000E0000 /* Vlan priority */
-#define XEMACPS_RXBUF_CFI_MASK       0x00010000 /* CFI frame */
-#define XEMACPS_RXBUF_EOF_MASK       0x00008000 /* End of frame. */
-#define XEMACPS_RXBUF_SOF_MASK       0x00004000 /* Start of frame. */
-#define XEMACPS_RXBUF_LEN_MASK       0x00003FFF /* Mask for length field */
+#define XEMACPS_RXBUF_IDFOUND_MASK	0x01000000 /* Type ID matched */
+#define XEMACPS_RXBUF_IDMATCH_MASK	0x00C00000 /* ID matched mask */
+#define XEMACPS_RXBUF_VLAN_MASK		0x00200000 /* VLAN tagged */
+#define XEMACPS_RXBUF_PRI_MASK		0x00100000 /* Priority tagged */
+#define XEMACPS_RXBUF_VPRI_MASK		0x000E0000 /* Vlan priority */
+#define XEMACPS_RXBUF_CFI_MASK		0x00010000 /* CFI frame */
+#define XEMACPS_RXBUF_EOF_MASK		0x00008000 /* End of frame. */
+#define XEMACPS_RXBUF_SOF_MASK		0x00004000 /* Start of frame. */
+#define XEMACPS_RXBUF_LEN_MASK		0x00003FFF /* Mask for length field */
 
-#define XEMACPS_RXBUF_WRAP_MASK      0x00000002 /* Wrap bit, last BD */
-#define XEMACPS_RXBUF_NEW_MASK       0x00000001 /* Used bit.. */
-#define XEMACPS_RXBUF_ADD_MASK       0xFFFFFFFC /* Mask for address */
+#define XEMACPS_RXBUF_WRAP_MASK		0x00000002 /* Wrap bit, last BD */
+#define XEMACPS_RXBUF_NEW_MASK		0x00000001 /* Used bit.. */
+#define XEMACPS_RXBUF_ADD_MASK		0xFFFFFFFC /* Mask for address */
 
 
 #define XSLCR_EMAC0_CLK_CTRL_OFFSET	0x140 /* EMAC0 Reference Clk Control */
@@ -477,13 +477,14 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
 #define XEMACPS_SLCR_DIV_MASK		0xFC0FC0FF
 
 #ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
-#define NS_PER_SEC 	1000000000ULL	/* Nanoseconds per second */
-#define PEEP_TSU_CLK  	50000000ULL	/* PTP TSU CLOCK */
+#define NS_PER_SEC			1000000000ULL /* Nanoseconds per
+							second */
+#define PEEP_TSU_CLK			50000000ULL /* PTP TSU CLOCK */
 #endif
 
-#define xemacps_read(base, reg)	\
+#define xemacps_read(base, reg)						\
 	__raw_readl((u32)(base) + (u32)(reg))
-#define xemacps_write(base, reg, val)	\
+#define xemacps_write(base, reg, val)					\
 	__raw_writel((val), (u32)(base) + (u32)(reg))
 
 #define XEMACPS_RING_SEEKAHEAD(ringptr, bdptr, numbd)			\
@@ -526,7 +527,7 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
 
 struct ring_info {
 	struct sk_buff *skb;
-	dma_addr_t     mapping;
+	dma_addr_t mapping;
 };
 
 /* DMA buffer descriptor structure. Each BD is two words */
@@ -537,78 +538,74 @@ struct xemacps_bd {
 
 /* This is an internal structure used to maintain the DMA list */
 struct xemacps_bdring {
-	u32 physbaseaddr;    /* Physical address of 1st BD in list */
-	u32 firstbdaddr;     /* Virtual address of 1st BD in list */
-	u32 lastbdaddr;      /* Virtual address of last BD in the list */
-	u32 length;          /* size of ring in bytes */
-	u32 separation;      /* Number of bytes between the starting
+	u32 physbaseaddr; /* Physical address of 1st BD in list */
+	u32 firstbdaddr; /* Virtual address of 1st BD in list */
+	u32 lastbdaddr; /* Virtual address of last BD in the list */
+	u32 length; /* size of ring in bytes */
+	u32 separation; /* Number of bytes between the starting
 				address of adjacent BDs */
 	struct xemacps_bd *freehead; /* First BD in the free group */
-	struct xemacps_bd *prehead;  /* First BD in the pre-work group */
-	struct xemacps_bd *hwhead;   /* First BD in the work group */
-	struct xemacps_bd *hwtail;   /* Last BD in the work group */
+	struct xemacps_bd *prehead; /* First BD in the pre-work group */
+	struct xemacps_bd *hwhead; /* First BD in the work group */
+	struct xemacps_bd *hwtail; /* Last BD in the work group */
 	struct xemacps_bd *posthead; /* First BD in the post-work group */
-	unsigned freecnt;    /* Number of BDs in the free group */
-	unsigned hwcnt;      /* Number of BDs in work group */
-	unsigned precnt;     /* Number of BDs in pre-work group */
-	unsigned postcnt;    /* Number of BDs in post-work group */
-	unsigned allcnt;     /* Total Number of BDs for channel */
+	unsigned freecnt; /* Number of BDs in the free group */
+	unsigned hwcnt; /* Number of BDs in work group */
+	unsigned precnt; /* Number of BDs in pre-work group */
+	unsigned postcnt; /* Number of BDs in post-work group */
+	unsigned allcnt; /* Total Number of BDs for channel */
 
-	int is_rx;           /* Is this an RX or a TX ring? */
+	int is_rx; /* Is this an RX or a TX ring? */
 };
 
 /* Our private device data. */
 struct net_local {
-	void   __iomem         *baseaddr;
+	void __iomem *baseaddr;
+	struct clk *devclk;
+	struct clk *aperclk;
+	struct notifier_block clk_rate_change_nb;
+
 	struct xemacps_bdring tx_ring;
 	struct xemacps_bdring rx_ring;
-#ifdef CONFIG_OF
 	struct device_node *phy_node;
-#endif
-	struct ring_info       *tx_skb;
-	struct ring_info       *rx_skb;
+	struct ring_info *tx_skb;
+	struct ring_info *rx_skb;
 
-	void                   *rx_bd;        /* virtual address */
-	void                   *tx_bd;        /* virtual address */
+	void *rx_bd; /* virtual address */
+	void *tx_bd; /* virtual address */
 
-	dma_addr_t             rx_bd_dma;     /* physical address */
-	dma_addr_t             tx_bd_dma;     /* physical address */
+	dma_addr_t rx_bd_dma; /* physical address */
+	dma_addr_t tx_bd_dma; /* physical address */
 
-	spinlock_t             lock;
+	spinlock_t lock;
 
 	struct platform_device *pdev;
-	struct net_device      *ndev;   /* this device */
+	struct net_device *ndev; /* this device */
 
-	struct napi_struct     napi;    /* napi information for device */
-	struct net_device_stats stats;  /* Statistics for this device */
+	struct napi_struct napi; /* napi information for device */
+	struct net_device_stats stats; /* Statistics for this device */
 
 	/* Manage internal timer for packet timestamping */
-	struct cyclecounter    cycles;
-	struct timecounter     clock;
-	struct timecompare     compare;
+	struct cyclecounter cycles;
+	struct timecounter clock;
+	struct timecompare compare;
 	struct hwtstamp_config hwtstamp_config;
 
-	struct mii_bus         *mii_bus;
-	struct phy_device      *phy_dev;
-	unsigned int           link;
-	unsigned int           speed;
-	unsigned int           duplex;
+	struct mii_bus *mii_bus;
+	struct phy_device *phy_dev;
+	unsigned int link;
+	unsigned int speed;
+	unsigned int duplex;
 	/* RX ip/tcp/udp checksum */
-	unsigned               ip_summed;
-#ifdef CONFIG_OF
-	unsigned int	       enetnum;
-	unsigned int 	       board_type;
-	unsigned int 	       slcr_div0_1000Mbps;
-	unsigned int 	       slcr_div1_1000Mbps;
-	unsigned int 	       slcr_div0_100Mbps;
-	unsigned int 	       slcr_div1_100Mbps;
-	unsigned int 	       slcr_div0_10Mbps;
-	unsigned int 	       slcr_div1_10Mbps;
+	unsigned ip_summed;
+	unsigned int enetnum;
+	unsigned int board_type;
 #ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
-	unsigned int 	       ptpenetclk;
-#endif
+	unsigned int ptpenetclk;
 #endif
 };
+#define to_net_local(_nb)	container_of(_nb, struct net_local,\
+		clk_rate_change_nb)
 
 static struct net_device_ops netdev_ops;
 
@@ -721,14 +718,15 @@ static void xemacps_phy_init(struct net_device *ndev)
 	for (i = 0; i < 10; i++)
 		mdelay(500);
 #ifdef DEBUG_VERBOSE
-	printk(KERN_INFO "GEM: phy register dump, start from 0, four in a row.");
+	dev_dbg(&lp->pdev->dev,
+			"phy register dump, start from 0, four in a row.");
 	for (i = 0; i <= 30; i++) {
 		if (!(i%4))
-			printk("\n %02d:  ", i);
+			dev_dbg(&lp->pdev->dev, "\n %02d:  ", i);
 		regval = xemacps_mdio_read(lp->mii_bus, lp->phy_dev->addr, i);
-		printk(" 0x%08x", regval);
+		dev_dbg(&lp->pdev->dev, " 0x%08x", regval);
 	}
-	printk("\n");
+	dev_dbg(&lp->pdev->dev, "\n");
 #endif
 }
 
@@ -745,23 +743,13 @@ static void xemacps_adjust_link(struct net_device *ndev)
 	unsigned long flags;
 	int status_change = 0;
 	u32 regval;
-	u32 regval1;
-	u32 slcroffset;
+	long rate;
 
 	spin_lock_irqsave(&lp->lock, flags);
-	if (lp->enetnum == 0) {
-		regval1 = xslcr_read(XSLCR_EMAC0_CLK_CTRL_OFFSET);
-		regval1 &= XEMACPS_SLCR_DIV_MASK;
-		slcroffset = XSLCR_EMAC0_CLK_CTRL_OFFSET;
-	} else {
-		regval1 = xslcr_read(XSLCR_EMAC1_CLK_CTRL_OFFSET);
-		regval1 &= XEMACPS_SLCR_DIV_MASK;
-		slcroffset = XSLCR_EMAC1_CLK_CTRL_OFFSET;
-	}
 
 	if (phydev->link) {
 		if ((lp->speed != phydev->speed) ||
-		    (lp->duplex != phydev->duplex)) {
+			(lp->duplex != phydev->duplex)) {
 			regval = xemacps_read(lp->baseaddr,
 				XEMACPS_NWCFG_OFFSET);
 			if (phydev->duplex)
@@ -771,24 +759,35 @@ static void xemacps_adjust_link(struct net_device *ndev)
 
 			if (phydev->speed == SPEED_1000) {
 				regval |= XEMACPS_NWCFG_1000_MASK;
-				regval1 |= ((lp->slcr_div1_1000Mbps) << 20);
-				regval1 |= ((lp->slcr_div0_1000Mbps) << 8);
-				xslcr_write(slcroffset, regval1);
-			} else
+				rate = clk_round_rate(lp->devclk, 125000000);
+				dev_info(&lp->pdev->dev, "Set clk to %ld Hz\n",
+						rate);
+				if (clk_set_rate(lp->devclk, rate))
+					dev_err(&lp->pdev->dev,
+					"Setting new clock rate failed.\n");
+			} else {
 				regval &= ~XEMACPS_NWCFG_1000_MASK;
+			}
 
 			if (phydev->speed == SPEED_100) {
 				regval |= XEMACPS_NWCFG_100_MASK;
-				regval1 |= ((lp->slcr_div1_100Mbps) << 20);
-				regval1 |= ((lp->slcr_div0_100Mbps) << 8);
-				xslcr_write(slcroffset, regval1);
-			} else
+				rate = clk_round_rate(lp->devclk, 25000000);
+				dev_info(&lp->pdev->dev, "Set clk to %ld Hz\n",
+						rate);
+				if (clk_set_rate(lp->devclk, rate))
+					dev_err(&lp->pdev->dev,
+					"Setting new clock rate failed.\n");
+			} else {
 				regval &= ~XEMACPS_NWCFG_100_MASK;
+			}
 
 			if (phydev->speed == SPEED_10) {
-				regval1 |= ((lp->slcr_div1_10Mbps) << 20);
-				regval1 |= ((lp->slcr_div0_10Mbps) << 8);
-				xslcr_write(slcroffset, regval1);
+				rate = clk_round_rate(lp->devclk, 2500000);
+				dev_info(&lp->pdev->dev, "Set clk to %ld Hz\n",
+						rate);
+				if (clk_set_rate(lp->devclk, rate))
+					dev_err(&lp->pdev->dev,
+					"Setting new clock rate failed.\n");
 			}
 
 			xemacps_write(lp->baseaddr, XEMACPS_NWCFG_OFFSET,
@@ -808,14 +807,43 @@ static void xemacps_adjust_link(struct net_device *ndev)
 	spin_unlock_irqrestore(&lp->lock, flags);
 
 	if (status_change) {
-		if (phydev->link) {
-			printk(KERN_INFO "%s: link up (%d/%s)\n",
-				ndev->name, phydev->speed,
+		if (phydev->link)
+			dev_info(&lp->pdev->dev, "link up (%d/%s)\n",
+				phydev->speed,
 				DUPLEX_FULL == phydev->duplex ?
 				"FULL" : "HALF");
-		} else {
-			printk(KERN_INFO "%s: link down\n", ndev->name);
-		}
+		else
+			dev_info(&lp->pdev->dev, "link down\n");
+	}
+}
+
+static int xemacps_clk_notifier_cb(struct notifier_block *nb, unsigned long
+		event, void *data)
+{
+/*
+	struct clk_notifier_data *ndata = data;
+	struct net_local *nl = to_net_local(nb);
+*/
+
+	switch (event) {
+	case PRE_RATE_CHANGE:
+		/* if a rate change is announced we need to check whether we can
+		 * maintain the current frequency by changing the clock
+		 * dividers.
+		 * I don't see how this can be done using the current fmwk!?
+		 * For now we always allow the rate change. Otherwise we would
+		 * even prevent ourself to change the rate.
+		 */
+		return NOTIFY_OK;
+	case POST_RATE_CHANGE:
+		/* not sure this will work. actually i'm sure it does not. this
+		 * callback is not allowed to call back into COMMON_CLK, what
+		 * adjust_link() does...*/
+		/*xemacps_adjust_link(nl->ndev); would likely lock up kernel */
+		return NOTIFY_OK;
+	case ABORT_RATE_CHANGE:
+	default:
+		return NOTIFY_DONE;
 	}
 }
 
@@ -829,11 +857,7 @@ static int xemacps_mii_probe(struct net_device *ndev)
 {
 	struct net_local *lp = netdev_priv(ndev);
 	struct phy_device *phydev = NULL;
-#ifndef CONFIG_OF
-	int phy_addr;
-#endif
 
-#ifdef CONFIG_OF
 	if (lp->phy_node) {
 		phydev = of_phy_connect(lp->ndev,
 					lp->phy_node,
@@ -846,35 +870,17 @@ static int xemacps_mii_probe(struct net_device *ndev)
 			return -1;
 		}
 	}
-#else
-	for (phy_addr = 0; phy_addr < PHY_MAX_ADDR; phy_addr++) {
-		if (lp->mii_bus->phy_map[phy_addr]) {
-			phydev = lp->mii_bus->phy_map[phy_addr];
-			break;
-		}
-	}
-
 	if (!phydev) {
-		printk(KERN_ERR "%s: no PHY found\n", ndev->name);
+		dev_err(&lp->pdev->dev, "%s: no PHY found\n", ndev->name);
 		return -1;
 	}
 
-	phydev = phy_connect(ndev, dev_name(&phydev->dev),
-		&xemacps_adjust_link, 0, PHY_INTERFACE_MODE_RGMII_ID);
-
-	if (IS_ERR(phydev)) {
-		printk(KERN_ERR "%s: can not connect phy\n", ndev->name);
-		return -1;
-	}
-#endif
-#ifdef DEBUG
-	printk(KERN_INFO "GEM: phydev %p, phydev->phy_id 0x%x, phydev->addr 0x%x\n",
+	dev_dbg(&lp->pdev->dev,
+		"GEM: phydev %p, phydev->phy_id 0x%x, phydev->addr 0x%x\n",
 		phydev, phydev->phy_id, phydev->addr);
-#endif
-	phydev->supported |= PHY_GBIT_FEATURES;
-	phydev->supported |= SUPPORTED_Pause;
-	phydev->supported |= SUPPORTED_Asym_Pause;
 
+	phydev->supported &= (PHY_GBIT_FEATURES | SUPPORTED_Pause |
+							SUPPORTED_Asym_Pause);
 	phydev->advertising = phydev->supported;
 
 	lp->link    = 0;
@@ -882,21 +888,16 @@ static int xemacps_mii_probe(struct net_device *ndev)
 	lp->duplex  = -1;
 	lp->phy_dev = phydev;
 
-#ifdef CONFIG_OF
 	if (lp->board_type == BOARD_TYPE_ZYNQ)
 		phy_start(lp->phy_dev);
 	else
 		xemacps_phy_init(lp->ndev);
-#else
-	phy_start(lp->phy_dev);
-#endif
-#ifdef DEBUG
-	printk(KERN_INFO "%s, phy_addr 0x%x, phy_id 0x%08x\n",
-			ndev->name, lp->phy_dev->addr, lp->phy_dev->phy_id);
 
-	printk(KERN_INFO "%s, attach [%s] phy driver\n", ndev->name,
+	dev_dbg(&lp->pdev->dev, "phy_addr 0x%x, phy_id 0x%08x\n",
+			lp->phy_dev->addr, lp->phy_dev->phy_id);
+
+	dev_dbg(&lp->pdev->dev, "attach [%s] phy driver\n",
 			lp->phy_dev->drv->name);
-#endif
 
 	return 0;
 }
@@ -909,10 +910,9 @@ static int xemacps_mii_probe(struct net_device *ndev)
 static int xemacps_mii_init(struct net_local *lp)
 {
 	int rc = -ENXIO, i;
-#ifdef CONFIG_OF
 	struct resource res;
 	struct device_node *np = of_get_parent(lp->phy_node);
-#endif
+	struct device_node *npp;
 
 	lp->mii_bus = mdiobus_alloc();
 	if (lp->mii_bus == NULL) {
@@ -935,17 +935,13 @@ static int xemacps_mii_init(struct net_local *lp)
 
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		lp->mii_bus->irq[i] = PHY_POLL;
-#ifdef CONFIG_OF
-	of_address_to_resource(np, 0, &res);
+	npp = of_get_parent(np);
+	of_address_to_resource(npp, 0, &res);
 	snprintf(lp->mii_bus->id, MII_BUS_ID_SIZE, "%.8llx",
 		 (unsigned long long)res.start);
 	if (of_mdiobus_register(lp->mii_bus, np))
 		goto err_out_free_mdio_irq;
-#else
-	snprintf(lp->mii_bus->id, MII_BUS_ID_SIZE, "%x", lp->pdev->id);
-	if (mdiobus_register(lp->mii_bus))
-		goto err_out_free_mdio_irq;
-#endif
+
 	return 0;
 
 err_out_free_mdio_irq:
@@ -961,7 +957,7 @@ err_out:
  * MAC address is not valid, reconfigure with a good one.
  * @lp: local device instance pointer
  **/
-static void __init xemacps_update_hwaddr(struct net_local *lp)
+static void __devinit xemacps_update_hwaddr(struct net_local *lp)
 {
 	u32 regvall;
 	u16 regvalh;
@@ -981,10 +977,11 @@ static void __init xemacps_update_hwaddr(struct net_local *lp)
 	} else {
 		dev_info(&lp->pdev->dev, "invalid address, use assigned\n");
 		random_ether_addr(lp->ndev->dev_addr);
-		printk(KERN_INFO "MAC updated %02x:%02x:%02x:%02x:%02x:%02x\n",
-			lp->ndev->dev_addr[0], lp->ndev->dev_addr[1],
-			lp->ndev->dev_addr[2], lp->ndev->dev_addr[3],
-			lp->ndev->dev_addr[4], lp->ndev->dev_addr[5]);
+		dev_info(&lp->pdev->dev,
+				"MAC updated %02x:%02x:%02x:%02x:%02x:%02x\n",
+				lp->ndev->dev_addr[0], lp->ndev->dev_addr[1],
+				lp->ndev->dev_addr[2], lp->ndev->dev_addr[3],
+				lp->ndev->dev_addr[4], lp->ndev->dev_addr[5]);
 	}
 }
 
@@ -1011,7 +1008,8 @@ static void xemacps_set_hwaddr(struct net_local *lp)
 #ifdef DEBUG
 	regvall = xemacps_read(lp->baseaddr, XEMACPS_LADDR1L_OFFSET);
 	regvalh = xemacps_read(lp->baseaddr, XEMACPS_LADDR1H_OFFSET);
-	printk(KERN_INFO "GEM: MAC 0x%08x, 0x%08x, %02x:%02x:%02x:%02x:%02x:%02x\n",
+	dev_dbg(&lp->pdev->dev,
+			"MAC 0x%08x, 0x%08x, %02x:%02x:%02x:%02x:%02x:%02x\n",
 		regvall, regvalh,
 		(regvall & 0xff), ((regvall >> 8) & 0xff),
 		((regvall >> 16) & 0xff), (regvall >> 24),
@@ -1099,20 +1097,19 @@ static void print_ring(struct xemacps_bdring *ring)
 	unsigned regval;
 	struct xemacps_bd *bd;
 
-	printk(KERN_INFO "freehead %p prehead %p hwhead %p \
-		hwtail %p posthead %p\n", ring->freehead, ring->prehead,
-		ring->hwhead, ring->hwtail, ring->posthead);
-	printk(KERN_INFO "freecnt %d hwcnt %d precnt %d \
-		postcnt %d allcnt %d\n",
-		ring->freecnt, ring->hwcnt, ring->precnt,
-		ring->postcnt, ring->allcnt);
+	pr_info("freehead %p prehead %p hwhead %p hwtail %p posthead %p\n",
+			ring->freehead, ring->prehead, ring->hwhead,
+			ring->hwtail, ring->posthead);
+	pr_info("freecnt %d hwcnt %d precnt %d postcnt %d allcnt %d\n",
+			ring->freecnt, ring->hwcnt, ring->precnt,
+			ring->postcnt, ring->allcnt);
 
 	bd = (struct xemacps_bd *)ring->firstbdaddr;
 	for (i = 0; i < XEMACPS_RECV_BD_CNT; i++) {
 		regval = xemacps_read(bd, XEMACPS_BD_ADDR_OFFSET);
-		printk(KERN_INFO "BD %p: ADDR: 0x%08x\n", bd, regval);
+		pr_info("BD %p: ADDR: 0x%08x\n", bd, regval);
 		regval = xemacps_read(bd, XEMACPS_BD_STAT_OFFSET);
-		printk(KERN_INFO "BD %p: STAT: 0x%08x\n", bd, regval);
+		pr_info("BD %p: STAT: 0x%08x\n", bd, regval);
 		bd++;
 	}
 }
@@ -1206,10 +1203,12 @@ u32 xemacps_bdringfromhwtx(struct xemacps_bdring *ringptr, unsigned bdlimit,
 		/* Read the status */
 		bdstr = xemacps_read(curbdptr, XEMACPS_BD_STAT_OFFSET);
 
-		if ((sop == 0) && (bdstr & XEMACPS_TXBUF_USED_MASK))
-			sop = 1;
-		else
-			break;
+		if (sop == 0) {
+			if (bdstr & XEMACPS_TXBUF_USED_MASK)
+				sop = 1;
+			else
+				break;
+		}
 
 		if (sop == 1) {
 			bdcount++;
@@ -1322,10 +1321,8 @@ int xemacps_bdringfree(struct xemacps_bdring *ringptr, unsigned numbd,
 		return 0;
 
 	/* Make sure we are in sync with xemacps_bdringfromhw() */
-	if ((ringptr->postcnt < numbd) || (ringptr->posthead != bdptr)) {
-		printk(KERN_ERR "GEM: Improper bdringfree()\n");
+	if ((ringptr->postcnt < numbd) || (ringptr->posthead != bdptr))
 		return -ENOSPC;
-	}
 
 	/* Update pointers and counters */
 	ringptr->freecnt += numbd;
@@ -1359,13 +1356,14 @@ static void xemacps_DmaSetupRecvBuffers(struct net_device *ndev)
 
 	for (num_sk_buffs = 0; num_sk_buffs < free_bd_count; num_sk_buffs++) {
 		new_skb = netdev_alloc_skb(ndev, XEMACPS_RX_BUF_SIZE);
-		if (new_skb == NULL)
+		if (new_skb == NULL) {
+			lp->stats.rx_dropped++;
 			break;
+		}
 
 		result = xemacps_bdringalloc(rxringptr, 1, &bdptr);
 		if (result) {
-			printk(KERN_ERR "%s RX bdringalloc() error.\n",
-					 lp->ndev->name);
+			dev_err(&lp->pdev->dev, "RX bdringalloc() error.\n");
 			break;
 		}
 
@@ -1384,8 +1382,9 @@ static void xemacps_DmaSetupRecvBuffers(struct net_device *ndev)
 		 */
 		result = xemacps_bdringtohw(rxringptr, 1, bdptr);
 		if (result) {
-			printk(KERN_ERR "%s: bdringtohw unsuccessful (%d)\n",
-				ndev->name, result);
+			dev_err(&lp->pdev->dev,
+					"bdringtohw unsuccessful (%d)\n",
+					result);
 			break;
 		}
 	}
@@ -1507,8 +1506,7 @@ static int xemacps_rx(struct net_local *lp, int budget)
 	bdptrfree = bdptr;
 
 #ifdef DEBUG_VERBOSE
-	printk(KERN_INFO "GEM: %s: numbd %d\n",
-			__func__, numbd);
+	dev_dbg(&lp->pdev->dev, "%s: numbd %d\n", __func__, numbd);
 #endif
 
 	while (numbd) {
@@ -1516,15 +1514,18 @@ static int xemacps_rx(struct net_local *lp, int budget)
 		regval = xemacps_read(bdptr, XEMACPS_BD_STAT_OFFSET);
 
 #ifdef DEBUG_VERBOSE
-		printk(KERN_INFO "GEM: %s: RX BD index %d, BDptr %p, BD_STAT 0x%08x\n",
+		dev_dbg(&lp->pdev->dev,
+			"%s: RX BD index %d, BDptr %p, BD_STAT 0x%08x\n",
 			__func__, bdidx, bdptr, regval);
 #endif
 
 		/* look for start of packet */
 		if (!(regval & XEMACPS_RXBUF_SOF_MASK) ||
 		    !(regval & XEMACPS_RXBUF_EOF_MASK)) {
-			printk(KERN_INFO "GEM: %s: SOF and EOF not set (0x%08x) BD %p\n",
+			dev_info(&lp->pdev->dev,
+				"%s: SOF and EOF not set (0x%08x) BD %p\n",
 				__func__, regval, bdptr);
+			lp->stats.rx_dropped++;
 			return 0;
 		}
 
@@ -1585,7 +1586,7 @@ static int xemacps_rx(struct net_local *lp, int budget)
 	/* Make used BDs available */
 	rc = xemacps_bdringfree(&lp->rx_ring, numbdfree, bdptrfree);
 	if (rc)
-		printk(KERN_ERR "%s RX bdringfree() error.\n", lp->ndev->name);
+		dev_err(&lp->pdev->dev, "RX bdringfree() error.\n");
 
 	/* Refill RX buffers */
 	xemacps_DmaSetupRecvBuffers(lp->ndev);
@@ -1602,47 +1603,46 @@ static int xemacps_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct net_local *lp = container_of(napi, struct net_local, napi);
 	int work_done = 0;
+	int temp_work_done;
 	u32 regval;
 
 	regval = xemacps_read(lp->baseaddr, XEMACPS_RXSR_OFFSET);
 	xemacps_write(lp->baseaddr, XEMACPS_RXSR_OFFSET, regval);
 
 	while (work_done < budget) {
-
-		dev_dbg(&lp->pdev->dev, "poll RX status 0x%x weight 0x%x\n",
-			regval, budget);
-
-		if (!(regval & XEMACPS_RXSR_FRAMERX_MASK)) {
-			dev_dbg(&lp->pdev->dev, "No RX complete status 0x%x\n",
-				regval);
-			napi_complete(napi);
-
-			/* We disable RX interrupts in interrupt service
-			 * routine, now it is time to enable it back.
-			 */
-			regval = (XEMACPS_IXR_FRAMERX_MASK |
-					 XEMACPS_IXR_RX_ERR_MASK);
-			xemacps_write(lp->baseaddr, XEMACPS_IER_OFFSET, regval);
-			break;
-		}
-
-		work_done += xemacps_rx(lp, budget - work_done);
-
+		if (regval & (XEMACPS_RXSR_HRESPNOK_MASK |
+					XEMACPS_RXSR_BUFFNA_MASK))
+			lp->stats.rx_errors++;
+		temp_work_done = xemacps_rx(lp, budget - work_done);
+		work_done += temp_work_done;
 		regval = xemacps_read(lp->baseaddr, XEMACPS_RXSR_OFFSET);
 		xemacps_write(lp->baseaddr, XEMACPS_RXSR_OFFSET, regval);
+		if (temp_work_done <= 0)
+			break;
 	}
+
+	if (work_done >= budget)
+		return work_done;
+
+	napi_complete(napi);
+	/* We disabled RX interrupts in interrupt service
+	 * routine, now it is time to enable it back.
+	 */
+	xemacps_write(lp->baseaddr, XEMACPS_IER_OFFSET,
+					(XEMACPS_IXR_FRAMERX_MASK |
+					XEMACPS_IXR_RX_ERR_MASK));
 
 	return work_done;
 }
 
 /**
- * xemacps_tx_poll - tasklet poll routine
+ * xemacps_tx_poll - tx isr handler routine
  * @data: pointer to network interface device structure
  **/
 static void xemacps_tx_poll(struct net_device *ndev)
 {
 	struct net_local *lp = netdev_priv(ndev);
-	u32 regval, len = 0;
+	u32 regval, bdlen = 0;
 	struct xemacps_bd *bdptr, *bdptrfree;
 	struct ring_info *rp;
 	struct sk_buff *skb;
@@ -1656,13 +1656,9 @@ static void xemacps_tx_poll(struct net_device *ndev)
 	 * we can do to revive hardware other than reset hardware.
 	 * Or try to close this interface and reopen it.
 	 */
-	if (regval & (XEMACPS_TXSR_URUN_MASK | XEMACPS_TXSR_RXOVR_MASK |
-		XEMACPS_TXSR_HRESPNOK_MASK | XEMACPS_TXSR_COL1000_MASK |
-		XEMACPS_TXSR_BUFEXH_MASK | XEMACPS_TXSR_COL100_MASK)) {
-		printk(KERN_ERR "%s: TX error 0x%x, resetting buffers?\n",
-			ndev->name, regval);
+	if (regval & (XEMACPS_TXSR_RXOVR_MASK | XEMACPS_TXSR_HRESPNOK_MASK
+					| XEMACPS_TXSR_BUFEXH_MASK))
 		lp->stats.tx_errors++;
-	}
 
 	/* This may happen when a buffer becomes complete
 	 * between reading the ISR and scanning the descriptors.
@@ -1677,18 +1673,16 @@ static void xemacps_tx_poll(struct net_device *ndev)
 	bdptrfree = bdptr;
 
 	while (numbd) {
-		rmb();
 		regval  = xemacps_read(bdptr, XEMACPS_BD_STAT_OFFSET);
+		rmb();
+		bdlen = regval & XEMACPS_TXBUF_LEN_MASK;
 		bdidx = XEMACPS_BD_TO_INDEX(&lp->tx_ring, bdptr);
 		rp = &lp->tx_skb[bdidx];
 		skb = rp->skb;
 
 		BUG_ON(skb == NULL);
 
-		len += skb->len;
-		rmb();
-
-		#ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
+#ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
 		if ((lp->hwtstamp_config.tx_type == HWTSTAMP_TX_ON) &&
 			(ntohs(skb->protocol) == 0x800)) {
 			unsigned ip_proto, dest_port, msg_type;
@@ -1705,15 +1699,16 @@ static void xemacps_tx_poll(struct net_device *ndev)
 				xemacps_tx_hwtstamp(lp, skb, msg_type & 0x2);
 			}
 		}
-		#endif /* CONFIG_XILINX_PS_EMAC_HWTSTAMP */
+#endif /* CONFIG_XILINX_PS_EMAC_HWTSTAMP */
 
 		dma_unmap_single(&lp->pdev->dev, rp->mapping, skb->len,
 			DMA_TO_DEVICE);
 		rp->skb = NULL;
 		dev_kfree_skb_irq(skb);
 #ifdef DEBUG_VERBOSE_TX
-		printk(KERN_INFO "GEM: TX bd index %d BD_STAT 0x%08x after sent.\n",
-			bdidx, regval);
+		dev_dbg(&lp->pdev->dev,
+				"TX bd index %d BD_STAT 0x%08x after sent.\n",
+				bdidx, regval);
 #endif
 		/* log tx completed packets and bytes, errors logs
 		 * are in other error counters.
@@ -1721,11 +1716,8 @@ static void xemacps_tx_poll(struct net_device *ndev)
 		if (regval & XEMACPS_TXBUF_LAST_MASK) {
 			if (!(regval & XEMACPS_TXBUF_ERR_MASK)) {
 				lp->stats.tx_packets++;
-				lp->stats.tx_bytes += len;
-			} else {
-				lp->stats.tx_errors++;
+				lp->stats.tx_bytes += bdlen;
 			}
-			len = 0;
 		}
 
 		/* Preserve used and wrap bits; clear everything else. */
@@ -1739,7 +1731,7 @@ static void xemacps_tx_poll(struct net_device *ndev)
 
 	rc = xemacps_bdringfree(&lp->tx_ring, numbdfree, bdptrfree);
 	if (rc)
-		printk(KERN_ERR "%s TX bdringfree() error.\n", ndev->name);
+		dev_err(&lp->pdev->dev, "TX bdringfree() error.\n");
 
 tx_poll_out:
 	if (netif_queue_stopped(ndev))
@@ -1758,46 +1750,24 @@ static irqreturn_t xemacps_interrupt(int irq, void *dev_id)
 	struct net_local *lp = netdev_priv(ndev);
 	u32 regisr;
 
+	spin_lock(&lp->lock);
 	regisr = xemacps_read(lp->baseaddr, XEMACPS_ISR_OFFSET);
-
 	if (unlikely(!regisr))
 		return IRQ_NONE;
-
-	spin_lock(&lp->lock);
+	xemacps_write(lp->baseaddr, XEMACPS_ISR_OFFSET, regisr);
 
 	while (regisr) {
-		/* acknowledge interrupt and clear it */
-		xemacps_write(lp->baseaddr, XEMACPS_ISR_OFFSET, regisr);
-
-		/* Log errors here. ISR status is cleared;
-		 * this must be recorded here.
-		 */
-		if (regisr & XEMACPS_IXR_RX_ERR_MASK)
-			lp->stats.rx_errors++;
-
-		/* RX interrupts */
-		if (regisr &
-		(XEMACPS_IXR_FRAMERX_MASK | XEMACPS_IXR_RX_ERR_MASK)) {
-
-			if (napi_schedule_prep(&lp->napi)) {
-				/* acknowledge RX interrupt and disable it,
-				 * napi will be the one processing it.  */
-				xemacps_write(lp->baseaddr,
-					XEMACPS_IDR_OFFSET,
-					(XEMACPS_IXR_FRAMERX_MASK |
-					 XEMACPS_IXR_RX_ERR_MASK));
-				dev_dbg(&lp->pdev->dev,
-					"schedule RX softirq\n");
-				__napi_schedule(&lp->napi);
-			}
-		}
-
-		/* TX interrupts */
-		if (regisr &
-		(XEMACPS_IXR_TXCOMPL_MASK | XEMACPS_IXR_TX_ERR_MASK))
+		if (regisr & (XEMACPS_IXR_TXCOMPL_MASK |
+				XEMACPS_IXR_TX_ERR_MASK)) {
 			xemacps_tx_poll(ndev);
-
+		} else {
+			xemacps_write(lp->baseaddr, XEMACPS_IDR_OFFSET,
+					(XEMACPS_IXR_FRAMERX_MASK |
+					XEMACPS_IXR_RX_ERR_MASK));
+			napi_schedule(&lp->napi);
+		}
 		regisr = xemacps_read(lp->baseaddr, XEMACPS_ISR_OFFSET);
+		xemacps_write(lp->baseaddr, XEMACPS_ISR_OFFSET, regisr);
 	}
 	spin_unlock(&lp->lock);
 
@@ -1903,12 +1873,13 @@ static int xemacps_descriptor_init(struct net_local *lp)
 	dev_dbg(&lp->pdev->dev, "TX ring %d bytes at 0x%x mapped %p\n",
 			size, lp->tx_bd_dma, lp->tx_bd);
 
-#ifdef DEBUG
-	printk(KERN_INFO "GEM: lp->tx_bd %p lp->tx_bd_dma %p lp->tx_skb %p\n",
+	dev_dbg(&lp->pdev->dev,
+		"lp->tx_bd %p lp->tx_bd_dma %p lp->tx_skb %p\n",
 		lp->tx_bd, (void *)lp->tx_bd_dma, lp->tx_skb);
-	printk(KERN_INFO "GEM: lp->rx_bd %p lp->rx_bd_dma %p lp->rx_skb %p\n",
+	dev_dbg(&lp->pdev->dev,
+		"lp->rx_bd %p lp->rx_bd_dma %p lp->rx_skb %p\n",
 		lp->rx_bd, (void *)lp->rx_bd_dma, lp->rx_skb);
-#endif
+
 	return 0;
 
 err_out:
@@ -2062,11 +2033,10 @@ static void xemacps_init_hw(struct net_local *lp)
 	regval |= XEMACPS_NWCFG_FCSREM_MASK;
 	regval |= XEMACPS_NWCFG_PAUSEEN_MASK;
 	regval |= XEMACPS_NWCFG_100_MASK;
-	regval |= XEMACPS_NWCFG_1536RXEN_MASK;
-#ifdef CONFIG_OF
+	regval |= XEMACPS_NWCFG_HDRXEN_MASK;
+
 	if (lp->board_type == BOARD_TYPE_ZYNQ)
 		regval |= (MDC_DIV_224 << XEMACPS_NWCFG_MDC_SHIFT_MASK);
-#endif
 	if (lp->ndev->flags & IFF_PROMISC)	/* copy all */
 		regval |= XEMACPS_NWCFG_COPYALLEN_MASK;
 	if (!(lp->ndev->flags & IFF_BROADCAST))	/* No broadcast */
@@ -2137,25 +2107,37 @@ static int xemacps_open(struct net_device *ndev)
 
 	rc = xemacps_descriptor_init(lp);
 	if (rc) {
-		printk(KERN_ERR "%s Unable to allocate DMA memory, rc %d\n",
-		ndev->name, rc);
+		dev_err(&lp->pdev->dev,
+			"Unable to allocate DMA memory, rc %d\n", rc);
 		return rc;
+	}
+
+	rc = pm_runtime_get(&lp->pdev->dev);
+	if (rc < 0) {
+		dev_err(&lp->pdev->dev, "pm_runtime_get() failed, rc %d\n", rc);
+		goto err_free_rings;
 	}
 
 	rc = xemacps_setup_ring(lp);
 	if (rc) {
-		printk(KERN_ERR "%s Unable to setup BD rings, rc %d\n",
-		ndev->name, rc);
-		return rc;
+		dev_err(&lp->pdev->dev,
+			"Unable to setup BD rings, rc %d\n", rc);
+		goto err_pm_put;
 	}
+
 	xemacps_init_hw(lp);
 	napi_enable(&lp->napi);
-	if (xemacps_mii_probe(ndev) != 0) {
-		printk(KERN_ERR "%s mii_probe fail.\n", lp->mii_bus->name);
-		mdiobus_unregister(lp->mii_bus);
-		kfree(lp->mii_bus->irq);
-		mdiobus_free(lp->mii_bus);
-		return -ENXIO;
+	rc = xemacps_mii_probe(ndev);
+	if (rc != 0) {
+		dev_err(&lp->pdev->dev,
+			"%s mii_probe fail.\n", lp->mii_bus->name);
+		if (rc == (-2)) {
+			mdiobus_unregister(lp->mii_bus);
+			kfree(lp->mii_bus->irq);
+			mdiobus_free(lp->mii_bus);
+		}
+		rc = -ENXIO;
+		goto err_pm_put;
 	}
 
 	netif_carrier_on(ndev);
@@ -2163,6 +2145,13 @@ static int xemacps_open(struct net_device *ndev)
 	netif_start_queue(ndev);
 
 	return 0;
+
+err_pm_put:
+	pm_runtime_put(&lp->pdev->dev);
+err_free_rings:
+	xemacps_descriptor_free(lp);
+
+	return rc;
 }
 
 /**
@@ -2190,6 +2179,8 @@ static int xemacps_close(struct net_device *ndev)
 		phy_disconnect(lp->phy_dev);
 	xemacps_descriptor_free(lp);
 
+	pm_runtime_put(&lp->pdev->dev);
+
 	return 0;
 }
 
@@ -2200,30 +2191,45 @@ static int xemacps_close(struct net_device *ndev)
  **/
 static void xemacps_tx_timeout(struct net_device *ndev)
 {
-	unsigned long flags;
 	struct net_local *lp = netdev_priv(ndev);
 	int rc;
 
-	printk(KERN_ERR "%s transmit timeout %lu ms, reseting...\n",
-		ndev->name, TX_TIMEOUT * 1000UL / HZ);
-	lp->stats.tx_errors++;
-
-	spin_lock_irqsave(&lp->lock, flags);
-
+	dev_err(&lp->pdev->dev, "transmit timeout %lu ms, reseting...\n",
+		TX_TIMEOUT * 1000UL / HZ);
 	netif_stop_queue(ndev);
+
+	spin_lock(&lp->lock);
 	napi_disable(&lp->napi);
 	xemacps_reset_hw(lp);
-	xemacps_clean_rings(lp);
-	rc  = xemacps_setup_ring(lp);
-	if (rc)
-		printk(KERN_ERR "%s Unable to setup BD or rings, rc %d\n",
-		ndev->name, rc);
-	xemacps_init_hw(lp);
-	ndev->trans_start = jiffies;
-	napi_enable(&lp->napi);
-	netif_wake_queue(ndev);
+	xemacps_descriptor_free(lp);
+	if (lp->phy_dev)
+		phy_stop(lp->phy_dev);
+	rc = xemacps_descriptor_init(lp);
+	if (rc) {
+		dev_err(&lp->pdev->dev,
+			"Unable to allocate DMA memory, rc %d\n", rc);
+		spin_unlock(&lp->lock);
+		return;
+	}
 
-	spin_unlock_irqrestore(&lp->lock, flags);
+	rc = xemacps_setup_ring(lp);
+	if (rc) {
+		dev_err(&lp->pdev->dev, "Unable to setup BD rings, rc %d\n",
+									rc);
+		spin_unlock(&lp->lock);
+		return;
+	}
+	xemacps_init_hw(lp);
+
+	lp->link    = 0;
+	lp->speed   = 0;
+	lp->duplex  = -1;
+	if (lp->phy_dev)
+		phy_start(lp->phy_dev);
+	napi_enable(&lp->napi);
+
+	spin_unlock(&lp->lock);
+	netif_start_queue(ndev);
 }
 
 /**
@@ -2242,11 +2248,11 @@ static int xemacps_set_mac_address(struct net_device *ndev, void *addr)
 
 	if (!is_valid_ether_addr(hwaddr->sa_data))
 		return -EADDRNOTAVAIL;
-#ifdef DEBUG
-	printk(KERN_INFO "GEM: hwaddr 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
+
+	dev_dbg(&lp->pdev->dev, "hwaddr 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
 		hwaddr->sa_data[0], hwaddr->sa_data[1], hwaddr->sa_data[2],
 		hwaddr->sa_data[3], hwaddr->sa_data[4], hwaddr->sa_data[5]);
-#endif
+
 	memcpy(ndev->dev_addr, hwaddr->sa_data, ndev->addr_len);
 
 	xemacps_set_hwaddr(lp);
@@ -2271,13 +2277,13 @@ static int xemacps_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	skb_frag_t *frag;
 
 #ifdef DEBUG_VERBOSE_TX
-	printk(KERN_INFO "%s: TX data:", __func__);
+	dev_dbg(&lp->pdev->dev, "%s: TX data:", __func__);
 	for (i = 0; i < 48; i++) {
 		if (!(i % 16))
-			printk("\n");
-		printk(KERN_INFO " %02x", (unsigned int)skb->data[i]);
+			dev_dbg(&lp->pdev->dev, "\n");
+		dev_dbg(&lp->pdev->dev, " %02x", (unsigned int)skb->data[i]);
 	}
-	printk("\n");
+	dev_dbg(&lp->pdev->dev, "\n");
 #endif
 
 	nr_frags = skb_shinfo(skb)->nr_frags + 1;
@@ -2300,7 +2306,8 @@ static int xemacps_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	bdptrs = bdptr;
 
 #ifdef DEBUG_VERBOSE_TX
-	printk(KERN_INFO "GEM: TX nr_frags %d, skb->len 0x%x, skb_headlen(skb) 0x%x\n",
+	dev_dbg(&lp->pdev->dev,
+		"TX nr_frags %d, skb->len 0x%x, skb_headlen(skb) 0x%x\n",
 		nr_frags, skb->len, skb_headlen(skb));
 #endif
 
@@ -2310,7 +2317,7 @@ static int xemacps_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 			mapping = dma_map_single(&lp->pdev->dev, skb->data,
 				len, DMA_TO_DEVICE);
 		} else {
-			len = frag->size;
+			len = skb_frag_size(frag);
 			virt_addr = skb_frag_address(frag);
 			mapping = dma_map_single(&lp->pdev->dev, virt_addr,
 				len, DMA_TO_DEVICE);
@@ -2339,8 +2346,9 @@ static int xemacps_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		xemacps_write(bdptr, XEMACPS_BD_STAT_OFFSET, regval);
 
 #ifdef DEBUG_VERBOSE_TX
-		printk(KERN_INFO "GEM: TX BD index %d, BDptr %p, BD_STAT 0x%08x\n",
-			bdidx, bdptr, regval);
+		dev_dbg(&lp->pdev->dev,
+				"TX BD index %d, BDptr %p, BD_STAT 0x%08x\n",
+				bdidx, bdptr, regval);
 #endif
 		bdptr = XEMACPS_BDRING_NEXT(&lp->tx_ring, bdptr);
 	}
@@ -2353,8 +2361,7 @@ static int xemacps_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		dev_kfree_skb(skb);
 		lp->stats.tx_dropped++;
 		xemacps_bdringunalloc(&lp->tx_ring, nr_frags, bdptrs);
-		printk(KERN_ERR "%s can not send, commit TX buffer desc\n",
-			ndev->name);
+		dev_err(&lp->pdev->dev, "cannot send, commit TX buffer desc\n");
 		spin_unlock_irq(&lp->lock);
 		return rc;
 	} else {
@@ -2464,8 +2471,9 @@ static void xemacps_set_hashtable(struct net_device *ndev)
 		hash_index = calc_mac_hash(mc_addr);
 
 		if (hash_index >= XEMACPS_MAX_HASH_BITS) {
-			printk(KERN_ERR "hash calculation out of range %d\n",
-				hash_index);
+			dev_err(&lp->pdev->dev,
+					"hash calculation out of range %d\n",
+					hash_index);
 			break;
 		}
 		if (hash_index < 32)
@@ -2613,77 +2621,6 @@ xemacps_get_ringparam(struct net_device *ndev, struct ethtool_ringparam *erp)
 	erp->tx_pending = lp->tx_ring.hwcnt;
 }
 
-#if 0
-
-/**
- * xemacps_get_rx_csum - get device rxcsum status
- * Usage: Issue "ethtool -k ethX" under linux prompt
- * @ndev: network device
- * return 0 csum off, else csum on
- **/
-static u32
-xemacps_get_rx_csum(struct net_device *ndev)
-{
-	struct net_local *lp = netdev_priv(ndev);
-
-	return (lp->ip_summed & CHECKSUM_UNNECESSARY) != 0;
-}
-
-/**
- * xemacps_set_rx_csum - set device rx csum enable/disable
- * Usage: Issue "ethtool -K ethX rx on|off" under linux prompt
- * @ndev: network device
- * @data: 0 to disable, other to enable
- * return 0 on success, negative value if error
- * note : If there is no need to turn on/off checksum engine e.g always on,
- * xemacps_set_rx_csum can be removed.
- **/
-static int
-xemacps_set_rx_csum(struct net_device *ndev, u32 data)
-{
-	struct net_local *lp = netdev_priv(ndev);
-
-	if (data)
-		lp->ip_summed = CHECKSUM_UNNECESSARY;
-	else
-		lp->ip_summed = CHECKSUM_NONE;
-
-	return 0;
-}
-
-/**
- * xemacps_get_tx_csum - get device txcsum status
- * Usage: Issue "ethtool -k ethX" under linux prompt
- * @ndev: network device
- * return 0 csum off, 1 csum on
- **/
-static u32
-xemacps_get_tx_csum(struct net_device *ndev)
-{
-	return (ndev->features & NETIF_F_IP_CSUM) != 0;
-}
-
-/**
- * xemacps_set_tx_csum - set device tx csum enable/disable
- * Usage: Issue "ethtool -K ethX tx on|off" under linux prompt
- * @ndev: network device
- * @data: 0 to disable, other to enable
- * return 0 on success, negative value if error
- * note : If there is no need to turn on/off checksum engine e.g always on,
- * xemacps_set_tx_csum can be removed.
- **/
-static int
-xemacps_set_tx_csum(struct net_device *ndev, u32 data)
-{
-	if (data)
-		ndev->features |= NETIF_F_IP_CSUM;
-	else
-		ndev->features &= ~NETIF_F_IP_CSUM;
-	return 0;
-}
-
-#endif
-
 /**
  * xemacps_get_wol - get device wake on lan status
  * Usage: Issue "ethtool ethX" under linux prompt
@@ -2794,9 +2731,8 @@ xemacps_set_pauseparam(struct net_device *ndev,
 	u32 regval;
 
 	if (netif_running(ndev)) {
-		printk(KERN_ERR
-			"%s: Please stop netif before apply configruation\n",
-			ndev->name);
+		dev_err(&lp->pdev->dev,
+			"Please stop netif before apply configruation\n");
 		return -EFAULT;
 	}
 
@@ -2830,20 +2766,14 @@ static struct net_device_stats
 		xemacps_read(lp->baseaddr, XEMACPS_RXJABCNT_OFFSET) +
 		xemacps_read(lp->baseaddr, XEMACPS_RXFCSCNT_OFFSET) +
 		xemacps_read(lp->baseaddr, XEMACPS_RXLENGTHCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXSYMBCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXALIGNCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXRESERRCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXORCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXIPCCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXTCPCCNT_OFFSET) +
-		xemacps_read(lp->baseaddr, XEMACPS_RXUDPCCNT_OFFSET));
+		xemacps_read(lp->baseaddr, XEMACPS_RXALIGNCNT_OFFSET));
 	nstat->rx_length_errors +=
 		(xemacps_read(lp->baseaddr, XEMACPS_RXUNDRCNT_OFFSET) +
 		xemacps_read(lp->baseaddr, XEMACPS_RXOVRCNT_OFFSET) +
 		xemacps_read(lp->baseaddr, XEMACPS_RXJABCNT_OFFSET) +
 		xemacps_read(lp->baseaddr, XEMACPS_RXLENGTHCNT_OFFSET));
 	nstat->rx_over_errors +=
-		xemacps_read(lp->baseaddr, XEMACPS_RXRESERRCNT_OFFSET);
+		xemacps_read(lp->baseaddr, XEMACPS_RXORCNT_OFFSET);
 	nstat->rx_crc_errors +=
 		xemacps_read(lp->baseaddr, XEMACPS_RXFCSCNT_OFFSET);
 	nstat->rx_frame_errors +=
@@ -2875,7 +2805,7 @@ static struct ethtool_ops xemacps_ethtool_ops = {
 	.get_settings   = xemacps_get_settings,
 	.set_settings   = xemacps_set_settings,
 	.get_drvinfo    = xemacps_get_drvinfo,
-	.get_link       = ethtool_op_get_link,       /* ethtool default */
+	.get_link       = ethtool_op_get_link, /* ethtool default */
 	.get_ringparam  = xemacps_get_ringparam,
 	.get_wol        = xemacps_get_wol,
 	.set_wol        = xemacps_set_wol,
@@ -2966,7 +2896,7 @@ static int xemacps_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
 		return xemacps_hwtstamp_ioctl(ndev, rq, cmd);
 #endif
 	default:
-		printk(KERN_INFO "GEM: ioctl %d not implemented.\n", cmd);
+		dev_info(&lp->pdev->dev, "ioctl %d not implemented.\n", cmd);
 		return -EOPNOTSUPP;
 	}
 
@@ -2977,8 +2907,8 @@ static int xemacps_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
  * @pdev: Pointer to platform device structure
  *
  * Return 0 on success, negative value if error
- **/
-static int __init xemacps_probe(struct platform_device *pdev)
+ */
+static int __devinit xemacps_probe(struct platform_device *pdev)
 {
 	struct resource *r_mem = NULL;
 	struct resource *r_irq = NULL;
@@ -3018,32 +2948,29 @@ static int __init xemacps_probe(struct platform_device *pdev)
 		rc = -ENOMEM;
 		goto err_out_free_netdev;
 	}
-#ifdef DEBUG
-	printk(KERN_INFO "GEM: BASEADDRESS hw: %p virt: %p\n",
+
+	dev_dbg(&lp->pdev->dev, "BASEADDRESS hw: %p virt: %p\n",
 			(void *)r_mem->start, lp->baseaddr);
-#endif
 
 	ndev->irq = platform_get_irq(pdev, 0);
 
-	rc = request_irq(ndev->irq, xemacps_interrupt, IRQF_SAMPLE_RANDOM,
+	rc = request_irq(ndev->irq, xemacps_interrupt, 0,
 		ndev->name, ndev);
 	if (rc) {
-		printk(KERN_ERR "%s: Unable to request IRQ %p, error %d\n",
-		ndev->name, r_irq, rc);
+		dev_err(&lp->pdev->dev, "Unable to request IRQ %p, error %d\n",
+				r_irq, rc);
 		goto err_out_iounmap;
 	}
 
-	ndev->netdev_ops	 = &netdev_ops;
-	ndev->watchdog_timeo     = TX_TIMEOUT;
-	ndev->ethtool_ops        = &xemacps_ethtool_ops;
-	ndev->base_addr          = r_mem->start;
-	ndev->features           = NETIF_F_IP_CSUM;
+	ndev->netdev_ops = &netdev_ops;
+	ndev->watchdog_timeo = TX_TIMEOUT;
+	ndev->ethtool_ops = &xemacps_ethtool_ops;
+	ndev->base_addr = r_mem->start;
+	ndev->features = NETIF_F_IP_CSUM;
 	netif_napi_add(ndev, &lp->napi, xemacps_rx_poll, XEMACPS_NAPI_WEIGHT);
 
 	lp->ip_summed = CHECKSUM_UNNECESSARY;
-#ifdef CONFIG_OF
 	lp->board_type = BOARD_TYPE_ZYNQ;
-#endif
 
 	rc = register_netdev(ndev);
 	if (rc) {
@@ -3051,10 +2978,9 @@ static int __init xemacps_probe(struct platform_device *pdev)
 		goto err_out_free_irq;
 	}
 
-#ifdef CONFIG_OF
-	if (ndev->irq == 54) {
+	if (ndev->irq == 54)
 		lp->enetnum = 0;
-	} else
+	else
 		lp->enetnum = 1;
 
 	np = of_get_next_parent(lp->pdev->dev.of_node);
@@ -3064,65 +2990,60 @@ static int __init xemacps_probe(struct platform_device *pdev)
 	if (prop != NULL) {
 		if ((strcmp((const char *)prop, "xlnx,zynq-ep107")) == 0)
 			lp->board_type = BOARD_TYPE_PEEP;
-		 else
+		else
 			lp->board_type = BOARD_TYPE_ZYNQ;
-	} else
+	} else {
 		lp->board_type = BOARD_TYPE_ZYNQ;
-	if (lp->board_type == BOARD_TYPE_ZYNQ) {
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div0-1000Mbps", NULL);
-		if (prop) {
-			lp->slcr_div0_1000Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div0_1000Mbps = XEMACPS_DFLT_SLCR_DIV0_1000;
-		}
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div1-1000Mbps", NULL);
-		if (prop) {
-			lp->slcr_div1_1000Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div1_1000Mbps = XEMACPS_DFLT_SLCR_DIV1_1000;
-		}
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div0-100Mbps", NULL);
-		if (prop) {
-			lp->slcr_div0_100Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div0_100Mbps = XEMACPS_DFLT_SLCR_DIV0_100;
-		}
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div1-100Mbps", NULL);
-		if (prop) {
-			lp->slcr_div1_100Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div1_100Mbps = XEMACPS_DFLT_SLCR_DIV1_100;
-		}
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div0-10Mbps", NULL);
-		if (prop) {
-			lp->slcr_div0_10Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div0_10Mbps = XEMACPS_DFLT_SLCR_DIV0_10;
-		}
-		prop = of_get_property(lp->pdev->dev.of_node,
-					"xlnx,slcr-div1-10Mbps", NULL);
-		if (prop) {
-			lp->slcr_div1_10Mbps = (u32)be32_to_cpup(prop);
-		} else {
-			lp->slcr_div1_10Mbps = XEMACPS_DFLT_SLCR_DIV1_10;
-		}
 	}
+	if (lp->board_type == BOARD_TYPE_ZYNQ) {
+		if (lp->enetnum == 0)
+			lp->aperclk = clk_get_sys("GEM0_APER", NULL);
+		else
+			lp->aperclk = clk_get_sys("GEM1_APER", NULL);
+		if (IS_ERR(lp->aperclk)) {
+			dev_err(&pdev->dev, "APER clock not found.\n");
+			rc = PTR_ERR(lp->aperclk);
+			goto err_out_unregister_netdev;
+		}
+		if (lp->enetnum == 0)
+			lp->devclk = clk_get_sys("GEM0", NULL);
+		else
+			lp->devclk = clk_get_sys("GEM1", NULL);
+		if (IS_ERR(lp->devclk)) {
+			dev_err(&pdev->dev, "Device clock not found.\n");
+			rc = PTR_ERR(lp->devclk);
+			goto err_out_clk_put_aper;
+		}
+
+		rc = clk_prepare_enable(lp->aperclk);
+		if (rc) {
+			dev_err(&pdev->dev, "Unable to enable APER clock.\n");
+			goto err_out_clk_put;
+		}
+		rc = clk_prepare_enable(lp->devclk);
+		if (rc) {
+			dev_err(&pdev->dev, "Unable to enable device clock.\n");
+			goto err_out_clk_dis_aper;
+		}
+
+		lp->clk_rate_change_nb.notifier_call = xemacps_clk_notifier_cb;
+		lp->clk_rate_change_nb.next = NULL;
+		if (clk_notifier_register(lp->devclk, &lp->clk_rate_change_nb))
+			dev_warn(&pdev->dev,
+				"Unable to register clock notifier.\n");
+	}
+
 #ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
 	if (lp->board_type == BOARD_TYPE_ZYNQ) {
 		prop = of_get_property(lp->pdev->dev.of_node,
 					"xlnx,ptp-enet-clock", NULL);
-		if (prop) {
+		if (prop)
 			lp->ptpenetclk = (u32)be32_to_cpup(prop);
-		} else {
+		else
 			lp->ptpenetclk = 133333328;
-		}
-	} else
+	} else {
 		lp->ptpenetclk = PEEP_TSU_CLK;
+	}
 #endif
 
 	lp->phy_node = of_parse_phandle(lp->pdev->dev.of_node,
@@ -3133,25 +3054,36 @@ static int __init xemacps_probe(struct platform_device *pdev)
 		regval = (MDC_DIV_224 << XEMACPS_NWCFG_MDC_SHIFT_MASK);
 		xemacps_write(lp->baseaddr, XEMACPS_NWCFG_OFFSET, regval);
 	}
-#endif
 
 	regval = XEMACPS_NWCTRL_MDEN_MASK;
 	xemacps_write(lp->baseaddr, XEMACPS_NWCTRL_OFFSET, regval);
 
-	if (xemacps_mii_init(lp) != 0) {
-		printk(KERN_ERR "%s: error in xemacps_mii_init\n", ndev->name);
-		goto err_out_unregister_netdev;
+	rc = xemacps_mii_init(lp);
+	if (rc) {
+		dev_err(&lp->pdev->dev, "error in xemacps_mii_init\n");
+		goto err_out_unregister_clk_notifier;
 	}
 
 	xemacps_update_hwaddr(lp);
 
 	platform_set_drvdata(pdev, ndev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
 
-	printk(KERN_INFO "%s, pdev->id %d, baseaddr 0x%08lx, irq %d\n",
-		ndev->name, pdev->id, ndev->base_addr, ndev->irq);
+	dev_info(&lp->pdev->dev, "pdev->id %d, baseaddr 0x%08lx, irq %d\n",
+		pdev->id, ndev->base_addr, ndev->irq);
 
 	return 0;
 
+err_out_unregister_clk_notifier:
+	clk_notifier_unregister(lp->devclk, &lp->clk_rate_change_nb);
+	clk_disable_unprepare(lp->devclk);
+err_out_clk_dis_aper:
+	clk_disable_unprepare(lp->aperclk);
+err_out_clk_put:
+	clk_put(lp->devclk);
+err_out_clk_put_aper:
+	clk_put(lp->aperclk);
 err_out_unregister_netdev:
 	unregister_netdev(ndev);
 err_out_free_irq:
@@ -3170,7 +3102,7 @@ err_out:
  * @pdev: Pointer to the platform device structure
  *
  * return: 0 on success
- **/
+ */
 static int __exit xemacps_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
@@ -3189,23 +3121,37 @@ static int __exit xemacps_remove(struct platform_device *pdev)
 		iounmap(lp->baseaddr);
 		free_netdev(ndev);
 		platform_set_drvdata(pdev, NULL);
+
+		clk_notifier_unregister(lp->devclk, &lp->clk_rate_change_nb);
+		clk_disable_unprepare(lp->devclk);
+		clk_put(lp->devclk);
+		clk_disable_unprepare(lp->aperclk);
+		clk_put(lp->aperclk);
 	}
 
 	return 0;
 }
 
+#ifdef CONFIG_PM_NOT_DEFINE
+#ifdef CONFIG_PM_SLEEP
 /**
  * xemacps_suspend - Suspend event
- * @pdev: Pointer to platform device structure
- * @state: State of the device
+ * @device: Pointer to device structure
  *
  * Return 0
- **/
-static int xemacps_suspend(struct platform_device *pdev, pm_message_t state)
+ */
+static int xemacps_suspend(struct device *device)
 {
+	struct platform_device *pdev = container_of(device,
+			struct platform_device, dev);
 	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_local *lp = netdev_priv(ndev);
 
 	netif_device_detach(ndev);
+	if (!pm_runtime_suspended(device)) {
+		clk_disable(lp->devclk);
+		clk_disable(lp->aperclk);
+	}
 	return 0;
 }
 
@@ -3214,14 +3160,63 @@ static int xemacps_suspend(struct platform_device *pdev, pm_message_t state)
  * @pdev: Pointer to platform device structure
  *
  * Return 0
- **/
-static int xemacps_resume(struct platform_device *pdev)
+ */
+static int xemacps_resume(struct device *device)
 {
+	struct platform_device *pdev = container_of(device,
+			struct platform_device, dev);
 	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_local *lp = netdev_priv(ndev);
 
+	if (!pm_runtime_suspended(device)) {
+		clk_enable(lp->aperclk);
+		clk_enable(lp->devclk);
+	}
 	netif_device_attach(ndev);
 	return 0;
 }
+#endif /* ! CONFIG_PM_SLEEP */
+
+#ifdef CONFIG_PM_RUNTIME
+static int xemacps_runtime_idle(struct device *dev)
+{
+	return pm_schedule_suspend(dev, 1);
+}
+
+static int xemacps_runtime_resume(struct device *device)
+{
+	struct platform_device *pdev = container_of(device,
+			struct platform_device, dev);
+	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_local *lp = netdev_priv(ndev);
+
+	clk_enable(lp->aperclk);
+	clk_enable(lp->devclk);
+	return 0;
+}
+
+static int xemacps_runtime_suspend(struct device *device)
+{
+	struct platform_device *pdev = container_of(device,
+			struct platform_device, dev);
+	struct net_device *ndev = platform_get_drvdata(pdev);
+	struct net_local *lp = netdev_priv(ndev);
+
+	clk_disable(lp->devclk);
+	clk_disable(lp->aperclk);
+	return 0;
+}
+#endif /* CONFIG_PM_RUNTIME */
+
+static const struct dev_pm_ops xemacps_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(xemacps_suspend, xemacps_resume)
+	SET_RUNTIME_PM_OPS(xemacps_runtime_suspend, xemacps_runtime_resume,
+			xemacps_runtime_idle)
+};
+#define XEMACPS_PM	(&xemacps_dev_pm_ops)
+#else /* ! CONFIG_PM */
+#define XEMACPS_PM	NULL
+#endif /* ! CONFIG_PM */
 
 static struct net_device_ops netdev_ops = {
 	.ndo_open		= xemacps_open,
@@ -3235,59 +3230,25 @@ static struct net_device_ops netdev_ops = {
 	.ndo_get_stats		= xemacps_get_stats,
 };
 
-
-#ifdef CONFIG_OF
 static struct of_device_id xemacps_of_match[] __devinitdata = {
 	{ .compatible = "xlnx,ps7-ethernet-1.00.a", },
 	{ /* end of table */}
 };
 MODULE_DEVICE_TABLE(of, xemacps_of_match);
-#else
-#define xemacps_of_match NULL
-#endif /* CONFIG_OF */
-
 
 static struct platform_driver xemacps_driver = {
 	.probe   = xemacps_probe,
 	.remove  = __exit_p(xemacps_remove),
-	.suspend = xemacps_suspend,
-	.resume  = xemacps_resume,
 	.driver  = {
 		.name  = DRIVER_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = xemacps_of_match,
+		.pm = XEMACPS_PM,
 	},
 };
 
-/**
- * xemacps_init - Initial driver registration call
- *
- * Retunrs whether the driver registration was successful or not.
- **/
-static int __init xemacps_init(void)
-{
-    /*
-     * No kernel boot options used,
-     * so we just need to register the driver.
-     * If we are sure the device is non-hotpluggable, call
-     * platform_driver_probe(&xemacps_driver, xemacps_probe);
-     * to remove run-once probe from memory.
-     * Typical use for system-on-chip processor.
-     */
-	return platform_driver_probe(&xemacps_driver, xemacps_probe);
-}
-
-/**
- * xemacps_exit - Driver unregistration call
- **/
-static void __exit xemacps_exit(void)
-{
-	platform_driver_unregister(&xemacps_driver);
-}
-
-module_init(xemacps_init);
-module_exit(xemacps_exit);
+module_platform_driver(xemacps_driver);
 
 MODULE_AUTHOR("Xilinx, Inc.");
-MODULE_DESCRIPTION(Xilinx Ethernet driver);
-MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Xilinx Ethernet driver");
+MODULE_LICENSE("GPL v2");

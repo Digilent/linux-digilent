@@ -24,6 +24,7 @@
 #include <linux/io.h>
 #include <linux/sh_intc.h>
 #include <mach/intc.h>
+#include <mach/irqs.h>
 #include <mach/sh73a0.h>
 #include <asm/hardware/gic.h>
 #include <asm/mach-types.h>
@@ -258,9 +259,9 @@ static int sh73a0_set_wake(struct irq_data *data, unsigned int on)
 	return 0; /* always allow wakeup */
 }
 
-#define RELOC_BASE 0x1000
+#define RELOC_BASE 0x1200
 
-/* INTCA IRQ pins at INTCS + 0x1000 to make space for GIC+INTC handling */
+/* INTCA IRQ pins at INTCS + RELOC_BASE to make space for GIC+INTC handling */
 #define INTCS_VECT_RELOC(n, vect) INTCS_VECT((n), (vect) + RELOC_BASE)
 
 INTC_IRQ_PINS_32(intca_irq_pins, 0xe6900000,
@@ -420,8 +421,8 @@ static irqreturn_t sh73a0_pint1_demux(int irq, void *dev_id)
 
 void __init sh73a0_init_irq(void)
 {
-	void __iomem *gic_dist_base = __io(0xf0001000);
-	void __iomem *gic_cpu_base = __io(0xf0000100);
+	void __iomem *gic_dist_base = IOMEM(0xf0001000);
+	void __iomem *gic_cpu_base = IOMEM(0xf0000100);
 	void __iomem *intevtsa = ioremap_nocache(0xffd20100, PAGE_SIZE);
 	int k, n;
 

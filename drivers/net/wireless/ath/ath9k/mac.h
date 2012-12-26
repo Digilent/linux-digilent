@@ -583,8 +583,7 @@ enum ath9k_tx_queue {
 #define ATH9K_WME_UPSD	4
 
 enum ath9k_tx_queue_flags {
-	TXQ_FLAG_TXOKINT_ENABLE = 0x0001,
-	TXQ_FLAG_TXERRINT_ENABLE = 0x0001,
+	TXQ_FLAG_TXINT_ENABLE = 0x0001,
 	TXQ_FLAG_TXDESCINT_ENABLE = 0x0002,
 	TXQ_FLAG_TXEOLINT_ENABLE = 0x0004,
 	TXQ_FLAG_TXURNINT_ENABLE = 0x0008,
@@ -647,6 +646,7 @@ enum ath9k_rx_filter {
 	ATH9K_RX_FILTER_PHYRADAR = 0x00002000,
 	ATH9K_RX_FILTER_MCAST_BCAST_ALL = 0x00008000,
 	ATH9K_RX_FILTER_CONTROL_WRAPPER = 0x00080000,
+	ATH9K_RX_FILTER_4ADDRESS = 0x00100000,
 };
 
 #define ATH9K_RATESERIES_RTS_CTS  0x0001
@@ -714,7 +714,6 @@ u32 ath9k_hw_numtxpending(struct ath_hw *ah, u32 q);
 bool ath9k_hw_updatetxtriglevel(struct ath_hw *ah, bool bIncTrigLevel);
 bool ath9k_hw_stop_dma_queue(struct ath_hw *ah, u32 q);
 void ath9k_hw_abort_tx_dma(struct ath_hw *ah);
-void ath9k_hw_gettxintrtxqs(struct ath_hw *ah, u32 *txqs);
 bool ath9k_hw_set_txq_props(struct ath_hw *ah, int q,
 			    const struct ath9k_tx_queue_info *qinfo);
 bool ath9k_hw_get_txq_props(struct ath_hw *ah, int q,
@@ -739,6 +738,7 @@ bool ath9k_hw_intrpend(struct ath_hw *ah);
 void ath9k_hw_set_interrupts(struct ath_hw *ah);
 void ath9k_hw_enable_interrupts(struct ath_hw *ah);
 void ath9k_hw_disable_interrupts(struct ath_hw *ah);
+void ath9k_hw_kill_interrupts(struct ath_hw *ah);
 
 void ar9002_hw_attach_mac_ops(struct ath_hw *ah);
 

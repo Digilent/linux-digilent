@@ -33,7 +33,7 @@
 #include <sound/control.h>
 #include <sound/info.h>
 #include <sound/tlv.h>
-#include <sound/ymfpci.h>
+#include "ymfpci.h"
 #include <sound/asoundef.h>
 #include <sound/mpu401.h>
 
@@ -2302,9 +2302,10 @@ static int saved_regs_index[] = {
 };
 #define YDSXGR_NUM_SAVED_REGS	ARRAY_SIZE(saved_regs_index)
 
-int snd_ymfpci_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_ymfpci_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ymfpci *chip = card->private_data;
 	unsigned int i;
 	
@@ -2317,18 +2318,23 @@ int snd_ymfpci_suspend(struct pci_dev *pci, pm_message_t state)
 	for (i = 0; i < YDSXGR_NUM_SAVED_REGS; i++)
 		chip->saved_regs[i] = snd_ymfpci_readl(chip, saved_regs_index[i]);
 	chip->saved_ydsxgr_mode = snd_ymfpci_readl(chip, YDSXGR_MODE);
+	pci_read_config_word(chip->pci, PCIR_DSXG_LEGACY,
+			     &chip->saved_dsxg_legacy);
+	pci_read_config_word(chip->pci, PCIR_DSXG_ELEGACY,
+			     &chip->saved_dsxg_elegacy);
 	snd_ymfpci_writel(chip, YDSXGR_NATIVEDACOUTVOL, 0);
 	snd_ymfpci_writel(chip, YDSXGR_BUF441OUTVOL, 0);
 	snd_ymfpci_disable_dsp(chip);
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-int snd_ymfpci_resume(struct pci_dev *pci)
+static int snd_ymfpci_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ymfpci *chip = card->private_data;
 	unsigned int i;
 
@@ -2351,6 +2357,11 @@ int snd_ymfpci_resume(struct pci_dev *pci)
 
 	snd_ac97_resume(chip->ac97);
 
+	pci_write_config_word(chip->pci, PCIR_DSXG_LEGACY,
+			      chip->saved_dsxg_legacy);
+	pci_write_config_word(chip->pci, PCIR_DSXG_ELEGACY,
+			      chip->saved_dsxg_elegacy);
+
 	/* start hw again */
 	if (chip->start_count > 0) {
 		spin_lock_irq(&chip->reg_lock);
@@ -2361,6 +2372,8 @@ int snd_ymfpci_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
+
+SIMPLE_DEV_PM_OPS(snd_ymfpci_pm, snd_ymfpci_suspend, snd_ymfpci_resume);
 #endif /* CONFIG_PM */
 
 int __devinit snd_ymfpci_create(struct snd_card *card,

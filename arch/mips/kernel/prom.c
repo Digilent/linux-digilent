@@ -35,16 +35,6 @@ void __init early_init_dt_add_memory_arch(u64 base, u64 size)
 	return add_memory_region(base, size, BOOT_MEM_RAM);
 }
 
-int __init reserve_mem_mach(unsigned long addr, unsigned long size)
-{
-	return reserve_bootmem(addr, size, BOOTMEM_DEFAULT);
-}
-
-void __init free_mem_mach(unsigned long addr, unsigned long size)
-{
-	return free_bootmem(addr, size);
-}
-
 void * __init early_init_dt_alloc_memory_arch(u64 size, u64 align)
 {
 	return __alloc_bootmem(size, align, __pa(MAX_DMA_ADDRESS));
@@ -59,20 +49,6 @@ void __init early_init_dt_setup_initrd_arch(unsigned long start,
 	initrd_below_start_ok = 1;
 }
 #endif
-
-/*
- * irq_create_of_mapping - Hook to resolve OF irq specifier into a Linux irq#
- *
- * Currently the mapping mechanism is trivial; simple flat hwirq numbers are
- * mapped 1:1 onto Linux irq numbers.  Cascaded irq controllers are not
- * supported.
- */
-unsigned int irq_create_of_mapping(struct device_node *controller,
-				   const u32 *intspec, unsigned int intsize)
-{
-	return intspec[0];
-}
-EXPORT_SYMBOL_GPL(irq_create_of_mapping);
 
 void __init early_init_devtree(void *params)
 {
@@ -91,21 +67,15 @@ void __init early_init_devtree(void *params)
 	of_scan_flat_dt(early_init_dt_scan_memory_arch, NULL);
 }
 
-void __init device_tree_init(void)
+void __init __dt_setup_arch(struct boot_param_header *bph)
 {
-	unsigned long base, size;
+	if (be32_to_cpu(bph->magic) != OF_DT_HEADER) {
+		pr_err("DTB has bad magic, ignoring builtin OF DTB\n");
 
-	if (!initial_boot_params)
 		return;
+	}
 
-	base = virt_to_phys((void *)initial_boot_params);
-	size = be32_to_cpu(initial_boot_params->totalsize);
+	initial_boot_params = bph;
 
-	/* Before we do anything, lets reserve the dt blob */
-	reserve_mem_mach(base, size);
-
-	unflatten_device_tree();
-
-	/* free the space reserved for the dt blob */
-	free_mem_mach(base, size);
+	early_init_devtree(initial_boot_params);
 }

@@ -1,5 +1,5 @@
 /*
- * kvm_virtio.c - virtio for kvm on s390
+ * virtio for kvm on s390
  *
  * Copyright IBM Corp. 2008
  *
@@ -25,6 +25,7 @@
 #include <asm/io.h>
 #include <asm/kvm_para.h>
 #include <asm/kvm_virtio.h>
+#include <asm/sclp.h>
 #include <asm/setup.h>
 #include <asm/irq.h>
 
@@ -380,15 +381,13 @@ static void hotplug_devices(struct work_struct *dummy)
 /*
  * we emulate the request_irq behaviour on top of s390 extints
  */
-static void kvm_extint_handler(unsigned int ext_int_code,
+static void kvm_extint_handler(struct ext_code ext_code,
 			       unsigned int param32, unsigned long param64)
 {
 	struct virtqueue *vq;
-	u16 subcode;
 	u32 param;
 
-	subcode = ext_int_code >> 16;
-	if ((subcode & 0xff00) != VIRTIO_SUBCODE_64)
+	if ((ext_code.subcode & 0xff00) != VIRTIO_SUBCODE_64)
 		return;
 	kstat_cpu(smp_processor_id()).irqs[EXTINT_VRT]++;
 
@@ -470,7 +469,7 @@ static __init int early_put_chars(u32 vtermno, const char *buf, int count)
 
 static int __init s390_virtio_console_init(void)
 {
-	if (!MACHINE_IS_KVM)
+	if (sclp_has_vt220() || sclp_has_linemode())
 		return -ENODEV;
 	return virtio_cons_early_init(early_put_chars);
 }

@@ -216,6 +216,7 @@
 #define   DSISR_ISSTORE		0x02000000	/* access was a store */
 #define   DSISR_DABRMATCH	0x00400000	/* hit data breakpoint */
 #define   DSISR_NOSEGMENT	0x00200000	/* STAB/SLB miss */
+#define   DSISR_KEYFAULT	0x00200000	/* Key fault */
 #define SPRN_TBRL	0x10C	/* Time Base Read Lower Register (user, R/O) */
 #define SPRN_TBRU	0x10D	/* Time Base Read Upper Register (user, R/O) */
 #define SPRN_TBWL	0x11C	/* Time Base Lower Register (super, R/W) */
@@ -237,6 +238,7 @@
 #define   LPCR_ISL	(1ul << (63-2))
 #define   LPCR_VC_SH	(63-2)
 #define   LPCR_DPFD_SH	(63-11)
+#define   LPCR_VRMASD	(0x1ful << (63-16))
 #define   LPCR_VRMA_L	(1ul << (63-12))
 #define   LPCR_VRMA_LP0	(1ul << (63-15))
 #define   LPCR_VRMA_LP1	(1ul << (63-16))
@@ -255,7 +257,9 @@
 #define   LPCR_LPES_SH	2
 #define   LPCR_RMI     0x00000002      /* real mode is cache inhibit */
 #define   LPCR_HDICE   0x00000001      /* Hyp Decr enable (HV,PR,EE) */
+#ifndef SPRN_LPID
 #define SPRN_LPID	0x13F	/* Logical Partition Identifier */
+#endif
 #define   LPID_RSVD	0x3ff		/* Reserved LPID for partn switching */
 #define	SPRN_HMER	0x150	/* Hardware m? error recovery */
 #define	SPRN_HMEER	0x151	/* Hardware m? enable error recovery */
@@ -487,12 +491,16 @@
 #define SPRN_SPRG1	0x111	/* Special Purpose Register General 1 */
 #define SPRN_SPRG2	0x112	/* Special Purpose Register General 2 */
 #define SPRN_SPRG3	0x113	/* Special Purpose Register General 3 */
+#define SPRN_USPRG3	0x103	/* SPRG3 userspace read */
 #define SPRN_SPRG4	0x114	/* Special Purpose Register General 4 */
 #define SPRN_SPRG5	0x115	/* Special Purpose Register General 5 */
 #define SPRN_SPRG6	0x116	/* Special Purpose Register General 6 */
 #define SPRN_SPRG7	0x117	/* Special Purpose Register General 7 */
 #define SPRN_SRR0	0x01A	/* Save/Restore Register 0 */
 #define SPRN_SRR1	0x01B	/* Save/Restore Register 1 */
+#define   SRR1_ISI_NOPT		0x40000000 /* ISI: Not found in hash */
+#define   SRR1_ISI_N_OR_G	0x10000000 /* ISI: Access is no-exec or G */
+#define   SRR1_ISI_PROT		0x08000000 /* ISI: Other protection fault */
 #define   SRR1_WAKEMASK		0x00380000 /* reason for wakeup */
 #define   SRR1_WAKESYSERR	0x00300000 /* System error */
 #define   SRR1_WAKEEE		0x00200000 /* External interrupt */
@@ -746,14 +754,14 @@
  * 64-bit server:
  *	- SPRG0 unused (reserved for HV on Power4)
  *	- SPRG2 scratch for exception vectors
- *	- SPRG3 unused (user visible)
+ *	- SPRG3 CPU and NUMA node for VDSO getcpu (user visible)
  *      - HSPRG0 stores PACA in HV mode
  *      - HSPRG1 scratch for "HV" exceptions
  *
  * 64-bit embedded
  *	- SPRG0 generic exception scratch
  *	- SPRG2 TLB exception stack
- *	- SPRG3 unused (user visible)
+ *	- SPRG3 CPU and NUMA node for VDSO getcpu (user visible)
  *	- SPRG4 unused (user visible)
  *	- SPRG6 TLB miss scratch (user visible, sorry !)
  *	- SPRG7 critical exception scratch
@@ -1017,7 +1025,8 @@
 /* Macros for setting and retrieving special purpose registers */
 #ifndef __ASSEMBLY__
 #define mfmsr()		({unsigned long rval; \
-			asm volatile("mfmsr %0" : "=r" (rval)); rval;})
+			asm volatile("mfmsr %0" : "=r" (rval) : \
+						: "memory"); rval;})
 #ifdef CONFIG_PPC_BOOK3S_64
 #define __mtmsrd(v, l)	asm volatile("mtmsrd %0," __stringify(l) \
 				     : : "r" (v) : "memory")
@@ -1079,29 +1088,11 @@
 
 #define proc_trap()	asm volatile("trap")
 
-#ifdef CONFIG_PPC64
-
-extern void ppc64_runlatch_on(void);
-extern void __ppc64_runlatch_off(void);
-
-#define ppc64_runlatch_off()					\
-	do {							\
-		if (cpu_has_feature(CPU_FTR_CTRL) &&		\
-		    test_thread_flag(TIF_RUNLATCH))		\
-			__ppc64_runlatch_off();			\
-	} while (0)
+#define __get_SP()	({unsigned long sp; \
+			asm volatile("mr %0,1": "=r" (sp)); sp;})
 
 extern unsigned long scom970_read(unsigned int address);
 extern void scom970_write(unsigned int address, unsigned long value);
-
-#else
-#define ppc64_runlatch_on()
-#define ppc64_runlatch_off()
-
-#endif /* CONFIG_PPC64 */
-
-#define __get_SP()	({unsigned long sp; \
-			asm volatile("mr %0,1": "=r" (sp)); sp;})
 
 struct pt_regs;
 

@@ -93,7 +93,6 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
-#include <asm/system.h>
 #include <asm/cache.h>
 #include <asm/byteorder.h>
 #include <asm/uaccess.h>
@@ -775,13 +774,14 @@ static int __devinit dscc4_init_one(struct pci_dev *pdev,
 	}
 	/* Global interrupt queue */
 	writel((u32)(((IRQ_RING_SIZE >> 5) - 1) << 20), ioaddr + IQLENR1);
+
+	rc = -ENOMEM;
+
 	priv->iqcfg = (__le32 *) pci_alloc_consistent(pdev,
 		IRQ_RING_SIZE*sizeof(__le32), &priv->iqcfg_dma);
 	if (!priv->iqcfg)
 		goto err_free_irq_5;
 	writel(priv->iqcfg_dma, ioaddr + IQCFG);
-
-	rc = -ENOMEM;
 
 	/*
 	 * SCC 0-3 private rx/tx irq structures
@@ -903,10 +903,8 @@ static int dscc4_found1(struct pci_dev *pdev, void __iomem *ioaddr)
 	int i, ret = -ENOMEM;
 
 	root = kcalloc(dev_per_card, sizeof(*root), GFP_KERNEL);
-	if (!root) {
-		pr_err("can't allocate data\n");
+	if (!root)
 		goto err_out;
-	}
 
 	for (i = 0; i < dev_per_card; i++) {
 		root[i].dev = alloc_hdlcdev(root + i);
@@ -915,10 +913,8 @@ static int dscc4_found1(struct pci_dev *pdev, void __iomem *ioaddr)
 	}
 
 	ppriv = kzalloc(sizeof(*ppriv), GFP_KERNEL);
-	if (!ppriv) {
-		pr_err("can't allocate private data\n");
+	if (!ppriv)
 		goto err_free_dev;
-	}
 
 	ppriv->root = root;
 	spin_lock_init(&ppriv->lock);
@@ -2060,15 +2056,4 @@ static struct pci_driver dscc4_driver = {
 	.remove		= __devexit_p(dscc4_remove_one),
 };
 
-static int __init dscc4_init_module(void)
-{
-	return pci_register_driver(&dscc4_driver);
-}
-
-static void __exit dscc4_cleanup_module(void)
-{
-	pci_unregister_driver(&dscc4_driver);
-}
-
-module_init(dscc4_init_module);
-module_exit(dscc4_cleanup_module);
+module_pci_driver(dscc4_driver);

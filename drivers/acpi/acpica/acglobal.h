@@ -147,7 +147,7 @@ u8 acpi_gbl_system_awake_and_running;
  */
 u8 acpi_gbl_reduced_hardware;
 
-#endif
+#endif				/* DEFINE_ACPI_GLOBALS */
 
 /* Do not disassemble buffers to resource descriptors */
 
@@ -184,7 +184,11 @@ ACPI_EXTERN u32 acpi_gbl_trace_dbg_layer;
  * found in the RSDT/XSDT.
  */
 ACPI_EXTERN struct acpi_table_list acpi_gbl_root_table_list;
+
+#if (!ACPI_REDUCED_HARDWARE)
 ACPI_EXTERN struct acpi_table_facs *acpi_gbl_FACS;
+
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 /* These addresses are calculated from the FADT Event Block addresses */
 
@@ -274,8 +278,7 @@ ACPI_EXTERN acpi_cache_t *acpi_gbl_operand_cache;
 
 /* Global handlers */
 
-ACPI_EXTERN struct acpi_object_notify_handler acpi_gbl_device_notify;
-ACPI_EXTERN struct acpi_object_notify_handler acpi_gbl_system_notify;
+ACPI_EXTERN struct acpi_global_notify_handler acpi_gbl_global_notify[2];
 ACPI_EXTERN acpi_exception_handler acpi_gbl_exception_handler;
 ACPI_EXTERN acpi_init_handler acpi_gbl_init_handler;
 ACPI_EXTERN acpi_tbl_handler acpi_gbl_table_handler;
@@ -322,14 +325,6 @@ extern const struct acpi_opcode_info acpi_gbl_aml_op_info[AML_NUM_OPCODES];
 extern const char *acpi_gbl_region_types[ACPI_NUM_PREDEFINED_REGIONS];
 
 #endif
-
-/* Exception codes */
-
-extern char const *acpi_gbl_exception_names_env[];
-extern char const *acpi_gbl_exception_names_pgm[];
-extern char const *acpi_gbl_exception_names_tbl[];
-extern char const *acpi_gbl_exception_names_aml[];
-extern char const *acpi_gbl_exception_names_ctrl[];
 
 /*****************************************************************************
  *
@@ -397,9 +392,14 @@ ACPI_EXTERN struct acpi_fixed_event_handler
 ACPI_EXTERN struct acpi_gpe_xrupt_info *acpi_gbl_gpe_xrupt_list_head;
 ACPI_EXTERN struct acpi_gpe_block_info
 *acpi_gbl_gpe_fadt_blocks[ACPI_MAX_GPE_BLOCKS];
+
+#if (!ACPI_REDUCED_HARDWARE)
+
 ACPI_EXTERN u8 acpi_gbl_all_gpes_initialized;
 ACPI_EXTERN ACPI_GBL_EVENT_HANDLER acpi_gbl_global_event_handler;
 ACPI_EXTERN void *acpi_gbl_global_event_handler_context;
+
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 /*****************************************************************************
  *
@@ -453,5 +453,13 @@ ACPI_EXTERN u32 acpi_gbl_size_of_node_entries;
 ACPI_EXTERN u32 acpi_gbl_size_of_acpi_objects;
 
 #endif				/* ACPI_DEBUGGER */
+
+/*****************************************************************************
+ *
+ * Info/help support
+ *
+ ****************************************************************************/
+
+extern const struct ah_predefined_name asl_predefined_info[];
 
 #endif				/* __ACGLOBAL_H__ */

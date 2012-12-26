@@ -18,39 +18,44 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
-#include <linux/io.h>
 #include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 #include <linux/mfd/tps6586x.h>
+#include <linux/of.h>
+#include <linux/of_i2c.h>
 
-#include <mach/iomap.h>
+#include <asm/mach-types.h>
+
 #include <mach/irqs.h>
 
 #include "board-harmony.h"
-
-#define PMC_CTRL		0x0
-#define PMC_CTRL_INTR_LOW	(1 << 17)
 
 static struct regulator_consumer_supply tps658621_ldo0_supply[] = {
 	REGULATOR_SUPPLY("pex_clk", NULL),
 };
 
 static struct regulator_init_data ldo0_data = {
+	.supply_regulator = "vdd_sm2",
 	.constraints = {
-		.min_uV = 1250 * 1000,
+		.name = "vdd_ldo0",
+		.min_uV = 3300 * 1000,
 		.max_uV = 3300 * 1000,
 		.valid_modes_mask = (REGULATOR_MODE_NORMAL |
 				     REGULATOR_MODE_STANDBY),
 		.valid_ops_mask = (REGULATOR_CHANGE_MODE |
 				   REGULATOR_CHANGE_STATUS |
 				   REGULATOR_CHANGE_VOLTAGE),
+		.apply_uV = 1,
 	},
 	.num_consumer_supplies = ARRAY_SIZE(tps658621_ldo0_supply),
 	.consumer_supplies = tps658621_ldo0_supply,
 };
 
-#define HARMONY_REGULATOR_INIT(_id, _minmv, _maxmv)			\
+#define HARMONY_REGULATOR_INIT(_id, _name, _supply, _minmv, _maxmv, _on)\
 	static struct regulator_init_data _id##_data = {		\
+		.supply_regulator = _supply,				\
 		.constraints = {					\
+			.name = _name,					\
 			.min_uV = (_minmv)*1000,			\
 			.max_uV = (_maxmv)*1000,			\
 			.valid_modes_mask = (REGULATOR_MODE_NORMAL |	\
@@ -58,21 +63,22 @@ static struct regulator_init_data ldo0_data = {
 			.valid_ops_mask = (REGULATOR_CHANGE_MODE |	\
 					   REGULATOR_CHANGE_STATUS |	\
 					   REGULATOR_CHANGE_VOLTAGE),	\
+			.always_on = _on,				\
 		},							\
 	}
 
-HARMONY_REGULATOR_INIT(sm0, 725, 1500);
-HARMONY_REGULATOR_INIT(sm1, 725, 1500);
-HARMONY_REGULATOR_INIT(sm2, 3000, 4550);
-HARMONY_REGULATOR_INIT(ldo1, 725, 1500);
-HARMONY_REGULATOR_INIT(ldo2, 725, 1500);
-HARMONY_REGULATOR_INIT(ldo3, 1250, 3300);
-HARMONY_REGULATOR_INIT(ldo4, 1700, 2475);
-HARMONY_REGULATOR_INIT(ldo5, 1250, 3300);
-HARMONY_REGULATOR_INIT(ldo6, 1250, 3300);
-HARMONY_REGULATOR_INIT(ldo7, 1250, 3300);
-HARMONY_REGULATOR_INIT(ldo8, 1250, 3300);
-HARMONY_REGULATOR_INIT(ldo9, 1250, 3300);
+HARMONY_REGULATOR_INIT(sm0,  "vdd_sm0",  "vdd_sys", 725, 1500, 1);
+HARMONY_REGULATOR_INIT(sm1,  "vdd_sm1",  "vdd_sys", 725, 1500, 1);
+HARMONY_REGULATOR_INIT(sm2,  "vdd_sm2",  "vdd_sys", 3000, 4550, 1);
+HARMONY_REGULATOR_INIT(ldo1, "vdd_ldo1", "vdd_sm2", 725, 1500, 1);
+HARMONY_REGULATOR_INIT(ldo2, "vdd_ldo2", "vdd_sm2", 725, 1500, 0);
+HARMONY_REGULATOR_INIT(ldo3, "vdd_ldo3", "vdd_sm2", 1250, 3300, 1);
+HARMONY_REGULATOR_INIT(ldo4, "vdd_ldo4", "vdd_sm2", 1700, 2475, 1);
+HARMONY_REGULATOR_INIT(ldo5, "vdd_ldo5", NULL,	    1250, 3300, 1);
+HARMONY_REGULATOR_INIT(ldo6, "vdd_ldo6", "vdd_sm2", 1250, 3300, 0);
+HARMONY_REGULATOR_INIT(ldo7, "vdd_ldo7", "vdd_sm2", 1250, 3300, 0);
+HARMONY_REGULATOR_INIT(ldo8, "vdd_ldo8", "vdd_sm2", 1250, 3300, 0);
+HARMONY_REGULATOR_INIT(ldo9, "vdd_ldo9", "vdd_sm2", 1250, 3300, 1);
 
 #define TPS_REG(_id, _data)			\
 	{					\
@@ -114,17 +120,29 @@ static struct i2c_board_info __initdata harmony_regulators[] = {
 
 int __init harmony_regulator_init(void)
 {
-	void __iomem *pmc = IO_ADDRESS(TEGRA_PMC_BASE);
-	u32 pmc_ctrl;
+	regulator_register_always_on(0, "vdd_sys",
+		NULL, 0, 5000000);
 
-	/*
-	 * Configure the power management controller to trigger PMU
-	 * interrupts when low
-	 */
-	pmc_ctrl = readl(pmc + PMC_CTRL);
-	writel(pmc_ctrl | PMC_CTRL_INTR_LOW, pmc + PMC_CTRL);
+	if (machine_is_harmony()) {
+		i2c_register_board_info(3, harmony_regulators, 1);
+	} else { /* Harmony, booted using device tree */
+		struct device_node *np;
+		struct i2c_adapter *adapter;
 
-	i2c_register_board_info(3, harmony_regulators, 1);
+		np = of_find_node_by_path("/i2c@7000d000");
+		if (np == NULL) {
+			pr_err("Could not find device_node for DVC I2C\n");
+			return -ENODEV;
+		}
+
+		adapter = of_find_i2c_adapter_by_node(np);
+		if (!adapter) {
+			pr_err("Could not find i2c_adapter for DVC I2C\n");
+			return -ENODEV;
+		}
+
+		i2c_new_device(adapter, harmony_regulators);
+	}
 
 	return 0;
 }

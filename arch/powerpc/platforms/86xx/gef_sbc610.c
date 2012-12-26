@@ -24,7 +24,6 @@
 #include <linux/seq_file.h>
 #include <linux/of_platform.h>
 
-#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
@@ -37,9 +36,9 @@
 
 #include <sysdev/fsl_pci.h>
 #include <sysdev/fsl_soc.h>
+#include <sysdev/ge/ge_pic.h>
 
 #include "mpc86xx.h"
-#include "gef_pic.h"
 
 #undef DEBUG
 
@@ -142,7 +141,7 @@ static void gef_sbc610_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 }
 
-static void __init gef_sbc610_nec_fixup(struct pci_dev *pdev)
+static void __devinit gef_sbc610_nec_fixup(struct pci_dev *pdev)
 {
 	unsigned int val;
 

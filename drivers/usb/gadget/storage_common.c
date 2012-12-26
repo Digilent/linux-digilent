@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2003-2008 Alan Stern
  * Copyeight (C) 2009 Samsung Electronics
- * Author: Michal Nazarewicz (m.nazarewicz@samsung.com)
+ * Author: Michal Nazarewicz (mina86@mina86.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,12 +35,6 @@
  * missing) and FSG_STRING_INTERFACE has value of zero.
  *
  * When FSG_NO_OTG is defined fsg_otg_desc won't be defined.
- */
-
-/*
- * When FSG_BUFFHD_STATIC_BUFFER is defined when this file is included
- * the fsg_buffhd structure's buf field will be an array of FSG_BUFLEN
- * characters rather then a pointer to void.
  */
 
 /*
@@ -145,47 +139,7 @@
 
 #endif /* DUMP_MSGS */
 
-
-
-
-
 /*-------------------------------------------------------------------------*/
-
-/* Bulk-only data structures */
-
-/* Command Block Wrapper */
-struct fsg_bulk_cb_wrap {
-	__le32	Signature;		/* Contains 'USBC' */
-	u32	Tag;			/* Unique per command id */
-	__le32	DataTransferLength;	/* Size of the data */
-	u8	Flags;			/* Direction in bit 7 */
-	u8	Lun;			/* LUN (normally 0) */
-	u8	Length;			/* Of the CDB, <= MAX_COMMAND_SIZE */
-	u8	CDB[16];		/* Command Data Block */
-};
-
-#define USB_BULK_CB_WRAP_LEN	31
-#define USB_BULK_CB_SIG		0x43425355	/* Spells out USBC */
-#define USB_BULK_IN_FLAG	0x80
-
-/* Command Status Wrapper */
-struct bulk_cs_wrap {
-	__le32	Signature;		/* Should = 'USBS' */
-	u32	Tag;			/* Same as original command */
-	__le32	Residue;		/* Amount not transferred */
-	u8	Status;			/* See below */
-};
-
-#define USB_BULK_CS_WRAP_LEN	13
-#define USB_BULK_CS_SIG		0x53425355	/* Spells out 'USBS' */
-#define USB_STATUS_PASS		0
-#define USB_STATUS_FAIL		1
-#define USB_STATUS_PHASE_ERROR	2
-
-/* Bulk-only class specific requests */
-#define USB_BULK_RESET_REQUEST		0xff
-#define USB_BULK_GET_MAX_LUN_REQUEST	0xfe
-
 
 /* CBI Interrupt data structure */
 struct interrupt_data {
@@ -300,11 +254,7 @@ enum fsg_buffer_state {
 };
 
 struct fsg_buffhd {
-#ifdef FSG_BUFFHD_STATIC_BUFFER
-	char				buf[FSG_BUFLEN];
-#else
 	void				*buf;
-#endif
 	enum fsg_buffer_state		state;
 	struct fsg_buffhd		*next;
 
@@ -667,6 +617,16 @@ static struct usb_gadget_strings	fsg_stringtab = {
  * the caller must own fsg->filesem for writing.
  */
 
+static void fsg_lun_close(struct fsg_lun *curlun)
+{
+	if (curlun->filp) {
+		LDBG(curlun, "close backing file\n");
+		fput(curlun->filp);
+		curlun->filp = NULL;
+	}
+}
+
+
 static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 {
 	int				ro;
@@ -676,6 +636,8 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	loff_t				size;
 	loff_t				num_sectors;
 	loff_t				min_sectors;
+	unsigned int			blkbits;
+	unsigned int			blksize;
 
 	/* R/W if we can, R/O if we must */
 	ro = curlun->initially_ro;
@@ -694,9 +656,8 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	if (!(filp->f_mode & FMODE_WRITE))
 		ro = 1;
 
-	if (filp->f_path.dentry)
-		inode = filp->f_path.dentry->d_inode;
-	if (!inode || (!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))) {
+	inode = filp->f_path.dentry->d_inode;
+	if ((!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))) {
 		LINFO(curlun, "invalid file type: %s\n", filename);
 		goto out;
 	}
@@ -705,7 +666,7 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	 * If we can't read the file, it's no good.
 	 * If we can't write the file, use it read-only.
 	 */
-	if (!filp->f_op || !(filp->f_op->read || filp->f_op->aio_read)) {
+	if (!(filp->f_op->read || filp->f_op->aio_read)) {
 		LINFO(curlun, "file not readable: %s\n", filename);
 		goto out;
 	}
@@ -720,17 +681,17 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	}
 
 	if (curlun->cdrom) {
-		curlun->blksize = 2048;
-		curlun->blkbits = 11;
+		blksize = 2048;
+		blkbits = 11;
 	} else if (inode->i_bdev) {
-		curlun->blksize = bdev_logical_block_size(inode->i_bdev);
-		curlun->blkbits = blksize_bits(curlun->blksize);
+		blksize = bdev_logical_block_size(inode->i_bdev);
+		blkbits = blksize_bits(blksize);
 	} else {
-		curlun->blksize = 512;
-		curlun->blkbits = 9;
+		blksize = 512;
+		blkbits = 9;
 	}
 
-	num_sectors = size >> curlun->blkbits; /* File size in logic-block-size blocks */
+	num_sectors = size >> blkbits; /* File size in logic-block-size blocks */
 	min_sectors = 1;
 	if (curlun->cdrom) {
 		min_sectors = 300;	/* Smallest track is 300 frames */
@@ -747,27 +708,21 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 		goto out;
 	}
 
-	get_file(filp);
+	if (fsg_lun_is_open(curlun))
+		fsg_lun_close(curlun);
+
+	curlun->blksize = blksize;
+	curlun->blkbits = blkbits;
 	curlun->ro = ro;
 	curlun->filp = filp;
 	curlun->file_length = size;
 	curlun->num_sectors = num_sectors;
 	LDBG(curlun, "open backing file: %s\n", filename);
-	rc = 0;
+	return 0;
 
 out:
-	filp_close(filp, current->files);
+	fput(filp);
 	return rc;
-}
-
-
-static void fsg_lun_close(struct fsg_lun *curlun)
-{
-	if (curlun->filp) {
-		LDBG(curlun, "close backing file\n");
-		fput(curlun->filp);
-		curlun->filp = NULL;
-	}
 }
 
 
@@ -921,19 +876,17 @@ static ssize_t fsg_store_file(struct device *dev, struct device_attribute *attr,
 	if (count > 0 && buf[count-1] == '\n')
 		((char *) buf)[count-1] = 0;		/* Ugh! */
 
-	/* Eject current medium */
-	down_write(filesem);
-	if (fsg_lun_is_open(curlun)) {
-		fsg_lun_close(curlun);
-		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
-	}
-
 	/* Load new medium */
+	down_write(filesem);
 	if (count > 0 && buf[0]) {
+		/* fsg_lun_open() will close existing file if any. */
 		rc = fsg_lun_open(curlun, buf);
 		if (rc == 0)
 			curlun->unit_attention_data =
 					SS_NOT_READY_TO_READY_TRANSITION;
+	} else if (fsg_lun_is_open(curlun)) {
+		fsg_lun_close(curlun);
+		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
 	}
 	up_write(filesem);
 	return (rc < 0 ? rc : count);

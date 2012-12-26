@@ -35,13 +35,6 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
 
-#define HACK_PAGE_SZ_128		/* temp hack to use 128 byte page */
-#ifdef HACK_PAGE_SZ_128
- #define MTD_PAGE_SIZE	128
-#else
- #define MTD_PAGE_SIZE	256
-#endif
-
 /* Flash opcodes. */
 #define	OPCODE_WREN		0x06	/* Write enable */
 #define	OPCODE_RDSR		0x05	/* Read status register */
@@ -66,6 +59,7 @@
 
 /* Used for Spansion flashes only. */
 #define	OPCODE_BRWR		0x17	/* Bank register write */
+#define	OPCODE_BRRD		0x16	/* Bank register write */
 
 /* Status Register bits. */
 #define	SR_WIP			1	/* Write in progress */
@@ -173,6 +167,9 @@ static inline int write_disable(struct m25p *flash)
  */
 static inline int set_4byte(struct m25p *flash, u32 jedec_id, int enable)
 {
+	int ret;
+	u8 val;
+
 	switch (JEDEC_MFR(jedec_id)) {
 	case CFI_MFR_MACRONIX:
 		flash->command[0] = enable ? OPCODE_EN4B : OPCODE_EX4B;
@@ -180,8 +177,18 @@ static inline int set_4byte(struct m25p *flash, u32 jedec_id, int enable)
 	default:
 		/* Spansion style */
 		flash->command[0] = OPCODE_BRWR;
-		flash->command[1] = enable << 7;
-		return spi_write(flash->spi, flash->command, 2);
+		flash->command[1] = enable << 7 ;
+		ret = spi_write(flash->spi, flash->command, 2);
+
+		/* verify the 4 byte mode is enabled */
+		flash->command[0] = OPCODE_BRRD;
+		spi_write_then_read(flash->spi, flash->command, 1, &val, 1);
+		if (val != enable << 7) {
+			dev_warn(&flash->spi->dev, "fallback to 3-byte address mode\n");
+			dev_warn(&flash->spi->dev, "maximum accessible size is 16MB\n");
+			flash->addr_width = 3;
+		}
+		return ret;
 	}
 }
 
@@ -295,9 +302,6 @@ static int m25p80_erase(struct mtd_info *mtd, struct erase_info *instr)
 			__func__, (long long)instr->addr,
 			(long long)instr->len);
 
-	/* sanity checks */
-	if (instr->addr + instr->len > flash->mtd.size)
-		return -EINVAL;
 	div_u64_rem(instr->len, mtd->erasesize, &rem);
 	if (rem)
 		return -EINVAL;
@@ -356,13 +360,6 @@ static int m25p80_read(struct mtd_info *mtd, loff_t from, size_t len,
 	pr_debug("%s: %s from 0x%08x, len %zd\n", dev_name(&flash->spi->dev),
 			__func__, (u32)from, len);
 
-	/* sanity checks */
-	if (!len)
-		return 0;
-
-	if (from + len > flash->mtd.size)
-		return -EINVAL;
-
 	spi_message_init(&m);
 	memset(t, 0, (sizeof t));
 
@@ -377,9 +374,6 @@ static int m25p80_read(struct mtd_info *mtd, loff_t from, size_t len,
 	t[1].rx_buf = buf;
 	t[1].len = len;
 	spi_message_add_tail(&t[1], &m);
-
-	/* Byte count starts at zero. */
-	*retlen = 0;
 
 	mutex_lock(&flash->lock);
 
@@ -423,15 +417,6 @@ static int m25p80_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	pr_debug("%s: %s to 0x%08x, len %zd\n", dev_name(&flash->spi->dev),
 			__func__, (u32)to, len);
-
-	*retlen = 0;
-
-	/* sanity checks */
-	if (!len)
-		return(0);
-
-	if (to + len > flash->mtd.size)
-		return -EINVAL;
 
 	spi_message_init(&m);
 	memset(t, 0, (sizeof t));
@@ -515,15 +500,6 @@ static int sst_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	pr_debug("%s: %s to 0x%08x, len %zd\n", dev_name(&flash->spi->dev),
 			__func__, (u32)to, len);
-
-	*retlen = 0;
-
-	/* sanity checks */
-	if (!len)
-		return 0;
-
-	if (to + len > flash->mtd.size)
-		return -EINVAL;
 
 	spi_message_init(&m);
 	memset(t, 0, (sizeof t));
@@ -632,7 +608,7 @@ struct flash_info {
 	u16		flags;
 #define	SECT_4K		0x01		/* OPCODE_BE_4K works uniformly */
 #define	M25P_NO_ERASE	0x02		/* No erase command needed */
-#define	SECT_32K	0x03		/* OPCODE_BE_32K */
+#define	SECT_32K	0x04		/* OPCODE_BE_32K */
 };
 
 #define INFO(_jedec_id, _ext_id, _sector_size, _n_sectors, _flags)	\
@@ -678,12 +654,16 @@ static const struct spi_device_id m25p_ids[] = {
 	{ "en25q32b", INFO(0x1c3016, 0, 64 * 1024,  64, 0) },
 	{ "en25p64", INFO(0x1c2017, 0, 64 * 1024, 128, 0) },
 
+	/* Everspin */
+	{ "mr25h256", CAT25_INFO(  32 * 1024, 1, 256, 2) },
+
 	/* Intel/Numonyx -- xxxs33b */
 	{ "160s33b",  INFO(0x898911, 0, 64 * 1024,  32, 0) },
 	{ "320s33b",  INFO(0x898912, 0, 64 * 1024,  64, 0) },
 	{ "640s33b",  INFO(0x898913, 0, 64 * 1024, 128, 0) },
 
 	/* Macronix */
+	{ "mx25l2005a",  INFO(0xc22012, 0, 64 * 1024,   4, SECT_4K) },
 	{ "mx25l4005a",  INFO(0xc22013, 0, 64 * 1024,   8, SECT_4K) },
 	{ "mx25l8005",   INFO(0xc22014, 0, 64 * 1024,  16, 0) },
 	{ "mx25l1606e",  INFO(0xc22015, 0, 64 * 1024,  32, SECT_4K) },
@@ -693,6 +673,12 @@ static const struct spi_device_id m25p_ids[] = {
 	{ "mx25l12855e", INFO(0xc22618, 0, 64 * 1024, 256, 0) },
 	{ "mx25l25635e", INFO(0xc22019, 0, 64 * 1024, 512, 0) },
 	{ "mx25l25655e", INFO(0xc22619, 0, 64 * 1024, 512, 0) },
+
+	/* Micron */
+	{ "n25q128",  INFO(0x20ba18, 0, 64 * 1024, 256, 0) },
+	{ "n25q256a", INFO(0x20ba19, 0, 64 * 1024, 512, SECT_4K) },
+	/* Numonyx flash n25q128 - FIXME check the name */
+	{ "n25q128",   INFO(0x20bb18, 0, 64 * 1024, 256, 0) },
 
 	/* Spansion -- single (large) sector size only, at least
 	 * for the chips listed here (without boot sectors).
@@ -710,13 +696,13 @@ static const struct spi_device_id m25p_ids[] = {
 	{ "s25sl12800", INFO(0x012018, 0x0300, 256 * 1024,  64, 0) },
 	{ "s25sl12801", INFO(0x012018, 0x0301,  64 * 1024, 256, 0) },
 	{ "s25fl129p0", INFO(0x012018, 0x4d00, 256 * 1024,  64, 0) },
-#ifdef CONFIG_XILINX_PS_QSPI_USE_DUAL_FLASH
-	{ "s25fl129p1x2", INFO(0x012018, 0x4d01,  128 * 1024, 256, 0) },
-#else
 	{ "s25fl129p1", INFO(0x012018, 0x4d01,  64 * 1024, 256, 0) },
-#endif
 	{ "s25fl016k",  INFO(0xef4015,      0,  64 * 1024,  32, SECT_4K) },
-	{ "s25fl064k",  INFO(0xef4017,      0,  64 * 1024, 128, SECT_4K) },
+	/* s25fl064k supports 4KiB, 32KiB and 64KiB sectors erase size. */
+	/* To support JFFS2, the minimum erase size is 8KiB(>4KiB). */
+	/* And thus, the sector size of s25fl064k is set to 32KiB for */
+	/* JFFS2 support. */
+	{ "s25fl064k",  INFO(0xef4017,      0,  64 * 1024, 128, SECT_32K) },
 
 	/* SST -- large erase sizes are "overlays", "sectors" are 4K */
 	{ "sst25vf040b", INFO(0xbf258d, 0, 64 * 1024,  8, SECT_4K) },
@@ -739,13 +725,6 @@ static const struct spi_device_id m25p_ids[] = {
 	{ "m25p32",  INFO(0x202016,  0,  64 * 1024,  64, 0) },
 	{ "m25p64",  INFO(0x202017,  0,  64 * 1024, 128, 0) },
 	{ "m25p128", INFO(0x202018,  0, 256 * 1024,  64, 0) },
-
-	/* Numonyx flash n25q128 */
-#ifdef CONFIG_XILINX_PS_QSPI_USE_DUAL_FLASH
-	{ "n25q128x2", INFO(0x20bb18,  0, 128 * 1024, 256, 0) },
-#else
-	{ "n25q128",   INFO(0x20bb18,  0,  64 * 1024, 256, 0) },
-#endif
 
 	{ "m25p05-nonjedec",  INFO(0, 0,  32 * 1024,   2, 0) },
 	{ "m25p10-nonjedec",  INFO(0, 0,  32 * 1024,   4, 0) },
@@ -784,6 +763,7 @@ static const struct spi_device_id m25p_ids[] = {
 	/* And thus, the sector size of w25q64 is set to 32KiB for */
 	/* JFFS2 support. */
 	{ "w25q64", INFO(0xef4017, 0, 64 * 1024, 128, SECT_32K) },
+	{ "w25q80", INFO(0xef5014, 0, 64 * 1024,  16, SECT_4K) },
 
 	/* Catalyst / On Semiconductor -- non-JEDEC */
 	{ "cat25c11", CAT25_INFO(  16, 8, 16, 1) },
@@ -933,14 +913,45 @@ static int __devinit m25p_probe(struct spi_device *spi)
 	flash->mtd.writesize = 1;
 	flash->mtd.flags = MTD_CAP_NORFLASH;
 	flash->mtd.size = info->sector_size * info->n_sectors;
-	flash->mtd.erase = m25p80_erase;
-	flash->mtd.read = m25p80_read;
+
+#ifdef CONFIG_SPI_XILINX_PS_QSPI
+	{
+		const unsigned int *prop;
+		const struct device_node *np;
+
+		/* for Zynq, two devices (dual) QSPI (seperate bus) is supported
+		 * in which there can be two devices that appear as one to s/w
+		 * the only way to tell this mode is from the qspi controller
+		 * and if it's used, then the memory is x2 the amount
+		 */
+		np = of_get_next_parent(spi->dev.of_node);
+		prop = of_get_property(np, "is-dual", NULL);
+		if (prop) {
+			if (be32_to_cpup(prop)) {
+				info->sector_size *= 2;
+				flash->mtd.size *= 2;
+				/* This hack bypass the 4 byte mode configuration for the
+				 * qspi flash chip. It sets mtd to 4 byte mode but leave
+				 * the qspi flash in 3 byte mode (or flash default mode).
+				 * This can be issue when two 32MB flash is configured as
+				 * dual mode, it will not work if the qspi flash chip
+				 * is configured in 3 byte mode as it require 4 byte
+				 * addressing to access the entire 32MB
+				 */
+				if (flash->mtd.size > 0x1000000)
+					info->addr_width = 4;
+			}
+		}
+	}
+#endif
+	flash->mtd._erase = m25p80_erase;
+	flash->mtd._read = m25p80_read;
 
 	/* sst flash chips use AAI word program */
 	if (JEDEC_MFR(info->jedec_id) == CFI_MFR_SST)
-		flash->mtd.write = sst_write;
+		flash->mtd._write = sst_write;
 	else
-		flash->mtd.write = m25p80_write;
+		flash->mtd._write = m25p80_write;
 
 	/* prefer "small sector" erase if possible */
 	if (info->flags & SECT_4K) {
@@ -960,6 +971,7 @@ static int __devinit m25p_probe(struct spi_device *spi)
 	ppdata.of_node = spi->dev.of_node;
 	flash->mtd.dev.parent = &spi->dev;
 	flash->page_size = info->page_size;
+	flash->mtd.writebufsize = flash->page_size;
 
 	if (info->addr_width)
 		flash->addr_width = info->addr_width;
@@ -1032,21 +1044,7 @@ static struct spi_driver m25p80_driver = {
 	 */
 };
 
-
-static int __init m25p80_init(void)
-{
-	return spi_register_driver(&m25p80_driver);
-}
-
-
-static void __exit m25p80_exit(void)
-{
-	spi_unregister_driver(&m25p80_driver);
-}
-
-
-module_init(m25p80_init);
-module_exit(m25p80_exit);
+module_spi_driver(m25p80_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mike Lavender");

@@ -20,13 +20,15 @@
 #define MXC_EHCI_INTERFACE_MASK		(0xf)
 
 #define MXC_EHCI_POWER_PINS_ENABLED	(1 << 5)
-#define MXC_EHCI_TTL_ENABLED		(1 << 6)
+#define MXC_EHCI_PWR_PIN_ACTIVE_HIGH	(1 << 6)
+#define MXC_EHCI_OC_PIN_ACTIVE_LOW	(1 << 7)
+#define MXC_EHCI_TTL_ENABLED		(1 << 8)
 
-#define MXC_EHCI_INTERNAL_PHY		(1 << 7)
-#define MXC_EHCI_IPPUE_DOWN		(1 << 8)
-#define MXC_EHCI_IPPUE_UP		(1 << 9)
-#define MXC_EHCI_WAKEUP_ENABLED	(1 << 10)
-#define MXC_EHCI_ITC_NO_THRESHOLD	(1 << 11)
+#define MXC_EHCI_INTERNAL_PHY		(1 << 9)
+#define MXC_EHCI_IPPUE_DOWN		(1 << 10)
+#define MXC_EHCI_IPPUE_UP		(1 << 11)
+#define MXC_EHCI_WAKEUP_ENABLED		(1 << 12)
+#define MXC_EHCI_ITC_NO_THRESHOLD	(1 << 13)
 
 #define MXC_USBCTRL_OFFSET		0
 #define MXC_USB_PHY_CTR_FUNC_OFFSET	0x8
@@ -44,7 +46,7 @@ struct mxc_usbh_platform_data {
 	int (*exit)(struct platform_device *pdev);
 
 	unsigned int		 portsc;
-	struct otg_transceiver	*otg;
+	struct usb_phy		*otg;
 };
 
 int mx51_initialize_usb_hw(int port, unsigned int flags);

@@ -26,6 +26,8 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/usb/r8a66597.h>
 #include <linux/io.h>
 #include <linux/input.h>
@@ -34,12 +36,11 @@
 #include <linux/mmc/sh_mobile_sdhi.h>
 #include <linux/gpio.h>
 #include <linux/dma-mapping.h>
+#include <mach/irqs.h>
 #include <mach/sh7377.h>
 #include <mach/common.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
-#include <asm/mach/time.h>
 
 /*
  * SDHI
@@ -197,6 +198,15 @@ static struct platform_device keysc_device = {
 	},
 };
 
+/* Fixed 3.3V regulator to be used by SDHI0 and SDHI1 */
+static struct regulator_consumer_supply fixed3v3_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.1"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.1"),
+};
+
 /* SDHI */
 static struct sh_mobile_sdhi_info sdhi0_info = {
 	.tmio_caps	= MMC_CAP_SDIO_IRQ,
@@ -260,27 +270,6 @@ static struct platform_device *g4evm_devices[] __initdata = {
 	&sdhi1_device,
 };
 
-static struct map_desc g4evm_io_desc[] __initdata = {
-	/* create a 1:1 entity map for 0xe6xxxxxx
-	 * used by CPGA, INTC and PFC.
-	 */
-	{
-		.virtual	= 0xe6000000,
-		.pfn		= __phys_to_pfn(0xe6000000),
-		.length		= 256 << 20,
-		.type		= MT_DEVICE_NONSHARED
-	},
-};
-
-static void __init g4evm_map_io(void)
-{
-	iotable_init(g4evm_io_desc, ARRAY_SIZE(g4evm_io_desc));
-
-	/* setup early devices and console here as well */
-	sh7377_add_early_devices();
-	shmobile_setup_console();
-}
-
 #define GPIO_SDHID0_D0	0xe60520fc
 #define GPIO_SDHID0_D1	0xe60520fd
 #define GPIO_SDHID0_D2	0xe60520fe
@@ -293,26 +282,11 @@ static void __init g4evm_map_io(void)
 #define GPIO_SDHID1_D3	0xe6052106
 #define GPIO_SDHICMD1	0xe6052107
 
-/*
- * FIXME !!
- *
- * gpio_pull_up is quick_hack.
- *
- * current gpio frame work doesn't have
- * the method to control only pull up/down/free.
- * this function should be replaced by correct gpio function
- */
-static void __init gpio_pull_up(u32 addr)
-{
-	u8 data = __raw_readb(addr);
-
-	data &= 0x0F;
-	data |= 0xC0;
-	__raw_writeb(data, addr);
-}
-
 static void __init g4evm_init(void)
 {
+	regulator_register_always_on(0, "fixed-3.3V", fixed3v3_power_consumers,
+				     ARRAY_SIZE(fixed3v3_power_consumers), 3300000);
+
 	sh7377_pinmux_init();
 
 	/* Lit DS14 LED */
@@ -373,11 +347,11 @@ static void __init g4evm_init(void)
 	gpio_request(GPIO_FN_SDHID0_3, NULL);
 	gpio_request(GPIO_FN_SDHICMD0, NULL);
 	gpio_request(GPIO_FN_SDHIWP0, NULL);
-	gpio_pull_up(GPIO_SDHID0_D0);
-	gpio_pull_up(GPIO_SDHID0_D1);
-	gpio_pull_up(GPIO_SDHID0_D2);
-	gpio_pull_up(GPIO_SDHID0_D3);
-	gpio_pull_up(GPIO_SDHICMD0);
+	gpio_request_pullup(GPIO_SDHID0_D0);
+	gpio_request_pullup(GPIO_SDHID0_D1);
+	gpio_request_pullup(GPIO_SDHID0_D2);
+	gpio_request_pullup(GPIO_SDHID0_D3);
+	gpio_request_pullup(GPIO_SDHICMD0);
 
 	/* SDHI1 */
 	gpio_request(GPIO_FN_SDHICLK1, NULL);
@@ -386,31 +360,23 @@ static void __init g4evm_init(void)
 	gpio_request(GPIO_FN_SDHID1_2, NULL);
 	gpio_request(GPIO_FN_SDHID1_3, NULL);
 	gpio_request(GPIO_FN_SDHICMD1, NULL);
-	gpio_pull_up(GPIO_SDHID1_D0);
-	gpio_pull_up(GPIO_SDHID1_D1);
-	gpio_pull_up(GPIO_SDHID1_D2);
-	gpio_pull_up(GPIO_SDHID1_D3);
-	gpio_pull_up(GPIO_SDHICMD1);
+	gpio_request_pullup(GPIO_SDHID1_D0);
+	gpio_request_pullup(GPIO_SDHID1_D1);
+	gpio_request_pullup(GPIO_SDHID1_D2);
+	gpio_request_pullup(GPIO_SDHID1_D3);
+	gpio_request_pullup(GPIO_SDHICMD1);
 
 	sh7377_add_standard_devices();
 
 	platform_add_devices(g4evm_devices, ARRAY_SIZE(g4evm_devices));
 }
 
-static void __init g4evm_timer_init(void)
-{
-	sh7377_clock_init();
-	shmobile_timer.init();
-}
-
-static struct sys_timer g4evm_timer = {
-	.init		= g4evm_timer_init,
-};
-
 MACHINE_START(G4EVM, "g4evm")
-	.map_io		= g4evm_map_io,
+	.map_io		= sh7377_map_io,
+	.init_early	= sh7377_add_early_devices,
 	.init_irq	= sh7377_init_irq,
 	.handle_irq	= shmobile_handle_irq_intc,
 	.init_machine	= g4evm_init,
-	.timer		= &g4evm_timer,
+	.init_late	= shmobile_init_late,
+	.timer		= &shmobile_timer,
 MACHINE_END

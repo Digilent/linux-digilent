@@ -43,6 +43,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 
+#include <asm/system_info.h>
+
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
@@ -951,12 +953,12 @@ static struct i2c_board_info raumfeld_connector_i2c_board_info __initdata = {
 
 static struct eeti_ts_platform_data eeti_ts_pdata = {
 	.irq_active_high = 1,
+	.irq_gpio = GPIO_TOUCH_IRQ,
 };
 
 static struct i2c_board_info raumfeld_controller_i2c_board_info __initdata = {
 	.type	= "eeti_ts",
 	.addr	= 0x0a,
-	.irq	= PXA_GPIO_TO_IRQ(GPIO_TOUCH_IRQ),
 	.platform_data = &eeti_ts_pdata,
 };
 
@@ -1090,6 +1092,7 @@ MACHINE_START(RAUMFELD_RC, "Raumfeld Controller")
 	.atag_offset	= 0x100,
 	.init_machine	= raumfeld_controller_init,
 	.map_io		= pxa3xx_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa3xx_init_irq,
 	.handle_irq	= pxa3xx_handle_irq,
 	.timer		= &pxa_timer,
@@ -1102,6 +1105,7 @@ MACHINE_START(RAUMFELD_CONNECTOR, "Raumfeld Connector")
 	.atag_offset	= 0x100,
 	.init_machine	= raumfeld_connector_init,
 	.map_io		= pxa3xx_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa3xx_init_irq,
 	.handle_irq	= pxa3xx_handle_irq,
 	.timer		= &pxa_timer,
@@ -1114,6 +1118,7 @@ MACHINE_START(RAUMFELD_SPEAKER, "Raumfeld Speaker")
 	.atag_offset	= 0x100,
 	.init_machine	= raumfeld_speaker_init,
 	.map_io		= pxa3xx_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa3xx_init_irq,
 	.handle_irq	= pxa3xx_handle_irq,
 	.timer		= &pxa_timer,

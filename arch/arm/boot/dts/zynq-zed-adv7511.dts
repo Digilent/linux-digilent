@@ -9,7 +9,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x000000000 0x40000000>;
+		reg = <0x000000000 0x20000000>;
 	};
 	chosen {
 //		bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x1100000,33M ip=:::::eth0:dhcp earlyprintk";
@@ -45,7 +45,9 @@
 			interrupts = <0 10 0>,<0 11 0>,<0 12 0>;
 			interrupt-parent = <&gic>;
 /*			clock-frequency = <111111111>;*/
-			clock-frequency = <133000000>;
+			clock-frequency-timer0 = <111111111>;
+			clock-frequency-timer1 = <111111111>;
+			clock-frequency-timer2 = <111111111>;
 		};
 
 		swdt@f8005000 {
@@ -80,7 +82,6 @@
 			#gpio-cells = <2>;
 		};
 
-
 		axi_iic_0: i2c@41600000 {
 			compatible = "xlnx,axi-iic-1.01.b", "xlnx,xps-iic-2.00.a";
 			interrupt-parent = <&gic>;
@@ -96,7 +97,7 @@
 			reg = <0xe0100000 0x1000>;
 			interrupts = <0 24 0>;
 			interrupt-parent = <&gic>;
-			clock-frequency = <33333000>;
+			clock-frequency = <50000000>;
 		};
 
 		usb@e0002000 {
@@ -174,13 +175,7 @@
 
 		xilinx_pcm_audio: xilinx_pcm_audio {
 			compatible = "xilinx-pcm-audio";
-			#size-cells = <0>;
-			#address-cells = <1>;
-
-			playback: stream@0 {
-				reg = <0>;
-				dma-request = <&axi_dma_0 0>;
-			};
+			dma-request = <&axi_dma_0 0>;
 		};
 
 		adv7511_hdmi_snd: adv7511_hdmi_snd {

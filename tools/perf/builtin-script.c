@@ -28,6 +28,11 @@ static bool			system_wide;
 static const char		*cpu_list;
 static DECLARE_BITMAP(cpu_bitmap, MAX_NR_CPUS);
 
+struct perf_script {
+	struct perf_tool    tool;
+	struct perf_session *session;
+};
+
 enum perf_output_field {
 	PERF_OUTPUT_COMM            = 1U << 0,
 	PERF_OUTPUT_TID             = 1U << 1,
@@ -40,6 +45,7 @@ enum perf_output_field {
 	PERF_OUTPUT_SYM             = 1U << 8,
 	PERF_OUTPUT_DSO             = 1U << 9,
 	PERF_OUTPUT_ADDR            = 1U << 10,
+	PERF_OUTPUT_SYMOFFSET       = 1U << 11,
 };
 
 struct output_option {
@@ -57,6 +63,7 @@ struct output_option {
 	{.str = "sym",   .field = PERF_OUTPUT_SYM},
 	{.str = "dso",   .field = PERF_OUTPUT_DSO},
 	{.str = "addr",  .field = PERF_OUTPUT_ADDR},
+	{.str = "symoff", .field = PERF_OUTPUT_SYMOFFSET},
 };
 
 /* default set to maintain compatibility with current format */
@@ -135,10 +142,11 @@ static const char *output_field2str(enum perf_output_field field)
 
 #define PRINT_FIELD(x)  (output[attr->type].fields & PERF_OUTPUT_##x)
 
-static int perf_event_attr__check_stype(struct perf_event_attr *attr,
-				  u64 sample_type, const char *sample_msg,
-				  enum perf_output_field field)
+static int perf_evsel__check_stype(struct perf_evsel *evsel,
+				   u64 sample_type, const char *sample_msg,
+				   enum perf_output_field field)
 {
+	struct perf_event_attr *attr = &evsel->attr;
 	int type = attr->type;
 	const char *evname;
 
@@ -146,7 +154,7 @@ static int perf_event_attr__check_stype(struct perf_event_attr *attr,
 		return 0;
 
 	if (output[type].user_set) {
-		evname = __event_name(attr->type, attr->config);
+		evname = perf_evsel__name(evsel);
 		pr_err("Samples for '%s' event do not have %s attribute set. "
 		       "Cannot print '%s' field.\n",
 		       evname, sample_msg, output_field2str(field));
@@ -155,7 +163,7 @@ static int perf_event_attr__check_stype(struct perf_event_attr *attr,
 
 	/* user did not ask for it explicitly so remove from the default list */
 	output[type].fields &= ~field;
-	evname = __event_name(attr->type, attr->config);
+	evname = perf_evsel__name(evsel);
 	pr_debug("Samples for '%s' event do not have %s attribute set. "
 		 "Skipping '%s' field.\n",
 		 evname, sample_msg, output_field2str(field));
@@ -173,8 +181,8 @@ static int perf_evsel__check_attr(struct perf_evsel *evsel,
 		return -EINVAL;
 
 	if (PRINT_FIELD(IP)) {
-		if (perf_event_attr__check_stype(attr, PERF_SAMPLE_IP, "IP",
-					   PERF_OUTPUT_IP))
+		if (perf_evsel__check_stype(evsel, PERF_SAMPLE_IP, "IP",
+					    PERF_OUTPUT_IP))
 			return -EINVAL;
 
 		if (!no_callchain &&
@@ -183,14 +191,19 @@ static int perf_evsel__check_attr(struct perf_evsel *evsel,
 	}
 
 	if (PRINT_FIELD(ADDR) &&
-		perf_event_attr__check_stype(attr, PERF_SAMPLE_ADDR, "ADDR",
-				       PERF_OUTPUT_ADDR))
+		perf_evsel__check_stype(evsel, PERF_SAMPLE_ADDR, "ADDR",
+					PERF_OUTPUT_ADDR))
 		return -EINVAL;
 
 	if (PRINT_FIELD(SYM) && !PRINT_FIELD(IP) && !PRINT_FIELD(ADDR)) {
 		pr_err("Display of symbols requested but neither sample IP nor "
 			   "sample address\nis selected. Hence, no addresses to convert "
 		       "to symbols.\n");
+		return -EINVAL;
+	}
+	if (PRINT_FIELD(SYMOFFSET) && !PRINT_FIELD(SYM)) {
+		pr_err("Display of offsets requested but symbol is not"
+		       "selected.\n");
 		return -EINVAL;
 	}
 	if (PRINT_FIELD(DSO) && !PRINT_FIELD(IP) && !PRINT_FIELD(ADDR)) {
@@ -201,18 +214,18 @@ static int perf_evsel__check_attr(struct perf_evsel *evsel,
 	}
 
 	if ((PRINT_FIELD(PID) || PRINT_FIELD(TID)) &&
-		perf_event_attr__check_stype(attr, PERF_SAMPLE_TID, "TID",
-				       PERF_OUTPUT_TID|PERF_OUTPUT_PID))
+		perf_evsel__check_stype(evsel, PERF_SAMPLE_TID, "TID",
+					PERF_OUTPUT_TID|PERF_OUTPUT_PID))
 		return -EINVAL;
 
 	if (PRINT_FIELD(TIME) &&
-		perf_event_attr__check_stype(attr, PERF_SAMPLE_TIME, "TIME",
-				       PERF_OUTPUT_TIME))
+		perf_evsel__check_stype(evsel, PERF_SAMPLE_TIME, "TIME",
+					PERF_OUTPUT_TIME))
 		return -EINVAL;
 
 	if (PRINT_FIELD(CPU) &&
-		perf_event_attr__check_stype(attr, PERF_SAMPLE_CPU, "CPU",
-				       PERF_OUTPUT_CPU))
+		perf_evsel__check_stype(evsel, PERF_SAMPLE_CPU, "CPU",
+					PERF_OUTPUT_CPU))
 		return -EINVAL;
 
 	return 0;
@@ -249,12 +262,14 @@ static int perf_session__check_output_opt(struct perf_session *session)
 	return 0;
 }
 
-static void print_sample_start(struct perf_sample *sample,
+static void print_sample_start(struct pevent *pevent,
+			       struct perf_sample *sample,
 			       struct thread *thread,
-			       struct perf_event_attr *attr)
+			       struct perf_evsel *evsel)
 {
 	int type;
-	struct event *event;
+	struct perf_event_attr *attr = &evsel->attr;
+	struct event_format *event;
 	const char *evname = NULL;
 	unsigned long secs;
 	unsigned long usecs;
@@ -293,15 +308,28 @@ static void print_sample_start(struct perf_sample *sample,
 
 	if (PRINT_FIELD(EVNAME)) {
 		if (attr->type == PERF_TYPE_TRACEPOINT) {
-			type = trace_parse_common_type(sample->raw_data);
-			event = trace_find_event(type);
+			/*
+			 * XXX Do we really need this here?
+			 * perf_evlist__set_tracepoint_names should have done
+			 * this already
+			 */
+			type = trace_parse_common_type(pevent,
+						       sample->raw_data);
+			event = pevent_find_event(pevent, type);
 			if (event)
 				evname = event->name;
 		} else
-			evname = __event_name(attr->type, attr->config);
+			evname = perf_evsel__name(evsel);
 
-		printf("%s: ", evname ? evname : "(unknown)");
+		printf("%s: ", evname ? evname : "[unknown]");
 	}
+}
+
+static bool is_bts_event(struct perf_event_attr *attr)
+{
+	return ((attr->type == PERF_TYPE_HARDWARE) &&
+		(attr->config & PERF_COUNT_HW_BRANCH_INSTRUCTIONS) &&
+		(attr->sample_period == 1));
 }
 
 static bool sample_addr_correlates_sym(struct perf_event_attr *attr)
@@ -310,6 +338,9 @@ static bool sample_addr_correlates_sym(struct perf_event_attr *attr)
 	    ((attr->config == PERF_COUNT_SW_PAGE_FAULTS) ||
 	     (attr->config == PERF_COUNT_SW_PAGE_FAULTS_MIN) ||
 	     (attr->config == PERF_COUNT_SW_PAGE_FAULTS_MAJ)))
+		return true;
+
+	if (is_bts_event(attr))
 		return true;
 
 	return false;
@@ -323,7 +354,6 @@ static void print_sample_addr(union perf_event *event,
 {
 	struct addr_location al;
 	u8 cpumode = event->header.misc & PERF_RECORD_MISC_CPUMODE_MASK;
-	const char *symname, *dsoname;
 
 	printf("%16" PRIx64, sample->addr);
 
@@ -343,25 +373,50 @@ static void print_sample_addr(union perf_event *event,
 		al.sym = map__find_symbol(al.map, al.addr, NULL);
 
 	if (PRINT_FIELD(SYM)) {
-		if (al.sym && al.sym->name)
-			symname = al.sym->name;
+		printf(" ");
+		if (PRINT_FIELD(SYMOFFSET))
+			symbol__fprintf_symname_offs(al.sym, &al, stdout);
 		else
-			symname = "";
-
-		printf(" %16s", symname);
+			symbol__fprintf_symname(al.sym, stdout);
 	}
 
 	if (PRINT_FIELD(DSO)) {
-		if (al.map && al.map->dso && al.map->dso->name)
-			dsoname = al.map->dso->name;
-		else
-			dsoname = "";
-
-		printf(" (%s)", dsoname);
+		printf(" (");
+		map__fprintf_dsoname(al.map, stdout);
+		printf(")");
 	}
 }
 
+static void print_sample_bts(union perf_event *event,
+			     struct perf_sample *sample,
+			     struct perf_evsel *evsel,
+			     struct machine *machine,
+			     struct thread *thread)
+{
+	struct perf_event_attr *attr = &evsel->attr;
+
+	/* print branch_from information */
+	if (PRINT_FIELD(IP)) {
+		if (!symbol_conf.use_callchain)
+			printf(" ");
+		else
+			printf("\n");
+		perf_event__print_ip(event, sample, machine,
+				     PRINT_FIELD(SYM), PRINT_FIELD(DSO),
+				     PRINT_FIELD(SYMOFFSET));
+	}
+
+	printf(" => ");
+
+	/* print branch_to information */
+	if (PRINT_FIELD(ADDR))
+		print_sample_addr(event, sample, machine, thread, attr);
+
+	printf("\n");
+}
+
 static void process_event(union perf_event *event __unused,
+			  struct pevent *pevent,
 			  struct perf_sample *sample,
 			  struct perf_evsel *evsel,
 			  struct machine *machine,
@@ -372,10 +427,15 @@ static void process_event(union perf_event *event __unused,
 	if (output[attr->type].fields == 0)
 		return;
 
-	print_sample_start(sample, thread, attr);
+	print_sample_start(pevent, sample, thread, evsel);
+
+	if (is_bts_event(attr)) {
+		print_sample_bts(event, sample, evsel, machine, thread);
+		return;
+	}
 
 	if (PRINT_FIELD(TRACE))
-		print_trace_event(sample->cpu, sample->raw_data,
+		print_trace_event(pevent, sample->cpu, sample->raw_data,
 				  sample->raw_size);
 
 	if (PRINT_FIELD(ADDR))
@@ -386,8 +446,9 @@ static void process_event(union perf_event *event __unused,
 			printf(" ");
 		else
 			printf("\n");
-		perf_event__print_ip(event, sample, machine, evsel,
-				     PRINT_FIELD(SYM), PRINT_FIELD(DSO));
+		perf_event__print_ip(event, sample, machine,
+				     PRINT_FIELD(SYM), PRINT_FIELD(DSO),
+				     PRINT_FIELD(SYMOFFSET));
 	}
 
 	printf("\n");
@@ -405,7 +466,8 @@ static int default_stop_script(void)
 	return 0;
 }
 
-static int default_generate_script(const char *outfile __unused)
+static int default_generate_script(struct pevent *pevent __unused,
+				   const char *outfile __unused)
 {
 	return 0;
 }
@@ -443,6 +505,7 @@ static int process_sample_event(struct perf_tool *tool __used,
 				struct machine *machine)
 {
 	struct addr_location al;
+	struct perf_script *scr = container_of(tool, struct perf_script, tool);
 	struct thread *thread = machine__findnew_thread(machine, event->ip.tid);
 
 	if (thread == NULL) {
@@ -474,24 +537,27 @@ static int process_sample_event(struct perf_tool *tool __used,
 	if (cpu_list && !test_bit(sample->cpu, cpu_bitmap))
 		return 0;
 
-	scripting_ops->process_event(event, sample, evsel, machine, thread);
+	scripting_ops->process_event(event, scr->session->pevent,
+				     sample, evsel, machine, thread);
 
 	evsel->hists.stats.total_period += sample->period;
 	return 0;
 }
 
-static struct perf_tool perf_script = {
-	.sample		 = process_sample_event,
-	.mmap		 = perf_event__process_mmap,
-	.comm		 = perf_event__process_comm,
-	.exit		 = perf_event__process_task,
-	.fork		 = perf_event__process_task,
-	.attr		 = perf_event__process_attr,
-	.event_type	 = perf_event__process_event_type,
-	.tracing_data	 = perf_event__process_tracing_data,
-	.build_id	 = perf_event__process_build_id,
-	.ordered_samples = true,
-	.ordering_requires_timestamps = true,
+static struct perf_script perf_script = {
+	.tool = {
+		.sample		 = process_sample_event,
+		.mmap		 = perf_event__process_mmap,
+		.comm		 = perf_event__process_comm,
+		.exit		 = perf_event__process_task,
+		.fork		 = perf_event__process_task,
+		.attr		 = perf_event__process_attr,
+		.event_type	 = perf_event__process_event_type,
+		.tracing_data	 = perf_event__process_tracing_data,
+		.build_id	 = perf_event__process_build_id,
+		.ordered_samples = true,
+		.ordering_requires_timestamps = true,
+	},
 };
 
 extern volatile int session_done;
@@ -507,7 +573,7 @@ static int __cmd_script(struct perf_session *session)
 
 	signal(SIGINT, sig_handler);
 
-	ret = perf_session__process_events(session, &perf_script);
+	ret = perf_session__process_events(session, &perf_script.tool);
 
 	if (debug_mode)
 		pr_err("Misordered timestamps: %" PRIu64 "\n", nr_unordered);
@@ -1097,7 +1163,10 @@ static const struct option options[] = {
 	OPT_STRING(0, "symfs", &symbol_conf.symfs, "directory",
 		    "Look for files with symbols relative to this directory"),
 	OPT_CALLBACK('f', "fields", NULL, "str",
-		     "comma separated output fields prepend with 'type:'. Valid types: hw,sw,trace,raw. Fields: comm,tid,pid,time,cpu,event,trace,ip,sym,dso,addr",
+		     "comma separated output fields prepend with 'type:'. "
+		     "Valid types: hw,sw,trace,raw. "
+		     "Fields: comm,tid,pid,time,cpu,event,trace,ip,sym,dso,"
+		     "addr,symoff",
 		     parse_output_fields),
 	OPT_BOOLEAN('a', "all-cpus", &system_wide,
 		     "system-wide collection from all CPUs"),
@@ -1106,6 +1175,9 @@ static const struct option options[] = {
 		   "only display events for these comms"),
 	OPT_BOOLEAN('I', "show-info", &show_full_info,
 		    "display extended information from perf.data file"),
+	OPT_BOOLEAN('\0', "show-kernel-path", &symbol_conf.show_kernel_path,
+		    "Show the path of [kernel.kallsyms]"),
+
 	OPT_END()
 };
 
@@ -1283,9 +1355,12 @@ int cmd_script(int argc, const char **argv, const char *prefix __used)
 	if (!script_name)
 		setup_pager();
 
-	session = perf_session__new(input_name, O_RDONLY, 0, false, &perf_script);
+	session = perf_session__new(input_name, O_RDONLY, 0, false,
+				    &perf_script.tool);
 	if (session == NULL)
 		return -ENOMEM;
+
+	perf_script.session = session;
 
 	if (cpu_list) {
 		if (perf_session__cpu_bitmap(session, cpu_list, cpu_bitmap))
@@ -1332,7 +1407,8 @@ int cmd_script(int argc, const char **argv, const char *prefix __used)
 			return -1;
 		}
 
-		err = scripting_ops->generate_script("perf-script");
+		err = scripting_ops->generate_script(session->pevent,
+						     "perf-script");
 		goto out;
 	}
 

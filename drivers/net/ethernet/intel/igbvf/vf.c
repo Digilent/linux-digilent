@@ -246,7 +246,7 @@ static void e1000_update_mc_addr_list_vf(struct e1000_hw *hw,
 	for (i = 0; i < cnt; i++) {
 		hash_value = e1000_hash_mc_addr_vf(hw, mc_addr_list);
 		hash_list[i] = hash_value & 0x0FFFF;
-		mc_addr_list += ETH_ADDR_LEN;
+		mc_addr_list += ETH_ALEN;
 	}
 
 	mbx->ops.write_posted(hw, msgbuf, E1000_VFMAILBOX_SIZE);
@@ -283,7 +283,8 @@ static s32 e1000_set_vfta_vf(struct e1000_hw *hw, u16 vid, bool set)
 	return err;
 }
 
-/** e1000_rlpml_set_vf - Set the maximum receive packet length
+/**
+ *  e1000_rlpml_set_vf - Set the maximum receive packet length
  *  @hw: pointer to the HW structure
  *  @max_size: value to assign to max frame size
  **/
@@ -302,7 +303,7 @@ void e1000_rlpml_set_vf(struct e1000_hw *hw, u16 max_size)
  *  e1000_rar_set_vf - set device MAC address
  *  @hw: pointer to the HW structure
  *  @addr: pointer to the receive address
- *  @index receive address array register
+ *  @index: receive address array register
  **/
 static void e1000_rar_set_vf(struct e1000_hw *hw, u8 * addr, u32 index)
 {
@@ -333,10 +334,7 @@ static void e1000_rar_set_vf(struct e1000_hw *hw, u8 * addr, u32 index)
  **/
 static s32 e1000_read_mac_addr_vf(struct e1000_hw *hw)
 {
-	int i;
-
-	for (i = 0; i < ETH_ADDR_LEN; i++)
-		hw->mac.addr[i] = hw->mac.perm_addr[i];
+	memcpy(hw->mac.addr, hw->mac.perm_addr, ETH_ALEN);
 
 	return E1000_SUCCESS;
 }

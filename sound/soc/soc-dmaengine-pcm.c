@@ -70,8 +70,16 @@ void *snd_dmaengine_pcm_get_data(struct snd_pcm_substream *substream)
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_get_data);
 
+struct dma_chan *snd_dmaengine_pcm_get_chan(struct snd_pcm_substream *substream)
+{
+	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
+
+	return prtd->dma_chan;
+}
+EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_get_chan);
+
 /**
- * snd_soc_hwparams_to_dma_slave_config - Convert hw_params to dma_slave_config
+ * snd_hwparams_to_dma_slave_config - Convert hw_params to dma_slave_config
  * @substream: PCM substream
  * @params: hw_params
  * @slave_config: DMA slave config
@@ -79,7 +87,7 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_get_data);
  * This function can be used to initialize a dma_slave_config from a substream
  * and hw_params in a dmaengine based PCM driver implementation.
  */
-int snd_soc_hwparams_to_dma_slave_config(const struct snd_pcm_substream *substream,
+int snd_hwparams_to_dma_slave_config(const struct snd_pcm_substream *substream,
 	const struct snd_pcm_hw_params *params,
 	struct dma_slave_config *slave_config)
 {
@@ -112,7 +120,7 @@ int snd_soc_hwparams_to_dma_slave_config(const struct snd_pcm_substream *substre
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(snd_soc_hwparams_to_dma_slave_config);
+EXPORT_SYMBOL_GPL(snd_hwparams_to_dma_slave_config);
 
 static void dmaengine_pcm_dma_complete(void *arg)
 {
@@ -136,8 +144,7 @@ static int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream)
 	direction = snd_pcm_substream_to_dma_direction(substream);
 
 	prtd->pos = 0;
-
-	desc = chan->device->device_prep_dma_cyclic(chan,
+	desc = dmaengine_prep_dma_cyclic(chan,
 		substream->runtime->dma_addr,
 		snd_pcm_lib_buffer_bytes(substream),
 		snd_pcm_lib_period_bytes(substream), direction);
@@ -197,7 +204,7 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_trigger);
  * snd_dmaengine_pcm_pointer_no_residue - dmaengine based PCM pointer implementation
  * @substream: PCM substream
  *
- * This function is deprecated and should not be used by new drivers, as it's
+ * This function is deprecated and should not be used by new drivers, as its
  * results may be unreliable.
  */
 snd_pcm_uframes_t snd_dmaengine_pcm_pointer_no_residue(struct snd_pcm_substream *substream)
@@ -263,7 +270,7 @@ static int dmaengine_pcm_request_channel(struct dmaengine_pcm_runtime_data *prtd
  * Note that this function will use private_data field of the substream's
  * runtime. So it is not availabe to your pcm driver implementation. If you need
  * to keep additional data attached to a substream use
- * snd_dmaeinge_pcm_{set,get}_data.
+ * snd_dmaengine_pcm_{set,get}_data.
  */
 int snd_dmaengine_pcm_open(struct snd_pcm_substream *substream,
 	dma_filter_fn filter_fn, void *filter_data)

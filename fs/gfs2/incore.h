@@ -19,12 +19,14 @@
 #include <linux/rculist_bl.h>
 #include <linux/completion.h>
 #include <linux/rbtree.h>
+#include <linux/ktime.h>
+#include <linux/percpu.h>
 
 #define DIO_WAIT	0x00000010
 #define DIO_METADATA	0x00000020
 
 struct gfs2_log_operations;
-struct gfs2_log_element;
+struct gfs2_bufdata;
 struct gfs2_holder;
 struct gfs2_glock;
 struct gfs2_quota_data;
@@ -50,7 +52,7 @@ struct gfs2_log_header_host {
  */
 
 struct gfs2_log_operations {
-	void (*lo_add) (struct gfs2_sbd *sdp, struct gfs2_log_element *le);
+	void (*lo_add) (struct gfs2_sbd *sdp, struct gfs2_bufdata *bd);
 	void (*lo_before_commit) (struct gfs2_sbd *sdp);
 	void (*lo_after_commit) (struct gfs2_sbd *sdp, struct gfs2_ail *ai);
 	void (*lo_before_scan) (struct gfs2_jdesc *jd,
@@ -60,11 +62,6 @@ struct gfs2_log_operations {
 				 int pass);
 	void (*lo_after_scan) (struct gfs2_jdesc *jd, int error, int pass);
 	const char *lo_name;
-};
-
-struct gfs2_log_element {
-	struct list_head le_list;
-	const struct gfs2_log_operations *le_ops;
 };
 
 #define GBF_FULL 1
@@ -87,17 +84,22 @@ struct gfs2_rgrpd {
 	u32 rd_data;			/* num of data blocks in rgrp */
 	u32 rd_bitbytes;		/* number of bytes in data bitmaps */
 	u32 rd_free;
+	u32 rd_reserved;                /* number of blocks reserved */
 	u32 rd_free_clone;
 	u32 rd_dinodes;
 	u64 rd_igeneration;
 	struct gfs2_bitmap *rd_bits;
 	struct gfs2_sbd *rd_sbd;
+	struct gfs2_rgrp_lvb *rd_rgl;
 	u32 rd_last_alloc;
 	u32 rd_flags;
 #define GFS2_RDF_CHECK		0x10000000 /* check for unlinked inodes */
 #define GFS2_RDF_UPTODATE	0x20000000 /* rg is up to date */
 #define GFS2_RDF_ERROR		0x40000000 /* error in rg */
 #define GFS2_RDF_MASK		0xf0000000 /* mask for internal flags */
+	spinlock_t rd_rsspin;           /* protects reservation related vars */
+	struct rb_root rd_rstree;       /* multi-block reservation tree */
+	u32 rd_rs_cnt;                  /* count of current reservations */
 };
 
 enum gfs2_state_bits {
@@ -116,15 +118,10 @@ TAS_BUFFER_FNS(Zeronew, zeronew)
 struct gfs2_bufdata {
 	struct buffer_head *bd_bh;
 	struct gfs2_glock *bd_gl;
+	u64 bd_blkno;
 
-	union {
-		struct list_head list_tr;
-		u64 blkno;
-	} u;
-#define bd_list_tr u.list_tr
-#define bd_blkno u.blkno
-
-	struct gfs2_log_element bd_le;
+	struct list_head bd_list;
+	const struct gfs2_log_operations *bd_ops;
 
 	struct gfs2_ail *bd_ail;
 	struct list_head bd_ail_st_list;
@@ -205,6 +202,22 @@ struct gfs2_glock_operations {
 };
 
 enum {
+	GFS2_LKS_SRTT = 0,	/* Non blocking smoothed round trip time */
+	GFS2_LKS_SRTTVAR = 1,	/* Non blocking smoothed variance */
+	GFS2_LKS_SRTTB = 2,	/* Blocking smoothed round trip time */
+	GFS2_LKS_SRTTVARB = 3,	/* Blocking smoothed variance */
+	GFS2_LKS_SIRT = 4,	/* Smoothed Inter-request time */
+	GFS2_LKS_SIRTVAR = 5,	/* Smoothed Inter-request variance */
+	GFS2_LKS_DCOUNT = 6,	/* Count of dlm requests */
+	GFS2_LKS_QCOUNT = 7,	/* Count of gfs2_holder queues */
+	GFS2_NR_LKSTATS
+};
+
+struct gfs2_lkstats {
+	s64 stats[GFS2_NR_LKSTATS];
+};
+
+enum {
 	/* States */
 	HIF_HOLDER		= 6,  /* Set for gh that "holds" the glock */
 	HIF_FIRST		= 7,
@@ -224,6 +237,38 @@ struct gfs2_holder {
 	unsigned long gh_ip;
 };
 
+/* Resource group multi-block reservation, in order of appearance:
+
+   Step 1. Function prepares to write, allocates a mb, sets the size hint.
+   Step 2. User calls inplace_reserve to target an rgrp, sets the rgrp info
+   Step 3. Function get_local_rgrp locks the rgrp, determines which bits to use
+   Step 4. Bits are assigned from the rgrp based on either the reservation
+           or wherever it can.
+*/
+
+struct gfs2_blkreserv {
+	/* components used during write (step 1): */
+	atomic_t rs_sizehint;         /* hint of the write size */
+
+	/* components used during inplace_reserve (step 2): */
+	u32 rs_requested; /* Filled in by caller of gfs2_inplace_reserve() */
+
+	/* components used during get_local_rgrp (step 3): */
+	struct gfs2_rgrpd *rs_rgd;    /* pointer to the gfs2_rgrpd */
+	struct gfs2_holder rs_rgd_gh; /* Filled in by get_local_rgrp */
+	struct rb_node rs_node;       /* link to other block reservations */
+
+	/* components used during block searches and assignments (step 4): */
+	struct gfs2_bitmap *rs_bi;    /* bitmap for the current allocation */
+	u32 rs_biblk;                 /* start block relative to the bi */
+	u32 rs_free;                  /* how many blocks are still free */
+
+	/* ancillary quota stuff */
+	struct gfs2_quota_data *rs_qa_qd[2 * MAXQUOTAS];
+	struct gfs2_holder rs_qa_qd_ghs[2 * MAXQUOTAS];
+	unsigned int rs_qa_qd_num;
+};
+
 enum {
 	GLF_LOCK			= 1,
 	GLF_DEMOTE			= 3,
@@ -238,10 +283,12 @@ enum {
 	GLF_QUEUED			= 12,
 	GLF_LRU				= 13,
 	GLF_OBJECT			= 14, /* Used only for tracing */
+	GLF_BLOCKING			= 15,
 };
 
 struct gfs2_glock {
 	struct hlist_bl_node gl_list;
+	struct gfs2_sbd *gl_sbd;
 	unsigned long gl_flags;		/* GLF_... */
 	struct lm_lockname gl_name;
 	atomic_t gl_ref;
@@ -261,16 +308,14 @@ struct gfs2_glock {
 	struct list_head gl_holders;
 
 	const struct gfs2_glock_operations *gl_ops;
-	char gl_strname[GDLM_STRNAME_BYTES];
+	ktime_t gl_dstamp;
+	struct gfs2_lkstats gl_stats;
 	struct dlm_lksb gl_lksb;
 	char gl_lvb[32];
 	unsigned long gl_tchange;
 	void *gl_object;
 
 	struct list_head gl_lru;
-
-	struct gfs2_sbd *gl_sbd;
-
 	struct list_head gl_ail_list;
 	atomic_t gl_ail_count;
 	atomic_t gl_revokes;
@@ -281,25 +326,12 @@ struct gfs2_glock {
 
 #define GFS2_MIN_LVB_SIZE 32	/* Min size of LVB that gfs2 supports */
 
-struct gfs2_qadata { /* quota allocation data */
-	/* Quota stuff */
-	struct gfs2_quota_data *qa_qd[2*MAXQUOTAS];
-	struct gfs2_holder qa_qd_ghs[2*MAXQUOTAS];
-	unsigned int qa_qd_num;
-};
-
-struct gfs2_blkreserv {
-	u32 rs_requested; /* Filled in by caller of gfs2_inplace_reserve() */
-	struct gfs2_holder rs_rgd_gh; /* Filled in by gfs2_inplace_reserve() */
-};
-
 enum {
 	GIF_INVALID		= 0,
 	GIF_QD_LOCKED		= 1,
 	GIF_ALLOC_FAILED	= 2,
 	GIF_SW_PAGED		= 3,
 };
-
 
 struct gfs2_inode {
 	struct inode i_inode;
@@ -311,8 +343,7 @@ struct gfs2_inode {
 	struct gfs2_glock *i_gl; /* Move into i_gh? */
 	struct gfs2_holder i_iopen_gh;
 	struct gfs2_holder i_gh; /* for prepare/commit_write only */
-	struct gfs2_qadata *i_qadata; /* quota allocation data */
-	struct gfs2_blkreserv *i_res; /* resource group block reservation */
+	struct gfs2_blkreserv *i_res; /* rgrp multi-block reservation */
 	struct gfs2_rgrpd *i_rgd;
 	u64 i_goal;	/* goal block for allocations */
 	struct rw_semaphore i_rw_mutex;
@@ -393,13 +424,10 @@ struct gfs2_trans {
 
 	int tr_touched;
 
-	unsigned int tr_num_buf;
 	unsigned int tr_num_buf_new;
 	unsigned int tr_num_databuf_new;
 	unsigned int tr_num_buf_rm;
 	unsigned int tr_num_databuf_rm;
-	struct list_head tr_list_buf;
-
 	unsigned int tr_num_revoke;
 	unsigned int tr_num_revoke_rm;
 };
@@ -468,6 +496,7 @@ struct gfs2_args {
 	unsigned int ar_discard:1;		/* discard requests */
 	unsigned int ar_errors:2;               /* errors=withdraw | panic */
 	unsigned int ar_nobarrier:1;            /* do not send barriers */
+	unsigned int ar_rgrplvb:1;		/* use lvbs for rgrp info */
 	int ar_commit;				/* Commit interval */
 	int ar_statfs_quantum;			/* The fast statfs interval */
 	int ar_quota_quantum;			/* The quota interval */
@@ -538,7 +567,6 @@ struct gfs2_sb_host {
 struct lm_lockstruct {
 	int ls_jid;
 	unsigned int ls_first;
-	unsigned int ls_nodir;
 	const struct lm_lockops *ls_ops;
 	dlm_lockspace_t *ls_dlm;
 
@@ -560,8 +588,14 @@ struct lm_lockstruct {
 	uint32_t *ls_recover_result; /* result of last jid recovery */
 };
 
+struct gfs2_pcpu_lkstats {
+	/* One struct for each glock type */
+	struct gfs2_lkstats lkstats[10];
+};
+
 struct gfs2_sbd {
 	struct super_block *sd_vfs;
+	struct gfs2_pcpu_lkstats __percpu *sd_lkstats;
 	struct kobject sd_kobj;
 	unsigned long sd_flags;	/* SDF_... */
 	struct gfs2_sb_host sd_sb;
@@ -620,7 +654,6 @@ struct gfs2_sbd {
 
 	int sd_rindex_uptodate;
 	spinlock_t sd_rindex_spin;
-	struct mutex sd_rindex_mutex;
 	struct rb_root sd_rindex_tree;
 	unsigned int sd_rgrps;
 	unsigned int sd_max_rg_data;
@@ -676,7 +709,6 @@ struct gfs2_sbd {
 
 	struct list_head sd_log_le_buf;
 	struct list_head sd_log_le_revoke;
-	struct list_head sd_log_le_rg;
 	struct list_head sd_log_le_databuf;
 	struct list_head sd_log_le_ordered;
 
@@ -693,7 +725,9 @@ struct gfs2_sbd {
 
 	struct rw_semaphore sd_log_flush_lock;
 	atomic_t sd_log_in_flight;
+	struct bio *sd_log_bio;
 	wait_queue_head_t sd_log_flush_wait;
+	int sd_log_error;
 
 	unsigned int sd_log_flush_head;
 	u64 sd_log_flush_wrapped;
@@ -725,8 +759,23 @@ struct gfs2_sbd {
 
 	unsigned long sd_last_warning;
 	struct dentry *debugfs_dir;    /* debugfs directory */
-	struct dentry *debugfs_dentry_glocks; /* for debugfs */
+	struct dentry *debugfs_dentry_glocks;
+	struct dentry *debugfs_dentry_glstats;
+	struct dentry *debugfs_dentry_sbstats;
 };
+
+static inline void gfs2_glstats_inc(struct gfs2_glock *gl, int which)
+{
+	gl->gl_stats.stats[which]++;
+}
+
+static inline void gfs2_sbstats_inc(const struct gfs2_glock *gl, int which)
+{
+	const struct gfs2_sbd *sdp = gl->gl_sbd;
+	preempt_disable();
+	this_cpu_ptr(sdp->sd_lkstats)->lkstats[gl->gl_name.ln_type].stats[which]++;
+	preempt_enable();
+}
 
 #endif /* __INCORE_DOT_H__ */
 

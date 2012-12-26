@@ -132,6 +132,14 @@ struct renesas_usbhs_driver_param {
 	 * option:
 	 *
 	 * dma id for dmaengine
+	 * The data transfer direction on D0FIFO/D1FIFO should be
+	 * fixed for keeping consistency.
+	 * So, the platform id settings will be..
+	 *	.d0_tx_id = xx_TX,
+	 *	.d1_rx_id = xx_RX,
+	 * or
+	 *	.d1_tx_id = xx_TX,
+	 *	.d0_rx_id = xx_RX,
 	 */
 	int d0_tx_id;
 	int d0_rx_id;
@@ -149,6 +157,7 @@ struct renesas_usbhs_driver_param {
 	 * option:
 	 */
 	u32 has_otg:1; /* for controlling PWEN/EXTLP */
+	u32 has_sudmac:1; /* for SUDMAC */
 };
 
 /*

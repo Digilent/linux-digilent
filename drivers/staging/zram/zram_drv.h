@@ -18,25 +18,13 @@
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 
-#include "xvmalloc.h"
+#include "../zsmalloc/zsmalloc.h"
 
 /*
  * Some arbitrary value. This is just to catch
  * invalid value for num_devices module parameter.
  */
 static const unsigned max_num_devices = 32;
-
-/*
- * Stored at beginning of each compressed object.
- *
- * It stores back-reference to table entry which points to this
- * object. This is required to support memory defragmentation.
- */
-struct zobj_header {
-#if 0
-	u32 table_idx;
-#endif
-};
 
 /*-- Configurable parameters */
 
@@ -51,7 +39,7 @@ static const size_t max_zpage_size = PAGE_SIZE / 4 * 3;
 
 /*
  * NOTE: max_zpage_size must be less than or equal to:
- *   XV_MAX_ALLOC_SIZE - sizeof(struct zobj_header)
+ *   ZS_MAX_ALLOC_SIZE - sizeof(struct zobj_header)
  * otherwise, xv_malloc() would always return failure.
  */
 
@@ -68,9 +56,6 @@ static const size_t max_zpage_size = PAGE_SIZE / 4 * 3;
 
 /* Flags for zram pages (table[page_no].flags) */
 enum zram_pageflags {
-	/* Page is stored uncompressed */
-	ZRAM_UNCOMPRESSED,
-
 	/* Page consists entirely of zeros */
 	ZRAM_ZERO,
 
@@ -81,11 +66,11 @@ enum zram_pageflags {
 
 /* Allocated for each disk page */
 struct table {
-	struct page *page;
-	u16 offset;
+	unsigned long handle;
+	u16 size;	/* object size (excluding header) */
 	u8 count;	/* object ref count (not yet used) */
 	u8 flags;
-} __attribute__((aligned(4)));
+} __aligned(4);
 
 struct zram_stats {
 	u64 compr_size;		/* compressed size of pages stored */
@@ -98,11 +83,11 @@ struct zram_stats {
 	u32 pages_zero;		/* no. of zero filled pages */
 	u32 pages_stored;	/* no. of pages currently stored */
 	u32 good_compress;	/* % of pages with compression ratio<=50% */
-	u32 pages_expand;	/* % of incompressible pages */
+	u32 bad_compress;	/* % of pages with compression ratio>=75% */
 };
 
 struct zram {
-	struct xv_pool *mem_pool;
+	struct zs_pool *mem_pool;
 	void *compress_workmem;
 	void *compress_buffer;
 	struct table *table;
@@ -124,7 +109,7 @@ struct zram {
 };
 
 extern struct zram *zram_devices;
-extern unsigned int zram_num_devices;
+unsigned int zram_get_num_devices(void);
 #ifdef CONFIG_SYSFS
 extern struct attribute_group zram_disk_attr_group;
 #endif

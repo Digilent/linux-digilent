@@ -64,7 +64,6 @@
 #include <linux/types.h>
 
 #include <asm/addrspace.h>
-#include <asm/system.h>
 
 #include <asm/dec/interrupts.h>
 #include <asm/dec/ioasic.h>
@@ -605,7 +604,7 @@ static int lance_rx(struct net_device *dev)
 				dev->stats.rx_errors++;
 		} else {
 			len = (*rds_ptr(rd, mblength, lp->type) & 0xfff) - 4;
-			skb = dev_alloc_skb(len + 2);
+			skb = netdev_alloc_skb(dev, len + 2);
 
 			if (skb == 0) {
 				printk("%s: Memory squeeze, deferring packet.\n",
@@ -624,7 +623,7 @@ static int lance_rx(struct net_device *dev)
 			skb_put(skb, len);	/* make room */
 
 			cp_from_buf(lp->type, skb->data,
-				    (char *)lp->rx_buf_ptr_cpu[entry], len);
+				    lp->rx_buf_ptr_cpu[entry], len);
 
 			skb->protocol = eth_type_trans(skb, dev);
 			netif_rx(skb);
@@ -920,7 +919,7 @@ static int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	*lib_ptr(ib, btx_ring[entry].length, lp->type) = (-len);
 	*lib_ptr(ib, btx_ring[entry].misc, lp->type) = 0;
 
-	cp_to_buf(lp->type, (char *)lp->tx_buf_ptr_cpu[entry], skb->data, len);
+	cp_to_buf(lp->type, lp->tx_buf_ptr_cpu[entry], skb->data, len);
 
 	/* Now, give the packet to the lance */
 	*lib_ptr(ib, btx_ring[entry].tmd1, lp->type) =
@@ -1052,8 +1051,6 @@ static int __devinit dec_lance_probe(struct device *bdev, const int type)
 
 	dev = alloc_etherdev(sizeof(struct lance_private));
 	if (!dev) {
-		printk(KERN_ERR "%s: Unable to allocate etherdev, aborting.\n",
-			name);
 		ret = -ENOMEM;
 		goto err_out;
 	}

@@ -168,7 +168,7 @@ const struct dentry_operations hfsplus_dentry_operations = {
 };
 
 static struct dentry *hfsplus_file_lookup(struct inode *dir,
-		struct dentry *dentry, struct nameidata *nd)
+		struct dentry *dentry, unsigned int flags)
 {
 	struct hfs_find_data fd;
 	struct super_block *sb = dir->i_sb;
@@ -193,6 +193,7 @@ static struct dentry *hfsplus_file_lookup(struct inode *dir,
 	mutex_init(&hip->extents_lock);
 	hip->extent_state = 0;
 	hip->flags = 0;
+	hip->userflags = 0;
 	set_bit(HFSPLUS_I_RSRC, &hip->flags);
 
 	err = hfs_find_init(HFSPLUS_SB(sb)->cat_tree, &fd);
@@ -400,6 +401,7 @@ struct inode *hfsplus_new_inode(struct super_block *sb, umode_t mode)
 	atomic_set(&hip->opencnt, 0);
 	hip->extent_state = 0;
 	hip->flags = 0;
+	hip->userflags = 0;
 	memset(hip->first_extents, 0, sizeof(hfsplus_extent_rec));
 	memset(hip->cached_extents, 0, sizeof(hfsplus_extent_rec));
 	hip->alloc_blocks = 0;
@@ -429,7 +431,7 @@ struct inode *hfsplus_new_inode(struct super_block *sb, umode_t mode)
 		sbi->file_count++;
 	insert_inode_hash(inode);
 	mark_inode_dirty(inode);
-	sb->s_dirt = 1;
+	hfsplus_mark_mdb_dirty(sb);
 
 	return inode;
 }
@@ -440,7 +442,7 @@ void hfsplus_delete_inode(struct inode *inode)
 
 	if (S_ISDIR(inode->i_mode)) {
 		HFSPLUS_SB(sb)->folder_count--;
-		sb->s_dirt = 1;
+		hfsplus_mark_mdb_dirty(sb);
 		return;
 	}
 	HFSPLUS_SB(sb)->file_count--;
@@ -453,7 +455,7 @@ void hfsplus_delete_inode(struct inode *inode)
 		inode->i_size = 0;
 		hfsplus_file_truncate(inode);
 	}
-	sb->s_dirt = 1;
+	hfsplus_mark_mdb_dirty(sb);
 }
 
 void hfsplus_inode_read_fork(struct inode *inode, struct hfsplus_fork_raw *fork)

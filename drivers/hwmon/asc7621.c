@@ -268,9 +268,11 @@ static ssize_t store_fan16(struct device *dev,
 	if (kstrtol(buf, 10, &reqval))
 		return -EINVAL;
 
-	/* If a minimum RPM of zero is requested, then we set the register to
-	   0xffff. This value allows the fan to be stopped completely without
-	   generating an alarm. */
+	/*
+	 * If a minimum RPM of zero is requested, then we set the register to
+	 * 0xffff. This value allows the fan to be stopped completely without
+	 * generating an alarm.
+	 */
 	reqval =
 	    (reqval <= 0 ? 0xffff : SENSORS_LIMIT(5400000 / reqval, 0, 0xfffe));
 
@@ -1107,7 +1109,8 @@ asc7621_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -EIO;
 
-	data = kzalloc(sizeof(struct asc7621_data), GFP_KERNEL);
+	data = devm_kzalloc(&client->dev, sizeof(struct asc7621_data),
+			    GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 
@@ -1141,7 +1144,6 @@ exit_remove:
 				   &(asc7621_params[i].sda.dev_attr));
 	}
 
-	kfree(data);
 	return err;
 }
 
@@ -1190,7 +1192,6 @@ static int asc7621_remove(struct i2c_client *client)
 				   &(asc7621_params[i].sda.dev_attr));
 	}
 
-	kfree(data);
 	return 0;
 }
 

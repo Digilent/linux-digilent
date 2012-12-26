@@ -40,6 +40,9 @@ MODULE_LICENSE("GPL");
 #define IP1001_PHASE_SEL_MASK		3	/* IP1001 RX/TXPHASE_SEL */
 #define IP1001_APS_ON			11	/* IP1001 APS Mode  bit */
 #define IP101A_G_APS_ON			2	/* IP101A/G APS Mode bit */
+#define IP101A_G_IRQ_CONF_STATUS	0x11	/* Conf Info IRQ & Status Reg */
+#define	IP101A_G_IRQ_PIN_USED		(1<<15) /* INTR pin used */
+#define	IP101A_G_IRQ_DEFAULT		IP101A_G_IRQ_PIN_USED
 
 static int ip175c_config_init(struct phy_device *phydev)
 {
@@ -135,6 +138,11 @@ static int ip1001_config_init(struct phy_device *phydev)
 	if (c < 0)
 		return c;
 
+	/* INTR pin used: speed/link/duplex will cause an interrupt */
+	c = phy_write(phydev, IP101A_G_IRQ_CONF_STATUS, IP101A_G_IRQ_DEFAULT);
+	if (c < 0)
+		return c;
+
 	if (phydev->interface == PHY_INTERFACE_MODE_RGMII) {
 		/* Additional delay (2ns) used to adjust RX clock phase
 		 * at RGMII interface */
@@ -162,7 +170,8 @@ static int ip101a_g_config_init(struct phy_device *phydev)
 	/* Enable Auto Power Saving mode */
 	c = phy_read(phydev, IP10XX_SPEC_CTRL_STATUS);
 	c |= IP101A_G_APS_ON;
-	return c;
+
+	return phy_write(phydev, IP10XX_SPEC_CTRL_STATUS, c);
 }
 
 static int ip175c_read_status(struct phy_device *phydev)
@@ -184,7 +193,17 @@ static int ip175c_config_aneg(struct phy_device *phydev)
 	return 0;
 }
 
-static struct phy_driver ip175c_driver = {
+static int ip101a_g_ack_interrupt(struct phy_device *phydev)
+{
+	int err = phy_read(phydev, IP101A_G_IRQ_CONF_STATUS);
+	if (err < 0)
+		return err;
+
+	return 0;
+}
+
+static struct phy_driver icplus_driver[] = {
+{
 	.phy_id		= 0x02430d80,
 	.name		= "ICPlus IP175C",
 	.phy_id_mask	= 0x0ffffff0,
@@ -195,58 +214,44 @@ static struct phy_driver ip175c_driver = {
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
 	.driver		= { .owner = THIS_MODULE,},
-};
-
-static struct phy_driver ip1001_driver = {
+}, {
 	.phy_id		= 0x02430d90,
 	.name		= "ICPlus IP1001",
 	.phy_id_mask	= 0x0ffffff0,
 	.features	= PHY_GBIT_FEATURES | SUPPORTED_Pause |
 			  SUPPORTED_Asym_Pause,
-	.flags		= PHY_HAS_INTERRUPT,
 	.config_init	= &ip1001_config_init,
 	.config_aneg	= &genphy_config_aneg,
 	.read_status	= &genphy_read_status,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
 	.driver		= { .owner = THIS_MODULE,},
-};
-
-static struct phy_driver ip101a_g_driver = {
+}, {
 	.phy_id		= 0x02430c54,
 	.name		= "ICPlus IP101A/G",
 	.phy_id_mask	= 0x0ffffff0,
 	.features	= PHY_BASIC_FEATURES | SUPPORTED_Pause |
 			  SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_INTERRUPT,
+	.ack_interrupt	= ip101a_g_ack_interrupt,
 	.config_init	= &ip101a_g_config_init,
 	.config_aneg	= &genphy_config_aneg,
 	.read_status	= &genphy_read_status,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
 	.driver		= { .owner = THIS_MODULE,},
-};
+} };
 
 static int __init icplus_init(void)
 {
-	int ret = 0;
-
-	ret = phy_driver_register(&ip1001_driver);
-	if (ret < 0)
-		return -ENODEV;
-
-	ret = phy_driver_register(&ip101a_g_driver);
-	if (ret < 0)
-		return -ENODEV;
-
-	return phy_driver_register(&ip175c_driver);
+	return phy_drivers_register(icplus_driver,
+		ARRAY_SIZE(icplus_driver));
 }
 
 static void __exit icplus_exit(void)
 {
-	phy_driver_unregister(&ip1001_driver);
-	phy_driver_unregister(&ip101a_g_driver);
-	phy_driver_unregister(&ip175c_driver);
+	phy_drivers_unregister(icplus_driver,
+		ARRAY_SIZE(icplus_driver));
 }
 
 module_init(icplus_init);

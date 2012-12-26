@@ -18,6 +18,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-chip-ident.h>
+#include <media/ov7670.h>
 #include <media/videobuf-dma-sg.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -962,7 +963,7 @@ static int viacam_do_try_fmt(struct via_camera *cam,
 
 	upix->pixelformat = f->pixelformat;
 	viacam_fmt_pre(upix, spix);
-	v4l2_fill_mbus_format(&mbus_fmt, upix, f->mbus_code);
+	v4l2_fill_mbus_format(&mbus_fmt, spix, f->mbus_code);
 	ret = sensor_call(cam, video, try_mbus_fmt, &mbus_fmt);
 	v4l2_fill_pix_format(spix, &mbus_fmt);
 	viacam_fmt_post(upix, spix);
@@ -1347,11 +1348,21 @@ static __devinit bool viacam_serial_is_enabled(void)
 	return false;
 }
 
+static struct ov7670_config sensor_cfg = {
+	/* The XO-1.5 (only known user) clocks the camera at 90MHz. */
+	.clock_speed = 90,
+};
+
 static __devinit int viacam_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct i2c_adapter *sensor_adapter;
 	struct viafb_dev *viadev = pdev->dev.platform_data;
+	struct i2c_board_info ov7670_info = {
+		.type = "ov7670",
+		.addr = 0x42 >> 1,
+		.platform_data = &sensor_cfg,
+	};
 
 	/*
 	 * Note that there are actually two capture channels on
@@ -1433,8 +1444,8 @@ static __devinit int viacam_probe(struct platform_device *pdev)
 	 * is OLPC-specific.  0x42 assumption is ov7670-specific.
 	 */
 	sensor_adapter = viafb_find_i2c_adapter(VIA_PORT_31);
-	cam->sensor = v4l2_i2c_new_subdev(&cam->v4l2_dev, sensor_adapter,
-			"ov7670", 0x42 >> 1, NULL);
+	cam->sensor = v4l2_i2c_new_subdev_board(&cam->v4l2_dev, sensor_adapter,
+			&ov7670_info, NULL);
 	if (cam->sensor == NULL) {
 		dev_err(&pdev->dev, "Unable to find the sensor!\n");
 		ret = -ENODEV;

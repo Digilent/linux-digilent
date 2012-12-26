@@ -90,6 +90,10 @@ static struct resource charger_resources[] __devinitdata = {
 	{PM8607_IRQ_VCHG, PM8607_IRQ_VCHG, "vchg voltage",    IORESOURCE_IRQ,},
 };
 
+static struct resource preg_resources[] __devinitdata = {
+	{PM8606_ID_PREG,  PM8606_ID_PREG,  "preg",   IORESOURCE_IO,},
+};
+
 static struct resource rtc_resources[] __devinitdata = {
 	{PM8607_IRQ_RTC, PM8607_IRQ_RTC, "rtc", IORESOURCE_IRQ,},
 };
@@ -142,9 +146,19 @@ static struct mfd_cell codec_devs[] = {
 	{"88pm860x-codec", -1,},
 };
 
+static struct regulator_consumer_supply preg_supply[] = {
+	REGULATOR_SUPPLY("preg", "charger-manager"),
+};
+
+static struct regulator_init_data preg_init_data = {
+	.num_consumer_supplies	= ARRAY_SIZE(preg_supply),
+	.consumer_supplies	= &preg_supply[0],
+};
+
 static struct mfd_cell power_devs[] = {
 	{"88pm860x-battery", -1,},
 	{"88pm860x-charger", -1,},
+	{"88pm860x-preg",    -1,},
 };
 
 static struct mfd_cell rtc_devs[] = {
@@ -503,6 +517,101 @@ static void device_irq_exit(struct pm860x_chip *chip)
 		free_irq(chip->core_irq, chip);
 }
 
+int pm8606_osc_enable(struct pm860x_chip *chip, unsigned short client)
+{
+	int ret = -EIO;
+	struct i2c_client *i2c = (chip->id == CHIP_PM8606) ?
+		chip->client : chip->companion;
+
+	dev_dbg(chip->dev, "%s(B): client=0x%x\n", __func__, client);
+	dev_dbg(chip->dev, "%s(B): vote=0x%x status=%d\n",
+			__func__, chip->osc_vote,
+			chip->osc_status);
+
+	mutex_lock(&chip->osc_lock);
+	/* Update voting status */
+	chip->osc_vote |= client;
+	/* If reference group is off - turn on*/
+	if (chip->osc_status != PM8606_REF_GP_OSC_ON) {
+		chip->osc_status = PM8606_REF_GP_OSC_UNKNOWN;
+		/* Enable Reference group Vsys */
+		if (pm860x_set_bits(i2c, PM8606_VSYS,
+				PM8606_VSYS_EN, PM8606_VSYS_EN))
+			goto out;
+
+		/*Enable Internal Oscillator */
+		if (pm860x_set_bits(i2c, PM8606_MISC,
+				PM8606_MISC_OSC_EN, PM8606_MISC_OSC_EN))
+			goto out;
+		/* Update status (only if writes succeed) */
+		chip->osc_status = PM8606_REF_GP_OSC_ON;
+	}
+	mutex_unlock(&chip->osc_lock);
+
+	dev_dbg(chip->dev, "%s(A): vote=0x%x status=%d ret=%d\n",
+			__func__, chip->osc_vote,
+			chip->osc_status, ret);
+	return 0;
+out:
+	mutex_unlock(&chip->osc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(pm8606_osc_enable);
+
+int pm8606_osc_disable(struct pm860x_chip *chip, unsigned short client)
+{
+	int ret = -EIO;
+	struct i2c_client *i2c = (chip->id == CHIP_PM8606) ?
+		chip->client : chip->companion;
+
+	dev_dbg(chip->dev, "%s(B): client=0x%x\n", __func__, client);
+	dev_dbg(chip->dev, "%s(B): vote=0x%x status=%d\n",
+			__func__, chip->osc_vote,
+			chip->osc_status);
+
+	mutex_lock(&chip->osc_lock);
+	/*Update voting status */
+	chip->osc_vote &= ~(client);
+	/* If reference group is off and this is the last client to release
+	 * - turn off */
+	if ((chip->osc_status != PM8606_REF_GP_OSC_OFF) &&
+			(chip->osc_vote == REF_GP_NO_CLIENTS)) {
+		chip->osc_status = PM8606_REF_GP_OSC_UNKNOWN;
+		/* Disable Reference group Vsys */
+		if (pm860x_set_bits(i2c, PM8606_VSYS, PM8606_VSYS_EN, 0))
+			goto out;
+		/* Disable Internal Oscillator */
+		if (pm860x_set_bits(i2c, PM8606_MISC, PM8606_MISC_OSC_EN, 0))
+			goto out;
+		chip->osc_status = PM8606_REF_GP_OSC_OFF;
+	}
+	mutex_unlock(&chip->osc_lock);
+
+	dev_dbg(chip->dev, "%s(A): vote=0x%x status=%d ret=%d\n",
+			__func__, chip->osc_vote,
+			chip->osc_status, ret);
+	return 0;
+out:
+	mutex_unlock(&chip->osc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(pm8606_osc_disable);
+
+static void __devinit device_osc_init(struct i2c_client *i2c)
+{
+	struct pm860x_chip *chip = i2c_get_clientdata(i2c);
+
+	mutex_init(&chip->osc_lock);
+	/* init portofino reference group voting and status */
+	/* Disable Reference group Vsys */
+	pm860x_set_bits(i2c, PM8606_VSYS, PM8606_VSYS_EN, 0);
+	/* Disable Internal Oscillator */
+	pm860x_set_bits(i2c, PM8606_MISC, PM8606_MISC_OSC_EN, 0);
+
+	chip->osc_vote = REF_GP_NO_CLIENTS;
+	chip->osc_status = PM8606_REF_GP_OSC_OFF;
+}
+
 static void __devinit device_bk_init(struct pm860x_chip *chip,
 				     struct pm860x_platform_data *pdata)
 {
@@ -528,7 +637,7 @@ static void __devinit device_bk_init(struct pm860x_chip *chip,
 			bk_devs[i].resources = &bk_resources[j];
 			ret = mfd_add_devices(chip->dev, 0,
 					      &bk_devs[i], 1,
-					      &bk_resources[j], 0);
+					      &bk_resources[j], 0, NULL);
 			if (ret < 0) {
 				dev_err(chip->dev, "Failed to add "
 					"backlight subdev\n");
@@ -563,7 +672,7 @@ static void __devinit device_led_init(struct pm860x_chip *chip,
 			led_devs[i].resources = &led_resources[j],
 			ret = mfd_add_devices(chip->dev, 0,
 					      &led_devs[i], 1,
-					      &led_resources[j], 0);
+					      &led_resources[j], 0, NULL);
 			if (ret < 0) {
 				dev_err(chip->dev, "Failed to add "
 					"led subdev\n");
@@ -600,7 +709,7 @@ static void __devinit device_regulator_init(struct pm860x_chip *chip,
 		regulator_devs[i].resources = &regulator_resources[seq];
 
 		ret = mfd_add_devices(chip->dev, 0, &regulator_devs[i], 1,
-				      &regulator_resources[seq], 0);
+				      &regulator_resources[seq], 0, NULL);
 		if (ret < 0) {
 			dev_err(chip->dev, "Failed to add regulator subdev\n");
 			goto out;
@@ -624,7 +733,7 @@ static void __devinit device_rtc_init(struct pm860x_chip *chip,
 	rtc_devs[0].resources = &rtc_resources[0];
 	ret = mfd_add_devices(chip->dev, 0, &rtc_devs[0],
 			      ARRAY_SIZE(rtc_devs), &rtc_resources[0],
-			      chip->irq_base);
+			      chip->irq_base, NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add rtc subdev\n");
 }
@@ -643,7 +752,7 @@ static void __devinit device_touch_init(struct pm860x_chip *chip,
 	touch_devs[0].resources = &touch_resources[0];
 	ret = mfd_add_devices(chip->dev, 0, &touch_devs[0],
 			      ARRAY_SIZE(touch_devs), &touch_resources[0],
-			      chip->irq_base);
+			      chip->irq_base, NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add touch subdev\n");
 }
@@ -661,7 +770,7 @@ static void __devinit device_power_init(struct pm860x_chip *chip,
 	power_devs[0].num_resources = ARRAY_SIZE(battery_resources);
 	power_devs[0].resources = &battery_resources[0],
 	ret = mfd_add_devices(chip->dev, 0, &power_devs[0], 1,
-			      &battery_resources[0], chip->irq_base);
+			      &battery_resources[0], chip->irq_base, NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add battery subdev\n");
 
@@ -670,9 +779,18 @@ static void __devinit device_power_init(struct pm860x_chip *chip,
 	power_devs[1].num_resources = ARRAY_SIZE(charger_resources);
 	power_devs[1].resources = &charger_resources[0],
 	ret = mfd_add_devices(chip->dev, 0, &power_devs[1], 1,
-			      &charger_resources[0], chip->irq_base);
+			      &charger_resources[0], chip->irq_base, NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add charger subdev\n");
+
+	power_devs[2].platform_data = &preg_init_data;
+	power_devs[2].pdata_size = sizeof(struct regulator_init_data);
+	power_devs[2].num_resources = ARRAY_SIZE(preg_resources);
+	power_devs[2].resources = &preg_resources[0],
+	ret = mfd_add_devices(chip->dev, 0, &power_devs[2], 1,
+			      &preg_resources[0], chip->irq_base, NULL);
+	if (ret < 0)
+		dev_err(chip->dev, "Failed to add preg subdev\n");
 }
 
 static void __devinit device_onkey_init(struct pm860x_chip *chip,
@@ -684,7 +802,7 @@ static void __devinit device_onkey_init(struct pm860x_chip *chip,
 	onkey_devs[0].resources = &onkey_resources[0],
 	ret = mfd_add_devices(chip->dev, 0, &onkey_devs[0],
 			      ARRAY_SIZE(onkey_devs), &onkey_resources[0],
-			      chip->irq_base);
+			      chip->irq_base, NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add onkey subdev\n");
 }
@@ -697,7 +815,8 @@ static void __devinit device_codec_init(struct pm860x_chip *chip,
 	codec_devs[0].num_resources = ARRAY_SIZE(codec_resources);
 	codec_devs[0].resources = &codec_resources[0],
 	ret = mfd_add_devices(chip->dev, 0, &codec_devs[0],
-			      ARRAY_SIZE(codec_devs), &codec_resources[0], 0);
+			      ARRAY_SIZE(codec_devs), &codec_resources[0], 0,
+			      NULL);
 	if (ret < 0)
 		dev_err(chip->dev, "Failed to add codec subdev\n");
 }
@@ -767,6 +886,15 @@ out:
 	return;
 }
 
+static void __devinit device_8606_init(struct pm860x_chip *chip,
+				       struct i2c_client *i2c,
+				       struct pm860x_platform_data *pdata)
+{
+	device_osc_init(i2c);
+	device_bk_init(chip, pdata);
+	device_led_init(chip, pdata);
+}
+
 int __devinit pm860x_device_init(struct pm860x_chip *chip,
 		       struct pm860x_platform_data *pdata)
 {
@@ -774,8 +902,7 @@ int __devinit pm860x_device_init(struct pm860x_chip *chip,
 
 	switch (chip->id) {
 	case CHIP_PM8606:
-		device_bk_init(chip, pdata);
-		device_led_init(chip, pdata);
+		device_8606_init(chip, chip->client, pdata);
 		break;
 	case CHIP_PM8607:
 		device_8607_init(chip, chip->client, pdata);
@@ -785,8 +912,7 @@ int __devinit pm860x_device_init(struct pm860x_chip *chip,
 	if (chip->companion) {
 		switch (chip->id) {
 		case CHIP_PM8607:
-			device_bk_init(chip, pdata);
-			device_led_init(chip, pdata);
+			device_8606_init(chip, chip->companion, pdata);
 			break;
 		case CHIP_PM8606:
 			device_8607_init(chip, chip->companion, pdata);

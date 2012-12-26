@@ -194,10 +194,6 @@ int fuse_open_common(struct inode *inode, struct file *file, bool isdir)
 	struct fuse_conn *fc = get_fuse_conn(inode);
 	int err;
 
-	/* VFS checks this, but only _after_ ->open() */
-	if (file->f_flags & O_DIRECT)
-		return -EINVAL;
-
 	err = generic_file_open(inode, file);
 	if (err)
 		return err;
@@ -707,13 +703,16 @@ static ssize_t fuse_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 				  unsigned long nr_segs, loff_t pos)
 {
 	struct inode *inode = iocb->ki_filp->f_mapping->host;
+	struct fuse_conn *fc = get_fuse_conn(inode);
 
-	if (pos + iov_length(iov, nr_segs) > i_size_read(inode)) {
+	/*
+	 * In auto invalidate mode, always update attributes on read.
+	 * Otherwise, only update if we attempt to read past EOF (to ensure
+	 * i_size is up to date).
+	 */
+	if (fc->auto_inval_data ||
+	    (pos + iov_length(iov, nr_segs) > i_size_read(inode))) {
 		int err;
-		/*
-		 * If trying to read past EOF, make sure the i_size
-		 * attribute is up-to-date.
-		 */
 		err = fuse_update_attributes(inode, NULL, iocb->ki_filp, NULL);
 		if (err)
 			return err;
@@ -932,19 +931,24 @@ static ssize_t fuse_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	struct file *file = iocb->ki_filp;
 	struct address_space *mapping = file->f_mapping;
 	size_t count = 0;
+	size_t ocount = 0;
 	ssize_t written = 0;
+	ssize_t written_buffered = 0;
 	struct inode *inode = mapping->host;
 	ssize_t err;
 	struct iov_iter i;
+	loff_t endbyte = 0;
 
 	WARN_ON(iocb->ki_pos != pos);
 
-	err = generic_segment_checks(iov, &nr_segs, &count, VERIFY_READ);
+	ocount = 0;
+	err = generic_segment_checks(iov, &nr_segs, &ocount, VERIFY_READ);
 	if (err)
 		return err;
 
+	count = ocount;
+	sb_start_write(inode->i_sb);
 	mutex_lock(&inode->i_mutex);
-	vfs_check_frozen(inode->i_sb, SB_FREEZE_WRITE);
 
 	/* We can write back this queue in page reclaim */
 	current->backing_dev_info = mapping->backing_dev_info;
@@ -960,16 +964,49 @@ static ssize_t fuse_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	if (err)
 		goto out;
 
-	file_update_time(file);
+	err = file_update_time(file);
+	if (err)
+		goto out;
 
-	iov_iter_init(&i, iov, nr_segs, count, 0);
-	written = fuse_perform_write(file, mapping, &i, pos);
-	if (written >= 0)
-		iocb->ki_pos = pos + written;
+	if (file->f_flags & O_DIRECT) {
+		written = generic_file_direct_write(iocb, iov, &nr_segs,
+						    pos, &iocb->ki_pos,
+						    count, ocount);
+		if (written < 0 || written == count)
+			goto out;
 
+		pos += written;
+		count -= written;
+
+		iov_iter_init(&i, iov, nr_segs, count, written);
+		written_buffered = fuse_perform_write(file, mapping, &i, pos);
+		if (written_buffered < 0) {
+			err = written_buffered;
+			goto out;
+		}
+		endbyte = pos + written_buffered - 1;
+
+		err = filemap_write_and_wait_range(file->f_mapping, pos,
+						   endbyte);
+		if (err)
+			goto out;
+
+		invalidate_mapping_pages(file->f_mapping,
+					 pos >> PAGE_CACHE_SHIFT,
+					 endbyte >> PAGE_CACHE_SHIFT);
+
+		written += written_buffered;
+		iocb->ki_pos = pos + written_buffered;
+	} else {
+		iov_iter_init(&i, iov, nr_segs, count, 0);
+		written = fuse_perform_write(file, mapping, &i, pos);
+		if (written >= 0)
+			iocb->ki_pos = pos + written;
+	}
 out:
 	current->backing_dev_info = NULL;
 	mutex_unlock(&inode->i_mutex);
+	sb_end_write(inode->i_sb);
 
 	return written ? written : err;
 }
@@ -1101,6 +1138,24 @@ static ssize_t fuse_direct_read(struct file *file, char __user *buf,
 	return res;
 }
 
+static ssize_t __fuse_direct_write(struct file *file, const char __user *buf,
+				   size_t count, loff_t *ppos)
+{
+	struct inode *inode = file->f_path.dentry->d_inode;
+	ssize_t res;
+
+	res = generic_write_checks(file, ppos, &count, 0);
+	if (!res) {
+		res = fuse_direct_io(file, buf, count, ppos, 1);
+		if (res > 0)
+			fuse_write_update_size(inode, *ppos);
+	}
+
+	fuse_invalidate_attr(inode);
+
+	return res;
+}
+
 static ssize_t fuse_direct_write(struct file *file, const char __user *buf,
 				 size_t count, loff_t *ppos)
 {
@@ -1112,15 +1167,8 @@ static ssize_t fuse_direct_write(struct file *file, const char __user *buf,
 
 	/* Don't allow parallel writes to the same file */
 	mutex_lock(&inode->i_mutex);
-	res = generic_write_checks(file, ppos, &count, 0);
-	if (!res) {
-		res = fuse_direct_io(file, buf, count, ppos, 1);
-		if (res > 0)
-			fuse_write_update_size(inode, *ppos);
-	}
+	res = __fuse_direct_write(file, buf, count, ppos);
 	mutex_unlock(&inode->i_mutex);
-
-	fuse_invalidate_attr(inode);
 
 	return res;
 }
@@ -1655,7 +1703,7 @@ static int fuse_verify_ioctl_iov(struct iovec *iov, size_t count)
 	size_t n;
 	u32 max = FUSE_MAX_PAGES_PER_REQ << PAGE_SHIFT;
 
-	for (n = 0; n < count; n++) {
+	for (n = 0; n < count; n++, iov++) {
 		if (iov->iov_len > (size_t) max)
 			return -ENOMEM;
 		max -= iov->iov_len;
@@ -1887,11 +1935,11 @@ long fuse_do_ioctl(struct file *file, unsigned int cmd, unsigned long arg,
 		    in_iovs + out_iovs > FUSE_IOCTL_MAX_IOV)
 			goto out;
 
-		vaddr = kmap_atomic(pages[0], KM_USER0);
+		vaddr = kmap_atomic(pages[0]);
 		err = fuse_copy_ioctl_iovec(fc, iov_page, vaddr,
 					    transferred, in_iovs + out_iovs,
 					    (flags & FUSE_IOCTL_COMPAT) != 0);
-		kunmap_atomic(vaddr, KM_USER0);
+		kunmap_atomic(vaddr);
 		if (err)
 			goto out;
 
@@ -2077,6 +2125,95 @@ int fuse_notify_poll_wakeup(struct fuse_conn *fc,
 	return 0;
 }
 
+static ssize_t fuse_loop_dio(struct file *filp, const struct iovec *iov,
+			     unsigned long nr_segs, loff_t *ppos, int rw)
+{
+	const struct iovec *vector = iov;
+	ssize_t ret = 0;
+
+	while (nr_segs > 0) {
+		void __user *base;
+		size_t len;
+		ssize_t nr;
+
+		base = vector->iov_base;
+		len = vector->iov_len;
+		vector++;
+		nr_segs--;
+
+		if (rw == WRITE)
+			nr = __fuse_direct_write(filp, base, len, ppos);
+		else
+			nr = fuse_direct_read(filp, base, len, ppos);
+
+		if (nr < 0) {
+			if (!ret)
+				ret = nr;
+			break;
+		}
+		ret += nr;
+		if (nr != len)
+			break;
+	}
+
+	return ret;
+}
+
+
+static ssize_t
+fuse_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov,
+			loff_t offset, unsigned long nr_segs)
+{
+	ssize_t ret = 0;
+	struct file *file = NULL;
+	loff_t pos = 0;
+
+	file = iocb->ki_filp;
+	pos = offset;
+
+	ret = fuse_loop_dio(file, iov, nr_segs, &pos, rw);
+
+	return ret;
+}
+
+long fuse_file_fallocate(struct file *file, int mode, loff_t offset,
+			    loff_t length)
+{
+	struct fuse_file *ff = file->private_data;
+	struct fuse_conn *fc = ff->fc;
+	struct fuse_req *req;
+	struct fuse_fallocate_in inarg = {
+		.fh = ff->fh,
+		.offset = offset,
+		.length = length,
+		.mode = mode
+	};
+	int err;
+
+	if (fc->no_fallocate)
+		return -EOPNOTSUPP;
+
+	req = fuse_get_req(fc);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	req->in.h.opcode = FUSE_FALLOCATE;
+	req->in.h.nodeid = ff->nodeid;
+	req->in.numargs = 1;
+	req->in.args[0].size = sizeof(inarg);
+	req->in.args[0].value = &inarg;
+	fuse_request_send(fc, req);
+	err = req->out.h.error;
+	if (err == -ENOSYS) {
+		fc->no_fallocate = 1;
+		err = -EOPNOTSUPP;
+	}
+	fuse_put_request(fc, req);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(fuse_file_fallocate);
+
 static const struct file_operations fuse_file_operations = {
 	.llseek		= fuse_file_llseek,
 	.read		= do_sync_read,
@@ -2094,6 +2231,7 @@ static const struct file_operations fuse_file_operations = {
 	.unlocked_ioctl	= fuse_file_ioctl,
 	.compat_ioctl	= fuse_file_compat_ioctl,
 	.poll		= fuse_file_poll,
+	.fallocate	= fuse_file_fallocate,
 };
 
 static const struct file_operations fuse_direct_io_file_operations = {
@@ -2110,6 +2248,7 @@ static const struct file_operations fuse_direct_io_file_operations = {
 	.unlocked_ioctl	= fuse_file_ioctl,
 	.compat_ioctl	= fuse_file_compat_ioctl,
 	.poll		= fuse_file_poll,
+	.fallocate	= fuse_file_fallocate,
 	/* no splice_read */
 };
 
@@ -2120,6 +2259,7 @@ static const struct address_space_operations fuse_file_aops  = {
 	.readpages	= fuse_readpages,
 	.set_page_dirty	= __set_page_dirty_nobuffers,
 	.bmap		= fuse_bmap,
+	.direct_IO	= fuse_direct_IO,
 };
 
 void fuse_init_file_inode(struct inode *inode)

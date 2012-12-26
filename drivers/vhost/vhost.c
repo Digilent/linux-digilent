@@ -64,7 +64,7 @@ static int vhost_poll_wakeup(wait_queue_t *wait, unsigned mode, int sync,
 	return 0;
 }
 
-static void vhost_work_init(struct vhost_work *work, vhost_work_fn_t fn)
+void vhost_work_init(struct vhost_work *work, vhost_work_fn_t fn)
 {
 	INIT_LIST_HEAD(&work->node);
 	work->fn = fn;
@@ -137,8 +137,7 @@ void vhost_poll_flush(struct vhost_poll *poll)
 	vhost_work_flush(poll->dev, &poll->work);
 }
 
-static inline void vhost_work_queue(struct vhost_dev *dev,
-				    struct vhost_work *work)
+void vhost_work_queue(struct vhost_dev *dev, struct vhost_work *work)
 {
 	unsigned long flags;
 
@@ -191,7 +190,9 @@ static int vhost_worker(void *data)
 	struct vhost_dev *dev = data;
 	struct vhost_work *work = NULL;
 	unsigned uninitialized_var(seq);
+	mm_segment_t oldfs = get_fs();
 
+	set_fs(USER_DS);
 	use_mm(dev->mm);
 
 	for (;;) {
@@ -222,11 +223,14 @@ static int vhost_worker(void *data)
 		if (work) {
 			__set_current_state(TASK_RUNNING);
 			work->fn(work);
+			if (need_resched())
+				schedule();
 		} else
 			schedule();
 
 	}
 	unuse_mm(dev->mm);
+	set_fs(oldfs);
 	return 0;
 }
 
@@ -403,7 +407,7 @@ long vhost_dev_reset_owner(struct vhost_dev *dev)
 	if (!memory)
 		return -ENOMEM;
 
-	vhost_dev_cleanup(dev);
+	vhost_dev_cleanup(dev, true);
 
 	memory->nregions = 0;
 	RCU_INIT_POINTER(dev->memory, memory);
@@ -434,8 +438,8 @@ int vhost_zerocopy_signal_used(struct vhost_virtqueue *vq)
 	return j;
 }
 
-/* Caller should have device mutex */
-void vhost_dev_cleanup(struct vhost_dev *dev)
+/* Caller should have device mutex if and only if locked is set */
+void vhost_dev_cleanup(struct vhost_dev *dev, bool locked)
 {
 	int i;
 
@@ -472,7 +476,8 @@ void vhost_dev_cleanup(struct vhost_dev *dev)
 	dev->log_file = NULL;
 	/* No one will access memory at this point */
 	kfree(rcu_dereference_protected(dev->memory,
-					lockdep_is_held(&dev->mutex)));
+					locked ==
+						lockdep_is_held(&dev->mutex)));
 	RCU_INIT_POINTER(dev->memory, NULL);
 	WARN_ON(!list_empty(&dev->work_list));
 	if (dev->worker) {
@@ -937,9 +942,9 @@ static int set_bit_to_user(int nr, void __user *addr)
 	if (r < 0)
 		return r;
 	BUG_ON(r != 1);
-	base = kmap_atomic(page, KM_USER0);
+	base = kmap_atomic(page);
 	set_bit(bit, base);
-	kunmap_atomic(base, KM_USER0);
+	kunmap_atomic(base);
 	set_page_dirty_lock(page);
 	put_page(page);
 	return 0;
@@ -1595,12 +1600,12 @@ void vhost_ubuf_put_and_wait(struct vhost_ubuf_ref *ubufs)
 	kfree(ubufs);
 }
 
-void vhost_zerocopy_callback(void *arg)
+void vhost_zerocopy_callback(struct ubuf_info *ubuf)
 {
-	struct ubuf_info *ubuf = arg;
-	struct vhost_ubuf_ref *ubufs = ubuf->arg;
+	struct vhost_ubuf_ref *ubufs = ubuf->ctx;
 	struct vhost_virtqueue *vq = ubufs->vq;
 
+	vhost_poll_queue(&vq->poll);
 	/* set len = 1 to mark this desc buffers done DMA */
 	vq->heads[ubuf->desc].len = VHOST_DMA_DONE_LEN;
 	kref_put(&ubufs->kref, vhost_zerocopy_done_signal);

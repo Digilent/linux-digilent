@@ -49,6 +49,7 @@
 #define _COMPONENT          ACPI_EVENTS
 ACPI_MODULE_NAME("evxfevnt")
 
+#if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
 /*******************************************************************************
  *
  * FUNCTION:    acpi_enable
@@ -152,8 +153,8 @@ ACPI_EXPORT_SYMBOL(acpi_disable)
  *
  * FUNCTION:    acpi_enable_event
  *
- * PARAMETERS:  Event           - The fixed eventto be enabled
- *              Flags           - Reserved
+ * PARAMETERS:  event           - The fixed eventto be enabled
+ *              flags           - Reserved
  *
  * RETURN:      Status
  *
@@ -264,7 +265,7 @@ ACPI_EXPORT_SYMBOL(acpi_disable_event)
  *
  * FUNCTION:    acpi_clear_event
  *
- * PARAMETERS:  Event           - The fixed event to be cleared
+ * PARAMETERS:  event           - The fixed event to be cleared
  *
  * RETURN:      Status
  *
@@ -300,7 +301,7 @@ ACPI_EXPORT_SYMBOL(acpi_clear_event)
  *
  * FUNCTION:    acpi_get_event_status
  *
- * PARAMETERS:  Event           - The fixed event
+ * PARAMETERS:  event           - The fixed event
  *              event_status    - Where the current status of the event will
  *                                be returned
  *
@@ -352,3 +353,4 @@ acpi_status acpi_get_event_status(u32 event, acpi_event_status * event_status)
 }
 
 ACPI_EXPORT_SYMBOL(acpi_get_event_status)
+#endif				/* !ACPI_REDUCED_HARDWARE */

@@ -400,9 +400,21 @@ struct ath_btcoex {
 	u32 btscan_no_stomp;
 };
 
-void ath_htc_init_btcoex_work(struct ath9k_htc_priv *priv);
-void ath_htc_resume_btcoex_work(struct ath9k_htc_priv *priv);
-void ath_htc_cancel_btcoex_work(struct ath9k_htc_priv *priv);
+#ifdef CONFIG_ATH9K_BTCOEX_SUPPORT
+void ath9k_htc_init_btcoex(struct ath9k_htc_priv *priv, char *product);
+void ath9k_htc_start_btcoex(struct ath9k_htc_priv *priv);
+void ath9k_htc_stop_btcoex(struct ath9k_htc_priv *priv);
+#else
+static inline void ath9k_htc_init_btcoex(struct ath9k_htc_priv *priv, char *product)
+{
+}
+static inline void ath9k_htc_start_btcoex(struct ath9k_htc_priv *priv)
+{
+}
+static inline void ath9k_htc_stop_btcoex(struct ath9k_htc_priv *priv)
+{
+}
+#endif /* CONFIG_ATH9K_BTCOEX_SUPPORT */
 
 #define OP_INVALID		   BIT(0)
 #define OP_SCANNING		   BIT(1)
@@ -441,7 +453,6 @@ struct ath9k_htc_priv {
 	u8 num_sta_assoc_vif;
 	u8 num_ap_vif;
 
-	u16 op_flags;
 	u16 curtxpow;
 	u16 txpowlimit;
 	u16 nvifs;
@@ -449,6 +460,7 @@ struct ath9k_htc_priv {
 	bool rearm_ani;
 	bool reconfig_beacon;
 	unsigned int rxfilter;
+	unsigned long op_flags;
 
 	struct ath9k_hw_cal_data caldata;
 	struct ieee80211_supported_band sbands[IEEE80211_NUM_BANDS];
@@ -483,7 +495,10 @@ struct ath9k_htc_priv {
 	int cabq;
 	int hwq_map[WME_NUM_AC];
 
+#ifdef CONFIG_ATH9K_BTCOEX_SUPPORT
 	struct ath_btcoex btcoex;
+#endif
+
 	struct delayed_work coex_period_work;
 	struct delayed_work duty_cycle_work;
 #ifdef CONFIG_ATH9K_HTC_DEBUGFS
@@ -557,8 +572,6 @@ bool ath9k_htc_setpower(struct ath9k_htc_priv *priv,
 
 void ath9k_start_rfkill_poll(struct ath9k_htc_priv *priv);
 void ath9k_htc_rfkill_poll_state(struct ieee80211_hw *hw);
-void ath9k_htc_radio_enable(struct ieee80211_hw *hw);
-void ath9k_htc_radio_disable(struct ieee80211_hw *hw);
 
 #ifdef CONFIG_MAC80211_LEDS
 void ath9k_init_leds(struct ath9k_htc_priv *priv);

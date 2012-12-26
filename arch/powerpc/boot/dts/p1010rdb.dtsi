@@ -126,9 +126,21 @@
 
 &board_soc {
 	i2c@3000 {
+		eeprom@50 {
+			compatible = "st,24c256";
+			reg = <0x50>;
+		};
+
 		rtc@68 {
 			compatible = "pericom,pt7c4338";
 			reg = <0x68>;
+		};
+	};
+
+	i2c@3100 {
+		eeprom@52 {
+			compatible = "atmel,24c01";
+			reg = <0x52>;
 		};
 	};
 
@@ -138,7 +150,7 @@
 			#size-cells = <1>;
 			compatible = "spansion,s25sl12801";
 			reg = <0>;
-			spi-max-frequency = <50000000>;
+			spi-max-frequency = <40000000>;
 
 			partition@0 {
 				/* 1MB for u-boot Bootloader Image */
@@ -196,7 +208,7 @@
 		};
 
 		tbi-phy@3 {
-			device-type = "tbi-phy";
+			device_type = "tbi-phy";
 			reg = <0x3>;
 		};
 	};

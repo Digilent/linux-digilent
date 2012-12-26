@@ -69,6 +69,7 @@ struct max8925_rtc_info {
 	struct max8925_chip	*chip;
 	struct i2c_client	*rtc;
 	struct device		*dev;
+	int			irq;
 };
 
 static irqreturn_t rtc_update_handler(int irq, void *data)
@@ -193,10 +194,17 @@ static int max8925_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	ret = max8925_reg_read(info->rtc, MAX8925_RTC_IRQ_MASK);
 	if (ret < 0)
 		goto out;
-	if ((ret & ALARM0_IRQ) == 0)
-		alrm->enabled = 1;
-	else
+	if (ret & ALARM0_IRQ) {
 		alrm->enabled = 0;
+	} else {
+		ret = max8925_reg_read(info->rtc, MAX8925_ALARM0_CNTL);
+		if (ret < 0)
+			goto out;
+		if (!ret)
+			alrm->enabled = 0;
+		else
+			alrm->enabled = 1;
+	}
 	ret = max8925_reg_read(info->rtc, MAX8925_RTC_STATUS);
 	if (ret < 0)
 		goto out;
@@ -204,6 +212,7 @@ static int max8925_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		alrm->pending = 1;
 	else
 		alrm->pending = 0;
+	return 0;
 out:
 	return ret;
 }
@@ -220,8 +229,11 @@ static int max8925_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	ret = max8925_bulk_write(info->rtc, MAX8925_ALARM0_SEC, TIME_NUM, buf);
 	if (ret < 0)
 		goto out;
-	/* only enable alarm on year/month/day/hour/min/sec */
-	ret = max8925_reg_write(info->rtc, MAX8925_ALARM0_CNTL, 0x77);
+	if (alrm->enabled)
+		/* only enable alarm on year/month/day/hour/min/sec */
+		ret = max8925_reg_write(info->rtc, MAX8925_ALARM0_CNTL, 0x77);
+	else
+		ret = max8925_reg_write(info->rtc, MAX8925_ALARM0_CNTL, 0x0);
 	if (ret < 0)
 		goto out;
 out:
@@ -239,7 +251,7 @@ static int __devinit max8925_rtc_probe(struct platform_device *pdev)
 {
 	struct max8925_chip *chip = dev_get_drvdata(pdev->dev.parent);
 	struct max8925_rtc_info *info;
-	int irq, ret;
+	int ret;
 
 	info = kzalloc(sizeof(struct max8925_rtc_info), GFP_KERNEL);
 	if (!info)
@@ -247,13 +259,13 @@ static int __devinit max8925_rtc_probe(struct platform_device *pdev)
 	info->chip = chip;
 	info->rtc = chip->rtc;
 	info->dev = &pdev->dev;
-	irq = chip->irq_base + MAX8925_IRQ_RTC_ALARM0;
+	info->irq = platform_get_irq(pdev, 0);
 
-	ret = request_threaded_irq(irq, NULL, rtc_update_handler,
+	ret = request_threaded_irq(info->irq, NULL, rtc_update_handler,
 				   IRQF_ONESHOT, "rtc-alarm0", info);
 	if (ret < 0) {
 		dev_err(chip->dev, "Failed to request IRQ: #%d: %d\n",
-			irq, ret);
+			info->irq, ret);
 		goto out_irq;
 	}
 
@@ -274,7 +286,7 @@ static int __devinit max8925_rtc_probe(struct platform_device *pdev)
 	return 0;
 out_rtc:
 	platform_set_drvdata(pdev, NULL);
-	free_irq(chip->irq_base + MAX8925_IRQ_RTC_ALARM0, info);
+	free_irq(info->irq, info);
 out_irq:
 	kfree(info);
 	return ret;
@@ -285,7 +297,7 @@ static int __devexit max8925_rtc_remove(struct platform_device *pdev)
 	struct max8925_rtc_info *info = platform_get_drvdata(pdev);
 
 	if (info) {
-		free_irq(info->chip->irq_base + MAX8925_IRQ_RTC_ALARM0, info);
+		free_irq(info->irq, info);
 		rtc_device_unregister(info->rtc_dev);
 		kfree(info);
 	}

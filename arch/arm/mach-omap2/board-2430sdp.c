@@ -218,9 +218,6 @@ static struct twl4030_gpio_platform_data sdp2430_gpio_data = {
 };
 
 static struct twl4030_platform_data sdp2430_twldata = {
-	.irq_base	= TWL4030_IRQ_BASE,
-	.irq_end	= TWL4030_IRQ_END,
-
 	/* platform_data for children goes here */
 	.gpio		= &sdp2430_gpio_data,
 	.vmmc1		= &sdp2430_vmmc1,
@@ -230,12 +227,12 @@ static struct i2c_board_info __initdata sdp2430_i2c1_boardinfo[] = {
 	{
 		I2C_BOARD_INFO("isp1301_omap", 0x2D),
 		.flags = I2C_CLIENT_WAKE,
-		.irq = OMAP_GPIO_IRQ(78),
 	},
 };
 
 static int __init omap2430_i2c_init(void)
 {
+	sdp2430_i2c1_boardinfo[0].irq = gpio_to_irq(78);
 	omap_register_i2c_bus(1, 100, sdp2430_i2c1_boardinfo,
 			ARRAY_SIZE(sdp2430_i2c1_boardinfo));
 	omap_pmic_init(2, 100, "twl4030", INT_24XX_SYS_NIRQ,
@@ -254,16 +251,6 @@ static struct omap2_hsmmc_info mmc[] __initdata = {
 	{}	/* Terminator */
 };
 
-static struct omap_usb_config sdp2430_usb_config __initdata = {
-	.otg		= 1,
-#ifdef  CONFIG_USB_GADGET_OMAP
-	.hmc_mode	= 0x0,
-#elif   defined(CONFIG_USB_OHCI_HCD) || defined(CONFIG_USB_OHCI_HCD_MODULE)
-	.hmc_mode	= 0x1,
-#endif
-	.pins[0]	= 3,
-};
-
 #ifdef CONFIG_OMAP_MUX
 static struct omap_board_mux board_mux[] __initdata = {
 	{ .reg_offset = OMAP_MUX_TERMINATOR },
@@ -279,8 +266,7 @@ static void __init omap_2430sdp_init(void)
 	platform_add_devices(sdp2430_devices, ARRAY_SIZE(sdp2430_devices));
 	omap_serial_init();
 	omap_sdrc_init(NULL, NULL);
-	omap2_hsmmc_init(mmc);
-	omap2_usbfs_init(&sdp2430_usb_config);
+	omap_hsmmc_init(mmc);
 
 	omap_mux_init_signal("usb0hs_stp", OMAP_PULL_ENA | OMAP_PULL_UP);
 	usb_musb_init(NULL);
@@ -303,6 +289,7 @@ MACHINE_START(OMAP_2430SDP, "OMAP2430 sdp2430 board")
 	.init_irq	= omap2_init_irq,
 	.handle_irq	= omap2_intc_handle_irq,
 	.init_machine	= omap_2430sdp_init,
+	.init_late	= omap2430_init_late,
 	.timer		= &omap2_timer,
 	.restart	= omap_prcm_restart,
 MACHINE_END

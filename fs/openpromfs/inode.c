@@ -170,13 +170,13 @@ static const struct file_operations openprom_operations = {
 	.llseek		= generic_file_llseek,
 };
 
-static struct dentry *openpromfs_lookup(struct inode *, struct dentry *, struct nameidata *);
+static struct dentry *openpromfs_lookup(struct inode *, struct dentry *, unsigned int);
 
 static const struct inode_operations openprom_inode_operations = {
 	.lookup		= openpromfs_lookup,
 };
 
-static struct dentry *openpromfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+static struct dentry *openpromfs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	struct op_inode_info *ent_oi, *oi = OP_I(dir);
 	struct device_node *dp, *child;
@@ -408,13 +408,12 @@ static int openprom_fill_super(struct super_block *s, void *data, int silent)
 	oi->type = op_inode_node;
 	oi->u.node = of_find_node_by_path("/");
 
-	s->s_root = d_alloc_root(root_inode);
+	s->s_root = d_make_root(root_inode);
 	if (!s->s_root)
 		goto out_no_root_dentry;
 	return 0;
 
 out_no_root_dentry:
-	iput(root_inode);
 	ret = -ENOMEM;
 out_no_root:
 	printk("openprom_fill_super: get root inode failed\n");

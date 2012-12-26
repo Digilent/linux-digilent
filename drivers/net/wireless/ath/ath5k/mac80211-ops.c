@@ -41,6 +41,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <net/mac80211.h>
 #include <asm/unaligned.h>
 
@@ -134,6 +136,8 @@ ath5k_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 			ah->num_ap_vifs++;
 		else if (avf->opmode == NL80211_IFTYPE_ADHOC)
 			ah->num_adhoc_vifs++;
+		else if (avf->opmode == NL80211_IFTYPE_MESH_POINT)
+			ah->num_mesh_vifs++;
 	}
 
 	/* Any MAC address is fine, all others are included through the
@@ -175,6 +179,8 @@ ath5k_remove_interface(struct ieee80211_hw *hw,
 		ah->num_ap_vifs--;
 	else if (avf->opmode == NL80211_IFTYPE_ADHOC)
 		ah->num_adhoc_vifs--;
+	else if (avf->opmode == NL80211_IFTYPE_MESH_POINT)
+		ah->num_mesh_vifs--;
 
 	ath5k_update_bssid_mask_and_opmode(ah, NULL);
 	mutex_unlock(&ah->lock);
@@ -248,7 +254,6 @@ ath5k_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	struct ath5k_vif *avf = (void *)vif->drv_priv;
 	struct ath5k_hw *ah = hw->priv;
 	struct ath_common *common = ath5k_hw_common(ah);
-	unsigned long flags;
 
 	mutex_lock(&ah->lock);
 
@@ -294,9 +299,9 @@ ath5k_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	}
 
 	if (changes & BSS_CHANGED_BEACON) {
-		spin_lock_irqsave(&ah->block, flags);
+		spin_lock_bh(&ah->block);
 		ath5k_beacon_update(hw, vif);
-		spin_unlock_irqrestore(&ah->block, flags);
+		spin_unlock_bh(&ah->block);
 	}
 
 	if (changes & BSS_CHANGED_BEACON_ENABLED)
@@ -483,6 +488,14 @@ ath5k_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	if (ath5k_modparam_nohwcrypt)
 		return -EOPNOTSUPP;
 
+	if (vif->type == NL80211_IFTYPE_ADHOC &&
+	    (key->cipher == WLAN_CIPHER_SUITE_TKIP ||
+	     key->cipher == WLAN_CIPHER_SUITE_CCMP) &&
+	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE)) {
+		/* don't program group keys when using IBSS_RSN */
+		return -EOPNOTSUPP;
+	}
+
 	switch (key->cipher) {
 	case WLAN_CIPHER_SUITE_WEP40:
 	case WLAN_CIPHER_SUITE_WEP104:
@@ -580,7 +593,7 @@ ath5k_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u16 queue,
 	qi.tqi_aifs = params->aifs;
 	qi.tqi_cw_min = params->cw_min;
 	qi.tqi_cw_max = params->cw_max;
-	qi.tqi_burst_time = params->txop;
+	qi.tqi_burst_time = params->txop * 32;
 
 	ATH5K_DBG(ah, ATH5K_DEBUG_ANY,
 		  "Configure tx [queue %d],  "

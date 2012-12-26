@@ -4,14 +4,12 @@
 /* Reiserfs block (de)allocator, bitmap-based. */
 
 #include <linux/time.h>
-#include <linux/reiserfs_fs.h>
+#include "reiserfs.h"
 #include <linux/errno.h>
 #include <linux/buffer_head.h>
 #include <linux/kernel.h>
 #include <linux/pagemap.h>
 #include <linux/vmalloc.h>
-#include <linux/reiserfs_fs_sb.h>
-#include <linux/reiserfs_fs_i.h>
 #include <linux/quotaops.h>
 #include <linux/seq_file.h>
 
@@ -1336,9 +1334,7 @@ struct buffer_head *reiserfs_read_bitmap_block(struct super_block *sb,
 	else if (bitmap == 0)
 		block = (REISERFS_DISK_OFFSET_IN_BYTES >> sb->s_blocksize_bits) + 1;
 
-	reiserfs_write_unlock(sb);
 	bh = sb_bread(sb, block);
-	reiserfs_write_lock(sb);
 	if (bh == NULL)
 		reiserfs_warning(sb, "sh-2029: %s: bitmap block (#%u) "
 		                 "reading failed", __func__, block);

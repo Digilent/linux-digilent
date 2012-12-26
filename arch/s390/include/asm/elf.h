@@ -1,6 +1,4 @@
 /*
- *  include/asm-s390/elf.h
- *
  *  S390 version
  *
  *  Derived from "include/asm-i386/elf.h"
@@ -107,11 +105,11 @@
 /*
  * These are used to set parameters in the core dumps.
  */
-#ifndef __s390x__
+#ifndef CONFIG_64BIT
 #define ELF_CLASS	ELFCLASS32
-#else /* __s390x__ */
+#else /* CONFIG_64BIT */
 #define ELF_CLASS	ELFCLASS64
-#endif /* __s390x__ */
+#endif /* CONFIG_64BIT */
 #define ELF_DATA	ELFDATA2MSB
 #define ELF_ARCH	EM_S390
 
@@ -129,7 +127,6 @@ typedef s390_fp_regs compat_elf_fpregset_t;
 typedef s390_compat_regs compat_elf_gregset_t;
 
 #include <linux/sched.h>	/* for task_struct */
-#include <asm/system.h>		/* for save_access_regs */
 #include <asm/mmu_context.h>
 
 #include <asm/vdso.h>
@@ -182,9 +179,10 @@ extern unsigned long elf_hwcap;
 extern char elf_platform[];
 #define ELF_PLATFORM (elf_platform)
 
-#ifndef __s390x__
-#define SET_PERSONALITY(ex) set_personality(PER_LINUX)
-#else /* __s390x__ */
+#ifndef CONFIG_64BIT
+#define SET_PERSONALITY(ex) \
+	set_personality(PER_LINUX | (current->personality & (~PER_MASK)))
+#else /* CONFIG_64BIT */
 #define SET_PERSONALITY(ex)					\
 do {								\
 	if (personality(current->personality) != PER_LINUX32)	\
@@ -195,7 +193,7 @@ do {								\
 	else							\
 		clear_thread_flag(TIF_31BIT);			\
 } while (0)
-#endif /* __s390x__ */
+#endif /* CONFIG_64BIT */
 
 #define STACK_RND_MASK	0x7ffUL
 

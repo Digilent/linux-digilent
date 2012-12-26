@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2003-2008 Alan Stern
  * Copyright (C) 2009 Samsung Electronics
- *                    Author: Michal Nazarewicz <m.nazarewicz@samsung.com>
+ *                    Author: Michal Nazarewicz <mina86@mina86.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,12 +44,12 @@
  * function for a USB device, it also illustrates a technique of
  * double-buffering for increased throughput.
  *
- * Function supports multiple logical units (LUNs).  Backing storage
- * for each LUN is provided by a regular file or a block device.
- * Access for each LUN can be limited to read-only.  Moreover, the
- * function can indicate that LUN is removable and/or CD-ROM.  (The
- * later implies read-only access.)
- *
+ * For more information about MSF and in particular its module
+ * parameters and sysfs interface read the
+ * <Documentation/usb/mass-storage.txt> file.
+ */
+
+/*
  * MSF is configured by specifying a fsg_config structure.  It has the
  * following fields:
  *
@@ -75,25 +75,6 @@
  *	->nofua		Flag specifying that FUA flag in SCSI WRITE(10,12)
  *				commands for this LUN shall be ignored.
  *
- *	lun_name_format	A printf-like format for names of the LUN
- *				devices.  This determines how the
- *				directory in sysfs will be named.
- *				Unless you are using several MSFs in
- *				a single gadget (as opposed to single
- *				MSF in many configurations) you may
- *				leave it as NULL (in which case
- *				"lun%d" will be used).  In the format
- *				you can use "%d" to index LUNs for
- *				MSF's with more than one LUN.  (Beware
- *				that there is only one integer given
- *				as an argument for the format and
- *				specifying invalid format may cause
- *				unspecified behaviour.)
- *	thread_name	Name of the kernel thread process used by the
- *				MSF.  You can safely set it to NULL
- *				(in which case default "file-storage"
- *				will be used).
- *
  *	vendor_name
  *	product_name
  *	release		Information used as a reply to INQUIRY
@@ -113,62 +94,6 @@
  * structure causes error).  The CD-ROM emulation includes a single
  * data track and no audio tracks; hence there need be only one
  * backing file per LUN.
- *
- *
- * MSF includes support for module parameters.  If gadget using it
- * decides to use it, the following module parameters will be
- * available:
- *
- *	file=filename[,filename...]
- *			Names of the files or block devices used for
- *				backing storage.
- *	ro=b[,b...]	Default false, boolean for read-only access.
- *	removable=b[,b...]
- *			Default true, boolean for removable media.
- *	cdrom=b[,b...]	Default false, boolean for whether to emulate
- *				a CD-ROM drive.
- *	nofua=b[,b...]	Default false, booleans for ignore FUA flag
- *				in SCSI WRITE(10,12) commands
- *	luns=N		Default N = number of filenames, number of
- *				LUNs to support.
- *	stall		Default determined according to the type of
- *				USB device controller (usually true),
- *				boolean to permit the driver to halt
- *				bulk endpoints.
- *
- * The module parameters may be prefixed with some string.  You need
- * to consult gadget's documentation or source to verify whether it is
- * using those module parameters and if it does what are the prefixes
- * (look for FSG_MODULE_PARAMETERS() macro usage, what's inside it is
- * the prefix).
- *
- *
- * Requirements are modest; only a bulk-in and a bulk-out endpoint are
- * needed.  The memory requirement amounts to two 16K buffers, size
- * configurable by a parameter.  Support is included for both
- * full-speed and high-speed operation.
- *
- * Note that the driver is slightly non-portable in that it assumes a
- * single memory/DMA buffer will be useable for bulk-in, bulk-out, and
- * interrupt-in endpoints.  With most device controllers this isn't an
- * issue, but there may be some with hardware restrictions that prevent
- * a buffer from being used by more than one endpoint.
- *
- *
- * The pathnames of the backing files and the ro settings are
- * available in the attribute files "file" and "ro" in the lun<n> (or
- * to be more precise in a directory which name comes from
- * "lun_name_format" option!) subdirectory of the gadget's sysfs
- * directory.  If the "removable" option is set, writing to these
- * files will simulate ejecting/loading the medium (writing an empty
- * line means eject) and adjusting a write-enable tab.  Changes to the
- * ro setting are not allowed when the medium is loaded or if CD-ROM
- * emulation is being used.
- *
- * When a LUN receive an "eject" SCSI request (Start/Stop Unit),
- * if the LUN is removable, the backing file is released to simulate
- * ejection.
- *
  *
  * This function is heavily based on "File-backed Storage Gadget" by
  * Alan Stern which in turn is heavily based on "Gadget Zero" by David
@@ -211,7 +136,7 @@
  * In normal operation the main thread is started during the gadget's
  * fsg_bind() callback and stopped during fsg_unbind().  But it can
  * also exit when it receives a signal, and there's no point leaving
- * the gadget running when the thread is dead.  At of this moment, MSF
+ * the gadget running when the thread is dead.  As of this moment, MSF
  * provides no way to deregister the gadget when thread dies -- maybe
  * a callback functions is needed.
  *
@@ -304,7 +229,6 @@
 
 static const char fsg_string_interface[] = "Mass Storage";
 
-#define FSG_NO_INTR_EP 1
 #define FSG_NO_DEVICE_STRINGS    1
 #define FSG_NO_OTG               1
 #define FSG_NO_INTR_EP           1
@@ -417,9 +341,6 @@ struct fsg_config {
 		char cdrom;
 		char nofua;
 	} luns[FSG_MAX_LUNS];
-
-	const char		*lun_name_format;
-	const char		*thread_name;
 
 	/* Callback functions. */
 	const struct fsg_operations	*ops;
@@ -620,7 +541,7 @@ static int fsg_setup(struct usb_function *f,
 
 	switch (ctrl->bRequest) {
 
-	case USB_BULK_RESET_REQUEST:
+	case US_BULK_RESET_REQUEST:
 		if (ctrl->bRequestType !=
 		    (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE))
 			break;
@@ -636,7 +557,7 @@ static int fsg_setup(struct usb_function *f,
 		raise_exception(fsg->common, FSG_STATE_RESET);
 		return DELAYED_STATUS;
 
-	case USB_BULK_GET_MAX_LUN_REQUEST:
+	case US_BULK_GET_MAX_LUN:
 		if (ctrl->bRequestType !=
 		    (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE))
 			break;
@@ -1742,7 +1663,7 @@ static int send_status(struct fsg_common *common)
 	struct fsg_buffhd	*bh;
 	struct bulk_cs_wrap	*csw;
 	int			rc;
-	u8			status = USB_STATUS_PASS;
+	u8			status = US_BULK_STAT_OK;
 	u32			sd, sdinfo = 0;
 
 	/* Wait for the next buffer to become available */
@@ -1763,11 +1684,11 @@ static int send_status(struct fsg_common *common)
 
 	if (common->phase_error) {
 		DBG(common, "sending phase-error status\n");
-		status = USB_STATUS_PHASE_ERROR;
+		status = US_BULK_STAT_PHASE;
 		sd = SS_INVALID_COMMAND;
 	} else if (sd != SS_NO_SENSE) {
 		DBG(common, "sending command-failure status\n");
-		status = USB_STATUS_FAIL;
+		status = US_BULK_STAT_FAIL;
 		VDBG(common, "  sense data: SK x%02x, ASC x%02x, ASCQ x%02x;"
 				"  info x%x\n",
 				SK(sd), ASC(sd), ASCQ(sd), sdinfo);
@@ -1776,12 +1697,12 @@ static int send_status(struct fsg_common *common)
 	/* Store and send the Bulk-only CSW */
 	csw = (void *)bh->buf;
 
-	csw->Signature = cpu_to_le32(USB_BULK_CS_SIG);
+	csw->Signature = cpu_to_le32(US_BULK_CS_SIGN);
 	csw->Tag = common->tag;
 	csw->Residue = cpu_to_le32(common->residue);
 	csw->Status = status;
 
-	bh->inreq->length = USB_BULK_CS_WRAP_LEN;
+	bh->inreq->length = US_BULK_CS_WRAP_LEN;
 	bh->inreq->zero = 0;
 	if (!start_in_transfer(common, bh))
 		/* Don't know what to do if common->fsg is NULL */
@@ -2190,7 +2111,7 @@ unknown_cmnd:
 		common->data_size_from_cmnd = 0;
 		sprintf(unknown, "Unknown x%02x", common->cmnd[0]);
 		reply = check_command(common, common->cmnd_size,
-				      DATA_DIR_UNKNOWN, 0xff, 0, unknown);
+				      DATA_DIR_UNKNOWN, ~0, 0, unknown);
 		if (reply == 0) {
 			common->curlun->sense_data = SS_INVALID_COMMAND;
 			reply = -EINVAL;
@@ -2221,7 +2142,7 @@ unknown_cmnd:
 static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 {
 	struct usb_request	*req = bh->outreq;
-	struct fsg_bulk_cb_wrap	*cbw = req->buf;
+	struct bulk_cb_wrap	*cbw = req->buf;
 	struct fsg_common	*common = fsg->common;
 
 	/* Was this a real packet?  Should it be ignored? */
@@ -2229,9 +2150,9 @@ static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 		return -EINVAL;
 
 	/* Is the CBW valid? */
-	if (req->actual != USB_BULK_CB_WRAP_LEN ||
+	if (req->actual != US_BULK_CB_WRAP_LEN ||
 			cbw->Signature != cpu_to_le32(
-				USB_BULK_CB_SIG)) {
+				US_BULK_CB_SIGN)) {
 		DBG(fsg, "invalid CBW: len %u sig 0x%x\n",
 				req->actual,
 				le32_to_cpu(cbw->Signature));
@@ -2253,7 +2174,7 @@ static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	}
 
 	/* Is the CBW meaningful? */
-	if (cbw->Lun >= FSG_MAX_LUNS || cbw->Flags & ~USB_BULK_IN_FLAG ||
+	if (cbw->Lun >= FSG_MAX_LUNS || cbw->Flags & ~US_BULK_FLAG_IN ||
 			cbw->Length <= 0 || cbw->Length > MAX_COMMAND_SIZE) {
 		DBG(fsg, "non-meaningful CBW: lun = %u, flags = 0x%x, "
 				"cmdlen %u\n",
@@ -2273,7 +2194,7 @@ static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	/* Save the command for later */
 	common->cmnd_size = cbw->Length;
 	memcpy(common->cmnd, cbw->CDB, common->cmnd_size);
-	if (cbw->Flags & USB_BULK_IN_FLAG)
+	if (cbw->Flags & US_BULK_FLAG_IN)
 		common->data_dir = DATA_DIR_TO_HOST;
 	else
 		common->data_dir = DATA_DIR_FROM_HOST;
@@ -2303,7 +2224,7 @@ static int get_next_command(struct fsg_common *common)
 	}
 
 	/* Queue a request to read a Bulk-only CBW */
-	set_bulk_out_req_length(common, bh, USB_BULK_CB_WRAP_LEN);
+	set_bulk_out_req_length(common, bh, US_BULK_CB_WRAP_LEN);
 	if (!start_out_transfer(common, bh))
 		/* Don't know what to do if common->fsg is NULL */
 		return -EIO;
@@ -2688,10 +2609,14 @@ static int fsg_main_thread(void *common_)
 
 /*************************** DEVICE ATTRIBUTES ***************************/
 
-/* Write permission is checked per LUN in store_*() functions. */
 static DEVICE_ATTR(ro, 0644, fsg_show_ro, fsg_store_ro);
 static DEVICE_ATTR(nofua, 0644, fsg_show_nofua, fsg_store_nofua);
 static DEVICE_ATTR(file, 0644, fsg_show_file, fsg_store_file);
+
+static struct device_attribute dev_attr_ro_cdrom =
+	__ATTR(ro, 0444, fsg_show_ro, NULL);
+static struct device_attribute dev_attr_file_nonremovable =
+	__ATTR(file, 0444, fsg_show_file, NULL);
 
 
 /****************************** FSG COMMON ******************************/
@@ -2793,11 +2718,7 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		curlun->dev.parent = &gadget->dev;
 		/* curlun->dev.driver = &fsg_driver.driver; XXX */
 		dev_set_drvdata(&curlun->dev, &common->filesem);
-		dev_set_name(&curlun->dev,
-			     cfg->lun_name_format
-			   ? cfg->lun_name_format
-			   : "lun%d",
-			     i);
+		dev_set_name(&curlun->dev, "lun%d", i);
 
 		rc = device_register(&curlun->dev);
 		if (rc) {
@@ -2807,10 +2728,16 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 			goto error_release;
 		}
 
-		rc = device_create_file(&curlun->dev, &dev_attr_ro);
+		rc = device_create_file(&curlun->dev,
+					curlun->cdrom
+				      ? &dev_attr_ro_cdrom
+				      : &dev_attr_ro);
 		if (rc)
 			goto error_luns;
-		rc = device_create_file(&curlun->dev, &dev_attr_file);
+		rc = device_create_file(&curlun->dev,
+					curlun->removable
+				      ? &dev_attr_file
+				      : &dev_attr_file_nonremovable);
 		if (rc)
 			goto error_luns;
 		rc = device_create_file(&curlun->dev, &dev_attr_nofua);
@@ -2879,8 +2806,7 @@ buffhds_first_it:
 
 	/* Tell the thread to start working */
 	common->thread_task =
-		kthread_create(fsg_main_thread, common,
-			       cfg->thread_name ?: "file-storage");
+		kthread_create(fsg_main_thread, common, "file-storage");
 	if (IS_ERR(common->thread_task)) {
 		rc = PTR_ERR(common->thread_task);
 		goto error_release;
@@ -2946,8 +2872,14 @@ static void fsg_common_release(struct kref *ref)
 		/* In error recovery common->nluns may be zero. */
 		for (; i; --i, ++lun) {
 			device_remove_file(&lun->dev, &dev_attr_nofua);
-			device_remove_file(&lun->dev, &dev_attr_ro);
-			device_remove_file(&lun->dev, &dev_attr_file);
+			device_remove_file(&lun->dev,
+					   lun->cdrom
+					 ? &dev_attr_ro_cdrom
+					 : &dev_attr_ro);
+			device_remove_file(&lun->dev,
+					   lun->removable
+					 ? &dev_attr_file
+					 : &dev_attr_file_nonremovable);
 			fsg_lun_close(lun);
 			device_unregister(&lun->dev);
 		}
@@ -3111,13 +3043,6 @@ static int fsg_bind_config(struct usb_composite_dev *cdev,
 	return rc;
 }
 
-static inline int __deprecated __maybe_unused
-fsg_add(struct usb_composite_dev *cdev, struct usb_configuration *c,
-	struct fsg_common *common)
-{
-	return fsg_bind_config(cdev, c, common);
-}
-
 
 /************************* Module parameters *************************/
 
@@ -3175,8 +3100,7 @@ fsg_config_from_params(struct fsg_config *cfg,
 	for (i = 0, lun = cfg->luns; i < cfg->nluns; ++i, ++lun) {
 		lun->ro = !!params->ro[i];
 		lun->cdrom = !!params->cdrom[i];
-		lun->removable = /* Removable by default */
-			params->removable_count <= i || params->removable[i];
+		lun->removable = !!params->removable[i];
 		lun->filename =
 			params->file_count > i && params->file[i][0]
 			? params->file[i]
@@ -3184,8 +3108,6 @@ fsg_config_from_params(struct fsg_config *cfg,
 	}
 
 	/* Let MSF use defaults */
-	cfg->lun_name_format = 0;
-	cfg->thread_name = 0;
 	cfg->vendor_name = 0;
 	cfg->product_name = 0;
 	cfg->release = 0xffff;
@@ -3211,4 +3133,3 @@ fsg_common_from_params(struct fsg_common *common,
 	fsg_config_from_params(&cfg, params);
 	return fsg_common_init(common, cdev, &cfg);
 }
-

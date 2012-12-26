@@ -880,6 +880,7 @@ static int dev_set_geometry(struct dm_ioctl *param, size_t param_size)
 	struct hd_geometry geometry;
 	unsigned long indata[4];
 	char *geostr = (char *) param + param->data_start;
+	char dummy;
 
 	md = find_device(param);
 	if (!md)
@@ -891,8 +892,8 @@ static int dev_set_geometry(struct dm_ioctl *param, size_t param_size)
 		goto out;
 	}
 
-	x = sscanf(geostr, "%lu %lu %lu %lu", indata,
-		   indata + 1, indata + 2, indata + 3);
+	x = sscanf(geostr, "%lu %lu %lu %lu%c", indata,
+		   indata + 1, indata + 2, indata + 3, &dummy);
 
 	if (x != 4) {
 		DMWARN("Unable to interpret geometry settings.");
@@ -1053,6 +1054,7 @@ static void retrieve_status(struct dm_table *table,
 	char *outbuf, *outptr;
 	status_type_t type;
 	size_t remaining, len, used = 0;
+	unsigned status_flags = 0;
 
 	outptr = outbuf = get_result_buffer(param, param_size, &len);
 
@@ -1089,7 +1091,9 @@ static void retrieve_status(struct dm_table *table,
 
 		/* Get the status/table string from the target driver */
 		if (ti->type->status) {
-			if (ti->type->status(ti, type, outptr, remaining)) {
+			if (param->flags & DM_NOFLUSH_FLAG)
+				status_flags |= DM_STATUS_NOFLUSH_FLAG;
+			if (ti->type->status(ti, type, status_flags, outptr, remaining)) {
 				param->flags |= DM_BUFFER_FULL_FLAG;
 				break;
 			}

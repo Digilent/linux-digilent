@@ -78,7 +78,6 @@ struct fimd_context {
 	struct drm_crtc			*crtc;
 	struct clk			*bus_clk;
 	struct clk			*lcd_clk;
-	struct resource			*regs_res;
 	void __iomem			*regs;
 	struct fimd_win_data		win_data[WINDOWS_NR];
 	unsigned int			clkdiv;
@@ -172,7 +171,7 @@ static void fimd_dpms(struct device *subdrv_dev, int mode)
 static void fimd_apply(struct device *subdrv_dev)
 {
 	struct fimd_context *ctx = get_fimd_context(subdrv_dev);
-	struct exynos_drm_manager *mgr = &ctx->subdrv.manager;
+	struct exynos_drm_manager *mgr = ctx->subdrv.manager;
 	struct exynos_drm_manager_ops *mgr_ops = mgr->ops;
 	struct exynos_drm_overlay_ops *ovl_ops = mgr->overlay_ops;
 	struct fimd_win_data *win_data;
@@ -577,6 +576,13 @@ static struct exynos_drm_overlay_ops fimd_overlay_ops = {
 	.disable = fimd_win_disable,
 };
 
+static struct exynos_drm_manager fimd_manager = {
+	.pipe		= -1,
+	.ops		= &fimd_manager_ops,
+	.overlay_ops	= &fimd_overlay_ops,
+	.display_ops	= &fimd_display_ops,
+};
+
 static void fimd_finish_pageflip(struct drm_device *drm_dev, int crtc)
 {
 	struct exynos_drm_private *dev_priv = drm_dev->dev_private;
@@ -628,7 +634,7 @@ static irqreturn_t fimd_irq_handler(int irq, void *dev_id)
 	struct fimd_context *ctx = (struct fimd_context *)dev_id;
 	struct exynos_drm_subdrv *subdrv = &ctx->subdrv;
 	struct drm_device *drm_dev = subdrv->drm_dev;
-	struct exynos_drm_manager *manager = &subdrv->manager;
+	struct exynos_drm_manager *manager = subdrv->manager;
 	u32 val;
 
 	val = readl(ctx->regs + VIDINTCON1);
@@ -744,7 +750,7 @@ static void fimd_clear_win(struct fimd_context *ctx, int win)
 static int fimd_power_on(struct fimd_context *ctx, bool enable)
 {
 	struct exynos_drm_subdrv *subdrv = &ctx->subdrv;
-	struct device *dev = subdrv->manager.dev;
+	struct device *dev = subdrv->dev;
 
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
@@ -806,7 +812,7 @@ static int __devinit fimd_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -825,39 +831,27 @@ static int __devinit fimd_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "failed to find registers\n");
-		ret = -ENOENT;
-		goto err_clk;
-	}
 
-	ctx->regs_res = request_mem_region(res->start, resource_size(res),
-					   dev_name(dev));
-	if (!ctx->regs_res) {
-		dev_err(dev, "failed to claim register region\n");
-		ret = -ENOENT;
-		goto err_clk;
-	}
-
-	ctx->regs = ioremap(res->start, resource_size(res));
+	ctx->regs = devm_request_and_ioremap(&pdev->dev, res);
 	if (!ctx->regs) {
 		dev_err(dev, "failed to map registers\n");
 		ret = -ENXIO;
-		goto err_req_region_io;
+		goto err_clk;
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (!res) {
 		dev_err(dev, "irq request failed.\n");
-		goto err_req_region_irq;
+		goto err_clk;
 	}
 
 	ctx->irq = res->start;
 
-	ret = request_irq(ctx->irq, fimd_irq_handler, 0, "drm_fimd", ctx);
-	if (ret < 0) {
+	ret = devm_request_irq(&pdev->dev, ctx->irq, fimd_irq_handler,
+							0, "drm_fimd", ctx);
+	if (ret) {
 		dev_err(dev, "irq request failed.\n");
-		goto err_req_irq;
+		goto err_clk;
 	}
 
 	ctx->vidcon0 = pdata->vidcon0;
@@ -867,13 +861,10 @@ static int __devinit fimd_probe(struct platform_device *pdev)
 
 	subdrv = &ctx->subdrv;
 
+	subdrv->dev = dev;
+	subdrv->manager = &fimd_manager;
 	subdrv->probe = fimd_subdrv_probe;
 	subdrv->remove = fimd_subdrv_remove;
-	subdrv->manager.pipe = -1;
-	subdrv->manager.ops = &fimd_manager_ops;
-	subdrv->manager.overlay_ops = &fimd_overlay_ops;
-	subdrv->manager.display_ops = &fimd_display_ops;
-	subdrv->manager.dev = dev;
 
 	mutex_init(&ctx->lock);
 
@@ -895,14 +886,6 @@ static int __devinit fimd_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_req_irq:
-err_req_region_irq:
-	iounmap(ctx->regs);
-
-err_req_region_io:
-	release_resource(ctx->regs_res);
-	kfree(ctx->regs_res);
-
 err_clk:
 	clk_disable(ctx->lcd_clk);
 	clk_put(ctx->lcd_clk);
@@ -912,7 +895,6 @@ err_bus_clk:
 	clk_put(ctx->bus_clk);
 
 err_clk_get:
-	kfree(ctx);
 	return ret;
 }
 
@@ -939,13 +921,6 @@ out:
 
 	clk_put(ctx->lcd_clk);
 	clk_put(ctx->bus_clk);
-
-	iounmap(ctx->regs);
-	release_resource(ctx->regs_res);
-	kfree(ctx->regs_res);
-	free_irq(ctx->irq, ctx);
-
-	kfree(ctx);
 
 	return 0;
 }
@@ -1007,7 +982,7 @@ static const struct dev_pm_ops fimd_pm_ops = {
 	SET_RUNTIME_PM_OPS(fimd_runtime_suspend, fimd_runtime_resume, NULL)
 };
 
-static struct platform_driver fimd_driver = {
+struct platform_driver fimd_driver = {
 	.probe		= fimd_probe,
 	.remove		= __devexit_p(fimd_remove),
 	.driver		= {
@@ -1016,21 +991,3 @@ static struct platform_driver fimd_driver = {
 		.pm	= &fimd_pm_ops,
 	},
 };
-
-static int __init fimd_init(void)
-{
-	return platform_driver_register(&fimd_driver);
-}
-
-static void __exit fimd_exit(void)
-{
-	platform_driver_unregister(&fimd_driver);
-}
-
-module_init(fimd_init);
-module_exit(fimd_exit);
-
-MODULE_AUTHOR("Joonyoung Shim <jy0922.shim@samsung.com>");
-MODULE_AUTHOR("Inki Dae <inki.dae@samsung.com>");
-MODULE_DESCRIPTION("Samsung DRM FIMD Driver");
-MODULE_LICENSE("GPL");

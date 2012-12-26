@@ -775,10 +775,11 @@ static ssize_t show_protocols(struct device *device,
 	if (dev->driver_type == RC_DRIVER_SCANCODE) {
 		enabled = dev->rc_map.rc_type;
 		allowed = dev->allowed_protos;
-	} else {
+	} else if (dev->raw) {
 		enabled = dev->raw->enabled_protocols;
 		allowed = ir_raw_get_allowed_protocols();
-	}
+	} else
+		return -ENODEV;
 
 	IR_dprintk(1, "allowed - 0x%llx, enabled - 0x%llx\n",
 		   (long long)allowed,
@@ -1029,6 +1030,7 @@ EXPORT_SYMBOL_GPL(rc_free_device);
 
 int rc_register_device(struct rc_dev *dev)
 {
+	static bool raw_init = false; /* raw decoders loaded? */
 	static atomic_t devno = ATOMIC_INIT(0);
 	struct rc_map *rc_map;
 	const char *path;
@@ -1103,6 +1105,12 @@ int rc_register_device(struct rc_dev *dev)
 	kfree(path);
 
 	if (dev->driver_type == RC_DRIVER_IR_RAW) {
+		/* Load raw decoders, if they aren't already */
+		if (!raw_init) {
+			IR_dprintk(1, "Loading raw decoders\n");
+			ir_raw_init();
+			raw_init = true;
+		}
 		rc = ir_raw_event_register(dev);
 		if (rc < 0)
 			goto out_input;
@@ -1176,8 +1184,6 @@ static int __init rc_core_init(void)
 		return rc;
 	}
 
-	/* Initialize/load the decoders/keymap code that will be used */
-	ir_raw_init();
 	rc_map_register(&empty_map);
 
 	return 0;

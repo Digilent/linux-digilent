@@ -20,6 +20,7 @@
 #include <mach/board.h>
 #include <mach/at91sam9rl.h>
 #include <mach/at91sam9rl_matrix.h>
+#include <mach/at91_matrix.h>
 #include <mach/at91sam9_smc.h>
 #include <mach/at_hdmac.h>
 
@@ -40,8 +41,8 @@ static struct resource hdmac_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[2] = {
-		.start	= AT91SAM9RL_ID_DMA,
-		.end	= AT91SAM9RL_ID_DMA,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_DMA,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_DMA,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -83,8 +84,8 @@ static struct resource usba_udc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[2] = {
-		.start	= AT91SAM9RL_ID_UDPHS,
-		.end	= AT91SAM9RL_ID_UDPHS,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_UDPHS,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_UDPHS,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -171,8 +172,8 @@ static struct resource mmc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_MCI,
-		.end	= AT91SAM9RL_ID_MCI,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_MCI,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_MCI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -265,8 +266,8 @@ void __init at91_add_device_nand(struct atmel_nand_data *data)
 	if (!data)
 		return;
 
-	csa = at91_sys_read(AT91_MATRIX_EBICSA);
-	at91_sys_write(AT91_MATRIX_EBICSA, csa | AT91_MATRIX_CS3A_SMC_SMARTMEDIA);
+	csa = at91_matrix_read(AT91_MATRIX_EBICSA);
+	at91_matrix_write(AT91_MATRIX_EBICSA, csa | AT91_MATRIX_CS3A_SMC_SMARTMEDIA);
 
 	/* enable pin */
 	if (gpio_is_valid(data->enable_pin))
@@ -338,8 +339,8 @@ static struct resource twi_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_TWI0,
-		.end	= AT91SAM9RL_ID_TWI0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TWI0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TWI0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -382,8 +383,8 @@ static struct resource spi_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_SPI,
-		.end	= AT91SAM9RL_ID_SPI,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SPI,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SPI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -418,6 +419,9 @@ void __init at91_add_device_spi(struct spi_board_info *devices, int nr_devices)
 		else
 			cs_pin = spi_standard_cs[devices[i].chip_select];
 
+		if (!gpio_is_valid(cs_pin))
+			continue;
+
 		/* enable chip-select pin */
 		at91_set_gpio_output(cs_pin, 1);
 
@@ -448,8 +452,8 @@ static struct resource ac97_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_AC97C,
-		.end	= AT91SAM9RL_ID_AC97C,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_AC97C,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_AC97C,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -503,8 +507,8 @@ static struct resource lcdc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_LCDC,
-		.end	= AT91SAM9RL_ID_LCDC,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_LCDC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_LCDC,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -570,18 +574,18 @@ static struct resource tcb_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_TC0,
-		.end	= AT91SAM9RL_ID_TC0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC0,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
-		.start	= AT91SAM9RL_ID_TC1,
-		.end	= AT91SAM9RL_ID_TC1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC1,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
-		.start	= AT91SAM9RL_ID_TC2,
-		.end	= AT91SAM9RL_ID_TC2,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC2,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TC2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -617,8 +621,8 @@ static struct resource tsadcc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_TSC,
-		.end	= AT91SAM9RL_ID_TSC,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TSC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_TSC,
 		.flags	= IORESOURCE_IRQ,
 	}
 };
@@ -682,6 +686,10 @@ static struct resource rtt_resources[] = {
 		.start	= AT91SAM9RL_BASE_RTT,
 		.end	= AT91SAM9RL_BASE_RTT + SZ_16 - 1,
 		.flags	= IORESOURCE_MEM,
+	}, {
+		.flags	= IORESOURCE_MEM,
+	}, {
+		.flags  = IORESOURCE_IRQ,
 	}
 };
 
@@ -689,11 +697,34 @@ static struct platform_device at91sam9rl_rtt_device = {
 	.name		= "at91_rtt",
 	.id		= 0,
 	.resource	= rtt_resources,
-	.num_resources	= ARRAY_SIZE(rtt_resources),
 };
+
+#if IS_ENABLED(CONFIG_RTC_DRV_AT91SAM9)
+static void __init at91_add_device_rtt_rtc(void)
+{
+	at91sam9rl_rtt_device.name = "rtc-at91sam9";
+	/*
+	 * The second resource is needed:
+	 * GPBR will serve as the storage for RTC time offset
+	 */
+	at91sam9rl_rtt_device.num_resources = 3;
+	rtt_resources[1].start = AT91SAM9RL_BASE_GPBR +
+				 4 * CONFIG_RTC_DRV_AT91SAM9_GPBR;
+	rtt_resources[1].end = rtt_resources[1].start + 3;
+	rtt_resources[2].start = NR_IRQS_LEGACY + AT91_ID_SYS;
+	rtt_resources[2].end = NR_IRQS_LEGACY + AT91_ID_SYS;
+}
+#else
+static void __init at91_add_device_rtt_rtc(void)
+{
+	/* Only one resource is needed: RTT not used as RTC */
+	at91sam9rl_rtt_device.num_resources = 1;
+}
+#endif
 
 static void __init at91_add_device_rtt(void)
 {
+	at91_add_device_rtt_rtc();
 	platform_device_register(&at91sam9rl_rtt_device);
 }
 
@@ -741,8 +772,8 @@ static struct resource pwm_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_PWMC,
-		.end	= AT91SAM9RL_ID_PWMC,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_PWMC,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_PWMC,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -794,8 +825,8 @@ static struct resource ssc0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_SSC0,
-		.end	= AT91SAM9RL_ID_SSC0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SSC0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SSC0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -836,8 +867,8 @@ static struct resource ssc1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_SSC1,
-		.end	= AT91SAM9RL_ID_SSC1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SSC1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_SSC1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -916,8 +947,8 @@ static struct resource dbgu_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91_ID_SYS,
-		.end	= AT91_ID_SYS,
+		.start	= NR_IRQS_LEGACY + AT91_ID_SYS,
+		.end	= NR_IRQS_LEGACY + AT91_ID_SYS,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -954,8 +985,8 @@ static struct resource uart0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_US0,
-		.end	= AT91SAM9RL_ID_US0,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US0,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1005,8 +1036,8 @@ static struct resource uart1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_US1,
-		.end	= AT91SAM9RL_ID_US1,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US1,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1048,8 +1079,8 @@ static struct resource uart2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_US2,
-		.end	= AT91SAM9RL_ID_US2,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US2,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1091,8 +1122,8 @@ static struct resource uart3_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91SAM9RL_ID_US3,
-		.end	= AT91SAM9RL_ID_US3,
+		.start	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US3,
+		.end	= NR_IRQS_LEGACY + AT91SAM9RL_ID_US3,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1128,7 +1159,6 @@ static inline void configure_usart3_pins(unsigned pins)
 }
 
 static struct platform_device *__initdata at91_uarts[ATMEL_MAX_UART];	/* the UARTs to use */
-struct platform_device *atmel_default_console_device;	/* the serial console device */
 
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins)
 {
@@ -1166,14 +1196,6 @@ void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins)
 		at91_uarts[portnr] = pdev;
 }
 
-void __init at91_set_serial_console(unsigned portnr)
-{
-	if (portnr < ATMEL_MAX_UART) {
-		atmel_default_console_device = at91_uarts[portnr];
-		at91sam9rl_set_console_clock(at91_uarts[portnr]->id);
-	}
-}
-
 void __init at91_add_device_serial(void)
 {
 	int i;
@@ -1182,13 +1204,9 @@ void __init at91_add_device_serial(void)
 		if (at91_uarts[i])
 			platform_device_register(at91_uarts[i]);
 	}
-
-	if (!atmel_default_console_device)
-		printk(KERN_INFO "AT91: No default serial console defined.\n");
 }
 #else
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins) {}
-void __init at91_set_serial_console(unsigned portnr) {}
 void __init at91_add_device_serial(void) {}
 #endif
 

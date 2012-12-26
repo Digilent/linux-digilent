@@ -18,6 +18,8 @@
  *  use the vDSO.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/time.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -52,10 +54,7 @@
 #include "vsyscall_trace.h"
 
 DEFINE_VVAR(int, vgetcpu_mode);
-DEFINE_VVAR(struct vsyscall_gtod_data, vsyscall_gtod_data) =
-{
-	.lock = __SEQLOCK_UNLOCKED(__vsyscall_gtod_data.lock),
-};
+DEFINE_VVAR(struct vsyscall_gtod_data, vsyscall_gtod_data);
 
 static enum { EMULATE, NATIVE, NONE } vsyscall_mode = EMULATE;
 
@@ -80,20 +79,15 @@ early_param("vsyscall", vsyscall_setup);
 
 void update_vsyscall_tz(void)
 {
-	unsigned long flags;
-
-	write_seqlock_irqsave(&vsyscall_gtod_data.lock, flags);
-	/* sys_tz has changed */
 	vsyscall_gtod_data.sys_tz = sys_tz;
-	write_sequnlock_irqrestore(&vsyscall_gtod_data.lock, flags);
 }
 
 void update_vsyscall(struct timespec *wall_time, struct timespec *wtm,
 			struct clocksource *clock, u32 mult)
 {
-	unsigned long flags;
+	struct timespec monotonic;
 
-	write_seqlock_irqsave(&vsyscall_gtod_data.lock, flags);
+	write_seqcount_begin(&vsyscall_gtod_data.seq);
 
 	/* copy vsyscall data */
 	vsyscall_gtod_data.clock.vclock_mode	= clock->archdata.vclock_mode;
@@ -101,29 +95,31 @@ void update_vsyscall(struct timespec *wall_time, struct timespec *wtm,
 	vsyscall_gtod_data.clock.mask		= clock->mask;
 	vsyscall_gtod_data.clock.mult		= mult;
 	vsyscall_gtod_data.clock.shift		= clock->shift;
+
 	vsyscall_gtod_data.wall_time_sec	= wall_time->tv_sec;
 	vsyscall_gtod_data.wall_time_nsec	= wall_time->tv_nsec;
-	vsyscall_gtod_data.wall_to_monotonic	= *wtm;
-	vsyscall_gtod_data.wall_time_coarse	= __current_kernel_time();
 
-	write_sequnlock_irqrestore(&vsyscall_gtod_data.lock, flags);
+	monotonic = timespec_add(*wall_time, *wtm);
+	vsyscall_gtod_data.monotonic_time_sec	= monotonic.tv_sec;
+	vsyscall_gtod_data.monotonic_time_nsec	= monotonic.tv_nsec;
+
+	vsyscall_gtod_data.wall_time_coarse	= __current_kernel_time();
+	vsyscall_gtod_data.monotonic_time_coarse =
+		timespec_add(vsyscall_gtod_data.wall_time_coarse, *wtm);
+
+	write_seqcount_end(&vsyscall_gtod_data.seq);
 }
 
 static void warn_bad_vsyscall(const char *level, struct pt_regs *regs,
 			      const char *message)
 {
-	static DEFINE_RATELIMIT_STATE(rs, DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);
-	struct task_struct *tsk;
-
-	if (!show_unhandled_signals || !__ratelimit(&rs))
+	if (!show_unhandled_signals)
 		return;
 
-	tsk = current;
-
-	printk("%s%s[%d] %s ip:%lx cs:%lx sp:%lx ax:%lx si:%lx di:%lx\n",
-	       level, tsk->comm, task_pid_nr(tsk),
-	       message, regs->ip, regs->cs,
-	       regs->sp, regs->ax, regs->si, regs->di);
+	pr_notice_ratelimited("%s%s[%d] %s ip:%lx cs:%lx sp:%lx ax:%lx si:%lx di:%lx\n",
+			      level, current->comm, task_pid_nr(current),
+			      message, regs->ip, regs->cs,
+			      regs->sp, regs->ax, regs->si, regs->di);
 }
 
 static int addr_to_vsyscall_nr(unsigned long addr)
@@ -140,6 +136,19 @@ static int addr_to_vsyscall_nr(unsigned long addr)
 	return nr;
 }
 
+#ifdef CONFIG_SECCOMP
+static int vsyscall_seccomp(struct task_struct *tsk, int syscall_nr)
+{
+	if (!seccomp_mode(&tsk->seccomp))
+		return 0;
+	task_pt_regs(tsk)->orig_ax = syscall_nr;
+	task_pt_regs(tsk)->ax = syscall_nr;
+	return __secure_computing(syscall_nr);
+}
+#else
+#define vsyscall_seccomp(_tsk, _nr) 0
+#endif
+
 static bool write_ok_or_segv(unsigned long ptr, size_t size)
 {
 	/*
@@ -153,7 +162,7 @@ static bool write_ok_or_segv(unsigned long ptr, size_t size)
 
 		thread->error_code	= 6;  /* user fault, no page, write */
 		thread->cr2		= ptr;
-		thread->trap_no		= 14;
+		thread->trap_nr		= X86_TRAP_PF;
 
 		memset(&info, 0, sizeof(info));
 		info.si_signo		= SIGSEGV;
@@ -175,6 +184,7 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	int vsyscall_nr;
 	int prev_sig_on_uaccess_error;
 	long ret;
+	int skip;
 
 	/*
 	 * No point in checking CS -- the only way to get here is a user mode
@@ -206,9 +216,6 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	}
 
 	tsk = current;
-	if (seccomp_mode(&tsk->seccomp))
-		do_exit(SIGKILL);
-
 	/*
 	 * With a real vsyscall, page faults cause SIGSEGV.  We want to
 	 * preserve that behavior to make writing exploits harder.
@@ -217,14 +224,19 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	current_thread_info()->sig_on_uaccess_error = 1;
 
 	/*
-	 * 0 is a valid user pointer (in the access_ok sense) on 32-bit and
+	 * NULL is a valid user pointer (in the access_ok sense) on 32-bit and
 	 * 64-bit, so we don't need to special-case it here.  For all the
-	 * vsyscalls, 0 means "don't write anything" not "write it at
+	 * vsyscalls, NULL means "don't write anything" not "write it at
 	 * address 0".
 	 */
 	ret = -EFAULT;
+	skip = 0;
 	switch (vsyscall_nr) {
 	case 0:
+		skip = vsyscall_seccomp(tsk, __NR_gettimeofday);
+		if (skip)
+			break;
+
 		if (!write_ok_or_segv(regs->di, sizeof(struct timeval)) ||
 		    !write_ok_or_segv(regs->si, sizeof(struct timezone)))
 			break;
@@ -235,6 +247,10 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 		break;
 
 	case 1:
+		skip = vsyscall_seccomp(tsk, __NR_time);
+		if (skip)
+			break;
+
 		if (!write_ok_or_segv(regs->di, sizeof(time_t)))
 			break;
 
@@ -242,17 +258,27 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 		break;
 
 	case 2:
+		skip = vsyscall_seccomp(tsk, __NR_getcpu);
+		if (skip)
+			break;
+
 		if (!write_ok_or_segv(regs->di, sizeof(unsigned)) ||
 		    !write_ok_or_segv(regs->si, sizeof(unsigned)))
 			break;
 
 		ret = sys_getcpu((unsigned __user *)regs->di,
 				 (unsigned __user *)regs->si,
-				 0);
+				 NULL);
 		break;
 	}
 
 	current_thread_info()->sig_on_uaccess_error = prev_sig_on_uaccess_error;
+
+	if (skip) {
+		if ((long)regs->ax <= 0L) /* seccomp errno emulation */
+			goto do_ret;
+		goto done; /* seccomp trace/trap */
+	}
 
 	if (ret == -EFAULT) {
 		/* Bad news -- userspace fed a bad pointer to a vsyscall. */
@@ -272,10 +298,11 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 
 	regs->ax = ret;
 
+do_ret:
 	/* Emulate a ret instruction. */
 	regs->ip = caller;
 	regs->sp += 8;
-
+done:
 	return true;
 
 sigsegv:

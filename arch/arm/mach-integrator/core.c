@@ -11,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/device.h>
+#include <linux/export.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -21,13 +22,12 @@
 #include <linux/amba/bus.h>
 #include <linux/amba/serial.h>
 #include <linux/io.h>
-#include <linux/clkdev.h>
 
 #include <mach/hardware.h>
 #include <mach/platform.h>
-#include <asm/irq.h>
 #include <mach/cm.h>
-#include <asm/system.h>
+#include <mach/irqs.h>
+
 #include <asm/leds.h>
 #include <asm/mach-types.h>
 #include <asm/mach/time.h>
@@ -35,67 +35,23 @@
 
 static struct amba_pl010_data integrator_uart_data;
 
-static struct amba_device rtc_device = {
-	.dev		= {
-		.init_name = "mb:15",
-	},
-	.res		= {
-		.start	= INTEGRATOR_RTC_BASE,
-		.end	= INTEGRATOR_RTC_BASE + SZ_4K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	.irq		= { IRQ_RTCINT, NO_IRQ },
-};
+#define INTEGRATOR_RTC_IRQ	{ IRQ_RTCINT }
+#define INTEGRATOR_UART0_IRQ	{ IRQ_UARTINT0 }
+#define INTEGRATOR_UART1_IRQ	{ IRQ_UARTINT1 }
+#define KMI0_IRQ		{ IRQ_KMIINT0 }
+#define KMI1_IRQ		{ IRQ_KMIINT1 }
 
-static struct amba_device uart0_device = {
-	.dev		= {
-		.init_name = "mb:16",
-		.platform_data = &integrator_uart_data,
-	},
-	.res		= {
-		.start	= INTEGRATOR_UART0_BASE,
-		.end	= INTEGRATOR_UART0_BASE + SZ_4K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	.irq		= { IRQ_UARTINT0, NO_IRQ },
-};
+static AMBA_APB_DEVICE(rtc, "rtc", 0,
+	INTEGRATOR_RTC_BASE, INTEGRATOR_RTC_IRQ, NULL);
 
-static struct amba_device uart1_device = {
-	.dev		= {
-		.init_name = "mb:17",
-		.platform_data = &integrator_uart_data,
-	},
-	.res		= {
-		.start	= INTEGRATOR_UART1_BASE,
-		.end	= INTEGRATOR_UART1_BASE + SZ_4K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	.irq		= { IRQ_UARTINT1, NO_IRQ },
-};
+static AMBA_APB_DEVICE(uart0, "uart0", 0,
+	INTEGRATOR_UART0_BASE, INTEGRATOR_UART0_IRQ, &integrator_uart_data);
 
-static struct amba_device kmi0_device = {
-	.dev		= {
-		.init_name = "mb:18",
-	},
-	.res		= {
-		.start	= KMI0_BASE,
-		.end	= KMI0_BASE + SZ_4K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	.irq		= { IRQ_KMIINT0, NO_IRQ },
-};
+static AMBA_APB_DEVICE(uart1, "uart1", 0,
+	INTEGRATOR_UART1_BASE, INTEGRATOR_UART1_IRQ, &integrator_uart_data);
 
-static struct amba_device kmi1_device = {
-	.dev		= {
-		.init_name = "mb:19",
-	},
-	.res		= {
-		.start	= KMI1_BASE,
-		.end	= KMI1_BASE + SZ_4K - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-	.irq		= { IRQ_KMIINT1, NO_IRQ },
-};
+static AMBA_APB_DEVICE(kmi0, "kmi0", 0, KMI0_BASE, KMI0_IRQ, NULL);
+static AMBA_APB_DEVICE(kmi1, "kmi1", 0, KMI1_BASE, KMI1_IRQ, NULL);
 
 static struct amba_device *amba_devs[] __initdata = {
 	&rtc_device,
@@ -104,50 +60,6 @@ static struct amba_device *amba_devs[] __initdata = {
 	&kmi0_device,
 	&kmi1_device,
 };
-
-/*
- * These are fixed clocks.
- */
-static struct clk clk24mhz = {
-	.rate	= 24000000,
-};
-
-static struct clk uartclk = {
-	.rate	= 14745600,
-};
-
-static struct clk dummy_apb_pclk;
-
-static struct clk_lookup lookups[] = {
-	{	/* Bus clock */
-		.con_id		= "apb_pclk",
-		.clk		= &dummy_apb_pclk,
-	}, {
-		/* Integrator/AP timer frequency */
-		.dev_id		= "ap_timer",
-		.clk		= &clk24mhz,
-	}, {	/* UART0 */
-		.dev_id		= "mb:16",
-		.clk		= &uartclk,
-	}, {	/* UART1 */
-		.dev_id		= "mb:17",
-		.clk		= &uartclk,
-	}, {	/* KMI0 */
-		.dev_id		= "mb:18",
-		.clk		= &clk24mhz,
-	}, {	/* KMI1 */
-		.dev_id		= "mb:19",
-		.clk		= &clk24mhz,
-	}, {	/* MMCI - IntegratorCP */
-		.dev_id		= "mb:1c",
-		.clk		= &uartclk,
-	}
-};
-
-void __init integrator_init_early(void)
-{
-	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
-}
 
 static int __init integrator_init(void)
 {

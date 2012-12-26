@@ -36,8 +36,6 @@
 #include <mach/hardware.h>
 #include <mach/iomux-mx27.h>
 #include <asm/mach/time.h>
-#include <mach/audmux.h>
-#include <mach/irqs.h>
 #include <mach/ulpi.h>
 
 #include "devices-imx27.h"
@@ -246,7 +244,7 @@ static int pca100_sdhc2_init(struct device *dev, irq_handler_t detect_irq,
 {
 	int ret;
 
-	ret = request_irq(IRQ_GPIOC(29), detect_irq,
+	ret = request_irq(gpio_to_irq(IMX_GPIO_NR(3, 29)), detect_irq,
 			  IRQF_DISABLED | IRQF_TRIGGER_FALLING,
 			  "imx-mmc-detect", data);
 	if (ret)
@@ -258,7 +256,7 @@ static int pca100_sdhc2_init(struct device *dev, irq_handler_t detect_irq,
 
 static void pca100_sdhc2_exit(struct device *dev, void *data)
 {
-	free_irq(IRQ_GPIOC(29), data);
+	free_irq(gpio_to_irq(IMX_GPIO_NR(3, 29)), data);
 }
 
 static const struct imxmmc_platform_data sdhc_pdata __initconst = {
@@ -299,18 +297,18 @@ static const struct fsl_usb2_platform_data otg_device_pdata __initconst = {
 	.phy_mode       = FSL_USB2_PHY_ULPI,
 };
 
-static int otg_mode_host;
+static bool otg_mode_host __initdata;
 
 static int __init pca100_otg_mode(char *options)
 {
 	if (!strcmp(options, "host"))
-		otg_mode_host = 1;
+		otg_mode_host = true;
 	else if (!strcmp(options, "device"))
-		otg_mode_host = 0;
+		otg_mode_host = false;
 	else
 		pr_info("otg_mode neither \"host\" nor \"device\". "
 			"Defaulting to device\n");
-	return 0;
+	return 1;
 }
 __setup("otg_mode=", pca100_otg_mode);
 
@@ -358,18 +356,6 @@ static void __init pca100_init(void)
 	int ret;
 
 	imx27_soc_init();
-
-	/* SSI unit */
-	mxc_audmux_v1_configure_port(MX27_AUDMUX_HPCR1_SSI0,
-				  MXC_AUDMUX_V1_PCR_SYN | /* 4wire mode */
-				  MXC_AUDMUX_V1_PCR_TFCSEL(3) |
-				  MXC_AUDMUX_V1_PCR_TCLKDIR | /* clock is output */
-				  MXC_AUDMUX_V1_PCR_RXDSEL(3));
-	mxc_audmux_v1_configure_port(3,
-				  MXC_AUDMUX_V1_PCR_SYN | /* 4wire mode */
-				  MXC_AUDMUX_V1_PCR_TFCSEL(0) |
-				  MXC_AUDMUX_V1_PCR_TFSDIR |
-				  MXC_AUDMUX_V1_PCR_RXDSEL(0));
 
 	ret = mxc_gpio_setup_multiple_pins(pca100_pins,
 			ARRAY_SIZE(pca100_pins), "PCA100");
@@ -421,8 +407,8 @@ static void __init pca100_init(void)
 	imx27_add_imx_fb(&pca100_fb_data);
 
 	imx27_add_fec(NULL);
-	imx27_add_imx2_wdt(NULL);
-	imx27_add_mxc_w1(NULL);
+	imx27_add_imx2_wdt();
+	imx27_add_mxc_w1();
 }
 
 static void __init pca100_timer_init(void)

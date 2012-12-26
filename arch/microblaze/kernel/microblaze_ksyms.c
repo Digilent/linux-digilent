@@ -18,12 +18,8 @@
 #include <asm/cacheflush.h>
 #include <linux/io.h>
 #include <asm/page.h>
-#include <asm/system.h>
 #include <linux/ftrace.h>
 #include <linux/uaccess.h>
-
-extern char *_ebss;
-EXPORT_SYMBOL_GPL(_ebss);
 
 #ifdef CONFIG_FUNCTION_TRACER
 extern void _mcount(void);

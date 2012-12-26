@@ -2473,7 +2473,7 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 			nr_free -= PAGE_CACHE_SIZE * 8;
 			continue;
 		}
-		kaddr = kmap_atomic(page, KM_USER0);
+		kaddr = kmap_atomic(page);
 		/*
 		 * Subtract the number of set bits. If this
 		 * is the last page and it is partial we don't really care as
@@ -2483,7 +2483,7 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 		 */
 		nr_free -= bitmap_weight(kaddr,
 					PAGE_CACHE_SIZE * BITS_PER_BYTE);
-		kunmap_atomic(kaddr, KM_USER0);
+		kunmap_atomic(kaddr);
 		page_cache_release(page);
 	}
 	ntfs_debug("Finished reading $Bitmap, last index = 0x%lx.", index - 1);
@@ -2544,7 +2544,7 @@ static unsigned long __get_nr_free_mft_records(ntfs_volume *vol,
 			nr_free -= PAGE_CACHE_SIZE * 8;
 			continue;
 		}
-		kaddr = kmap_atomic(page, KM_USER0);
+		kaddr = kmap_atomic(page);
 		/*
 		 * Subtract the number of set bits. If this
 		 * is the last page and it is partial we don't really care as
@@ -2554,7 +2554,7 @@ static unsigned long __get_nr_free_mft_records(ntfs_volume *vol,
 		 */
 		nr_free -= bitmap_weight(kaddr,
 					PAGE_CACHE_SIZE * BITS_PER_BYTE);
-		kunmap_atomic(kaddr, KM_USER0);
+		kunmap_atomic(kaddr);
 		page_cache_release(page);
 	}
 	ntfs_debug("Finished reading $MFT/$BITMAP, last index = 0x%lx.",
@@ -2660,31 +2660,14 @@ static const struct super_operations ntfs_sops = {
 	.alloc_inode	= ntfs_alloc_big_inode,	  /* VFS: Allocate new inode. */
 	.destroy_inode	= ntfs_destroy_big_inode, /* VFS: Deallocate inode. */
 #ifdef NTFS_RW
-	//.dirty_inode	= NULL,			/* VFS: Called from
-	//					   __mark_inode_dirty(). */
 	.write_inode	= ntfs_write_inode,	/* VFS: Write dirty inode to
 						   disk. */
-	//.drop_inode	= NULL,			/* VFS: Called just after the
-	//					   inode reference count has
-	//					   been decreased to zero.
-	//					   NOTE: The inode lock is
-	//					   held. See fs/inode.c::
-	//					   generic_drop_inode(). */
-	//.delete_inode	= NULL,			/* VFS: Delete inode from disk.
-	//					   Called when i_count becomes
-	//					   0 and i_nlink is also 0. */
-	//.write_super	= NULL,			/* Flush dirty super block to
-	//					   disk. */
-	//.sync_fs	= NULL,			/* ? */
-	//.write_super_lockfs	= NULL,		/* ? */
-	//.unlockfs	= NULL,			/* ? */
 #endif /* NTFS_RW */
 	.put_super	= ntfs_put_super,	/* Syscall: umount. */
 	.statfs		= ntfs_statfs,		/* Syscall: statfs */
 	.remount_fs	= ntfs_remount,		/* Syscall: mount -o remount. */
 	.evict_inode	= ntfs_evict_big_inode,	/* VFS: Called when an inode is
 						   removed from memory. */
-	//.umount_begin	= NULL,			/* Forced umount. */
 	.show_options	= ntfs_show_options,	/* Show mount options in
 						   proc. */
 };
@@ -2908,9 +2891,10 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 		ntfs_error(sb, "Failed to load system files.");
 		goto unl_upcase_iput_tmp_ino_err_out_now;
 	}
-	if ((sb->s_root = d_alloc_root(vol->root_ino))) {
-		/* We grab a reference, simulating an ntfs_iget(). */
-		ihold(vol->root_ino);
+
+	/* We grab a reference, simulating an ntfs_iget(). */
+	ihold(vol->root_ino);
+	if ((sb->s_root = d_make_root(vol->root_ino))) {
 		ntfs_debug("Exiting, status successful.");
 		/* Release the default upcase if it has no users. */
 		mutex_lock(&ntfs_lock);
@@ -3158,6 +3142,8 @@ static int __init init_ntfs_fs(void)
 	}
 	printk(KERN_CRIT "NTFS: Failed to register NTFS filesystem driver!\n");
 
+	/* Unregister the ntfs sysctls. */
+	ntfs_sysctl(0);
 sysctl_err_out:
 	kmem_cache_destroy(ntfs_big_inode_cache);
 big_inode_err_out:

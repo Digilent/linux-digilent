@@ -2,23 +2,34 @@
  * MDIO bus driver for the Xilinx Axi Ethernet device
  *
  * Copyright (c) 2009 Secret Lab Technologies, Ltd.
- * Copyright (c) 2010 Xilinx, Inc. All rights reserved.
- *
+ * Copyright (c) 2010 - 2011 Michal Simek <monstr@monstr.eu>
+ * Copyright (c) 2010 - 2011 PetaLogix
+ * Copyright (c) 2010 - 2012 Xilinx, Inc. All rights reserved.
  */
 
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
+#include <linux/jiffies.h>
 
 #include "xilinx_axienet.h"
 
-#define MAX_MDIO_FREQ	   2500000 /* 2.5 MHz */
-#define CPU_NAME		"cpu"
-#define CLOCK_FREQ_PROP_NAME    "clock-frequency"
-#define DEFAULT_CLOCK_DIVISOR   29 /* If all else fails, fallback to this */
+#define MAX_MDIO_FREQ		2500000 /* 2.5 MHz */
+#define DEFAULT_CLOCK_DIVISOR	XAE_MDIO_DIV_DFT
 
-/* ----------------------------------------------------------------------------
- * MDIO Bus functions
- */
+/* Wait till MDIO interface is ready to accept a new transaction.*/
+int axienet_mdio_wait_until_ready(struct axienet_local *lp)
+{
+	long end = jiffies + 2;
+	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
+		 XAE_MDIO_MCR_READY_MASK)) {
+		if (end - jiffies <= 0) {
+			WARN_ON(1);
+			return -ETIMEDOUT;
+		}
+		udelay(1);
+	}
+	return 0;
+}
 
 /**
  * axienet_mdio_read - MDIO interface read function
@@ -31,43 +42,31 @@
  * Reads the contents of the requested register from the requested PHY
  * address by first writing the details into MCR register. After a while
  * the register MRD is read to obtain the PHY register content.
- **/
+ */
 static int axienet_mdio_read(struct mii_bus *bus, int phy_id, int reg)
 {
-	struct axienet_local *lp = bus->priv;
 	u32 rc;
-	long end = jiffies + 2;
+	int ret;
+	struct axienet_local *lp = bus->priv;
 
-
-	/* Wait till MDIO interface is ready to accept a new transaction.*/
-	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
-						XAE_MDIO_MCR_READY_MASK)) {
-
-		if (end - jiffies <= 0) {
-			WARN_ON(1);
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
+	ret = axienet_mdio_wait_until_ready(lp);
+	if (ret < 0)
+		return ret;
 
 	axienet_iow(lp, XAE_MDIO_MCR_OFFSET,
-	(((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) & XAE_MDIO_MCR_PHYAD_MASK) |
-	((reg << XAE_MDIO_MCR_REGAD_SHIFT) & XAE_MDIO_MCR_REGAD_MASK)	|
-	XAE_MDIO_MCR_INITIATE_MASK |
-	XAE_MDIO_MCR_OP_READ_MASK));
+		    (((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) &
+		      XAE_MDIO_MCR_PHYAD_MASK) |
+		     ((reg << XAE_MDIO_MCR_REGAD_SHIFT) &
+		      XAE_MDIO_MCR_REGAD_MASK) |
+		     XAE_MDIO_MCR_INITIATE_MASK |
+		     XAE_MDIO_MCR_OP_READ_MASK));
 
-	end = jiffies + 2;
-	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
-						XAE_MDIO_MCR_READY_MASK)) {
-		if (end - jiffies <= 0) {
-			WARN_ON(1);
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
+	ret = axienet_mdio_wait_until_ready(lp);
+	if (ret < 0)
+		return ret;
 
-	/* Read data */
 	rc = axienet_ior(lp, XAE_MDIO_MRD_OFFSET) & 0x0000FFFF;
+
 	dev_dbg(lp->dev, "axienet_mdio_read(phy_id=%i, reg=%x) == %x\n",
 		phy_id, reg, rc);
 
@@ -86,43 +85,32 @@ static int axienet_mdio_read(struct mii_bus *bus, int phy_id, int reg)
  * Writes the value to the requested register by first writing the value
  * into MWD register. The the MCR register is then appropriately setup
  * to finish the write operation.
- **/
+ */
 static int axienet_mdio_write(struct mii_bus *bus, int phy_id, int reg,
-								u16 val)
+			      u16 val)
 {
+	int ret;
 	struct axienet_local *lp = bus->priv;
-	long end = jiffies + 2;
 
 	dev_dbg(lp->dev, "axienet_mdio_write(phy_id=%i, reg=%x, val=%x)\n",
 		phy_id, reg, val);
 
-	/* Wait till MDIO interface is ready to accept a new transaction.*/
-	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
-						XAE_MDIO_MCR_READY_MASK)) {
-		if (end - jiffies <= 0) {
-			WARN_ON(1);
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
+	ret = axienet_mdio_wait_until_ready(lp);
+	if (ret < 0)
+		return ret;
 
-	axienet_iow(lp, XAE_MDIO_MWD_OFFSET, (u32)val);
+	axienet_iow(lp, XAE_MDIO_MWD_OFFSET, (u32) val);
 	axienet_iow(lp, XAE_MDIO_MCR_OFFSET,
-	(((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) & XAE_MDIO_MCR_PHYAD_MASK) |
-	((reg << XAE_MDIO_MCR_REGAD_SHIFT) & XAE_MDIO_MCR_REGAD_MASK)	|
-	XAE_MDIO_MCR_INITIATE_MASK |
-	XAE_MDIO_MCR_OP_WRITE_MASK));
+		    (((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) &
+		      XAE_MDIO_MCR_PHYAD_MASK) |
+		     ((reg << XAE_MDIO_MCR_REGAD_SHIFT) &
+		      XAE_MDIO_MCR_REGAD_MASK) |
+		     XAE_MDIO_MCR_INITIATE_MASK |
+		     XAE_MDIO_MCR_OP_WRITE_MASK));
 
-	end = jiffies + 2;
-	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
-						XAE_MDIO_MCR_READY_MASK)) {
-		if (end - jiffies <= 0) {
-			WARN_ON(1);
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
-
+	ret = axienet_mdio_wait_until_ready(lp);
+	if (ret < 0)
+		return ret;
 	return 0;
 }
 
@@ -139,12 +127,12 @@ static int axienet_mdio_write(struct mii_bus *bus, int phy_id, int reg,
  **/
 int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 {
-	struct mii_bus *bus;
-	int rc;
-	struct resource res;
+	int ret;
 	u32 clk_div;
-	long end = jiffies + 2;
+	struct mii_bus *bus;
+	struct resource res;
 	struct device_node *np1;
+	struct device_node *npp = 0; /* the ethernet controller device node */
 
 	/* clk_div can be calculated by deriving it from the equation:
 	 * fMDIO = fHOST / ((1 + clk_div) * 2)
@@ -167,81 +155,75 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 	 * And finally:
 	 * clk_div >= (fHOST / 5000000) - 1
 	 *
-	 * fHOST can be read from the flattened device tree as property "clock-frequency"
-	 * from the CPU
+	 * fHOST can be read from the flattened device tree as property
+	 * "clock-frequency" from the CPU
 	 */
-	np1 = of_find_node_by_name(NULL, CPU_NAME);
-	if(NULL == np1)
-	{
-		printk(KERN_WARNING "%s(): Could not find CPU device node.", __FUNCTION__);
-		printk(KERN_WARNING "Setting MDIO clock divisor to default %d\n",
+	np1 = of_get_parent(lp->phy_node);
+	if (np1)
+		npp = of_get_parent(np1);
+	if (!npp) {
+		dev_warn(lp->dev,
+			"Could not find ethernet controller device node.");
+		dev_warn(lp->dev, "Setting MDIO clock divisor to default %d\n",
 		       DEFAULT_CLOCK_DIVISOR);
 		clk_div = DEFAULT_CLOCK_DIVISOR;
-	}
-	else
-	{
+	} else {
 		u32 *property_p;
 
-		property_p = (uint32_t *)of_get_property(np1, CLOCK_FREQ_PROP_NAME, NULL);
-		if(NULL == property_p)
-		{
-			printk(KERN_WARNING "%s(): Could not find CPU property %s.",
-			       __FUNCTION__, CLOCK_FREQ_PROP_NAME);
-			printk(KERN_WARNING "Setting MDIO clock divisor to default %d\n",
-			       DEFAULT_CLOCK_DIVISOR);
+		property_p = (uint32_t *)of_get_property(npp,
+						"clock-frequency", NULL);
+		if (!property_p) {
+			dev_warn(lp->dev, "Could not find clock ethernet " \
+						      "controller property.");
+			dev_warn(lp->dev,
+				 "Setting MDIO clock divisor to default %d\n",
+							DEFAULT_CLOCK_DIVISOR);
 			clk_div = DEFAULT_CLOCK_DIVISOR;
-		}
-		else
-		{
+		} else {
 			u32 host_clock = be32_to_cpup(property_p);
 
 			clk_div = (host_clock / (MAX_MDIO_FREQ * 2)) - 1;
 
-			/* If there is any remainder from the division of fHOST / (MAX_MDIO_FREQ * 2),
-			 * then we need to add 1 to the clock divisor or we will surely be
+			/* If there is any remainder from the division of
+			 * fHOST / (MAX_MDIO_FREQ * 2), then we need to add 1
+			 * to the clock divisor or we will surely be
 			 * above 2.5 MHz */
-			if(host_clock % (MAX_MDIO_FREQ * 2))
+			if (host_clock % (MAX_MDIO_FREQ * 2))
 				clk_div++;
-			printk(KERN_DEBUG "%s(): Setting MDIO clock divisor to %u based on %u Hz host clock.\n",
-			       __FUNCTION__, clk_div, host_clock);
+			dev_dbg(lp->dev, "Setting MDIO clock divisor to %u " \
+						"based on %u Hz host clock.\n",
+						clk_div, host_clock);
 		}
-		of_node_put(np1);
 	}
 
 	axienet_iow(lp, XAE_MDIO_MC_OFFSET, (((u32)clk_div) |
 						XAE_MDIO_MC_MDIOEN_MASK));
-	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
-						XAE_MDIO_MCR_READY_MASK)) {
-		if (end - jiffies <= 0) {
-			WARN_ON(1);
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
+
+	ret = axienet_mdio_wait_until_ready(lp);
+	if (ret < 0)
+		return ret;
 
 	bus = mdiobus_alloc();
 	if (!bus)
 		return -ENOMEM;
 
-	np1 = of_get_parent(lp->phy_node);
-	of_address_to_resource(np1, 0, &res);
+	of_address_to_resource(npp, 0, &res);
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%.8llx",
-		 (unsigned long long)res.start);
+		 (unsigned long long) res.start);
+
 	bus->priv = lp;
 	bus->name = "Xilinx Axi Ethernet MDIO";
 	bus->read = axienet_mdio_read;
 	bus->write = axienet_mdio_write;
 	bus->parent = lp->dev;
 	bus->irq = lp->mdio_irqs; /* preallocated IRQ table */
-
 	lp->mii_bus = bus;
 
-	rc = of_mdiobus_register(bus, np1);
-	if (rc) {
+	ret = of_mdiobus_register(bus, np1);
+	if (ret) {
 		mdiobus_free(bus);
-		return rc;
+		return ret;
 	}
-
 	return 0;
 }
 
@@ -250,7 +232,7 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
  * @lp:		Pointer to axienet local data structure.
  *
  * Unregisters the MDIO and frees any associate memory for mii bus.
- **/
+ */
 void axienet_mdio_teardown(struct axienet_local *lp)
 {
 	mdiobus_unregister(lp->mii_bus);
@@ -258,4 +240,3 @@ void axienet_mdio_teardown(struct axienet_local *lp)
 	mdiobus_free(lp->mii_bus);
 	lp->mii_bus = NULL;
 }
-

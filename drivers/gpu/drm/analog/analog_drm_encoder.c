@@ -38,12 +38,12 @@
 #define ANALOG_COLOR_PATTERN_ENABLE	BIT(24)
 
 static struct debugfs_reg32 analog_drm_encoder_debugfs_regs[] = {
-    { "Control", ANALOG_REG_CTRL },
-    { "HTiming1", ANALOG_REG_HTIMING1 },
-    { "HTiming2", ANALOG_REG_HTIMING2 },
-    { "VTiming1", ANALOG_REG_VTIMING1 },
-    { "VTiming2", ANALOG_REG_VTIMING2 },
-    { "Status", ANALOG_REG_STATUS },
+	{ "Control", ANALOG_REG_CTRL },
+	{ "HTiming1", ANALOG_REG_HTIMING1 },
+	{ "HTiming2", ANALOG_REG_HTIMING2 },
+	{ "VTiming1", ANALOG_REG_VTIMING1 },
+	{ "VTiming2", ANALOG_REG_VTIMING2 },
+	{ "Status", ANALOG_REG_STATUS },
 };
 
 static uint16_t adv7511_csc_ycbcr_to_rgb[] = {
@@ -52,20 +52,16 @@ static uint16_t adv7511_csc_ycbcr_to_rgb[] = {
 	0x0000, 0x04ad, 0x087c, 0x1b77,
 };
 /*
-static struct adv7511_video_input_config adv7511_config = {
+static struct adv7511_video_input_config adv7511_config_imageon = {
 	.id = ADV7511_INPUT_ID_16_20_24BIT_YCbCr422_EMBEDDED_SYNC,
 	.input_style = ADV7511_INPUT_STYLE1,
 	.sync_pulse = ADV7511_INPUT_SYNC_PULSE_NONE,
 	.clock_delay = ADV7511_INPUT_CLOCK_DELAY_NONE,
-	.ddr_negative_clock_delay = ADV7511_INPUT_ADJUST_DELAY_NONE,
 	.reverse_bitorder = 0,
-	.ddr_alignment = 0,
 	.bit_justification = 0,
-	.ddr_edge_rising = false,
 	.vsync_polartity_low = false,
 	.hsync_polartity_low = false,
 	.up_conversion_first_order_interpolation = false,
-	.enable_ddr_negative_clock_delay = false,
 	.input_color_depth = ADV7511_INPUT_COLOR_DEPTH_8BIT,
 	.output_format = ADV7511_OUTPUT_FORMAT_RGB_444,
 	.csc_enable = true,
@@ -75,24 +71,20 @@ static struct adv7511_video_input_config adv7511_config = {
 };
 */
 
-static struct adv7511_video_input_config adv7511_config = {
+static struct adv7511_video_input_config adv7511_config_zc702 = {
 	.id = ADV7511_INPUT_ID_16_20_24BIT_YCbCr422_SEPARATE_SYNC,
 	.input_style = ADV7511_INPUT_STYLE1,
 	.sync_pulse = ADV7511_INPUT_SYNC_PULSE_NONE,
 	.clock_delay = ADV7511_INPUT_CLOCK_DELAY_NONE,
-	.ddr_negative_clock_delay = ADV7511_INPUT_ADJUST_DELAY_NONE,
 	.reverse_bitorder = 0,
-	.ddr_alignment = 0,
-	.ddr_edge_rising = false,
 	.vsync_polartity_low = false,
 	.hsync_polartity_low = false,
 	.up_conversion_first_order_interpolation = false,
-	.enable_ddr_negative_clock_delay = false,
 	.input_color_depth = ADV7511_INPUT_COLOR_DEPTH_8BIT,
 	.output_format = ADV7511_OUTPUT_FORMAT_RGB_444,
 	.csc_enable = true,
 	.csc_coefficents = adv7511_csc_ycbcr_to_rgb,
-	.csc_scaling_factor = 3,
+	.csc_scaling_factor = ADV7511_CSC_SCALING_4,
 	.bit_justification = ADV7511_INPUT_BIT_JUSTIFICATION_RIGHT,
 	.tmds_clock_inversion = true,
 };
@@ -104,8 +96,10 @@ struct analog_drm_encoder {
 	struct debugfs_regset32 regset;
 };
 
-#define to_analog_encoder(x)	container_of(x, struct analog_drm_encoder,\
-				encoder.base)
+static inline struct analog_drm_encoder *to_analog_encoder(struct drm_encoder *enc)
+{
+	return container_of(enc, struct analog_drm_encoder, encoder.base);
+}
 
 static inline struct drm_encoder *connector_to_encoder(struct drm_connector *connector)
 {
@@ -131,11 +125,12 @@ static int debugfs_cp_get(void *data, u64 *val)
 	*val = ioread32(private->base + ANALOG_REG_COLOR_PATTERN);
 	return 0;
 }
+
 static int debugfs_cp_set(void *data, u64 val)
 {
 	struct analog_drm_private *private = data;
-	iowrite32(0x0000000, private-> base + ANALOG_REG_COLOR_PATTERN);
-	iowrite32(0x1000000 | val, private-> base + ANALOG_REG_COLOR_PATTERN);
+	iowrite32(0x0000000, private->base + ANALOG_REG_COLOR_PATTERN);
+	iowrite32(0x1000000 | val, private->base + ANALOG_REG_COLOR_PATTERN);
 	return 0;
 }
 DEFINE_SIMPLE_ATTRIBUTE(fops_cp, debugfs_cp_get, debugfs_cp_set, "0x%08llx\n");
@@ -146,7 +141,7 @@ static void analog_drm_encoder_dpms(struct drm_encoder *encoder, int mode)
 	struct drm_connector *connector = &analog_encoder->connector;
 	struct analog_drm_private *private = encoder->dev->dev_private;
 	struct drm_encoder_slave_funcs *sfuncs = get_slave_funcs(encoder);
-	struct adv7511_video_input_config config = adv7511_config;
+	struct adv7511_video_input_config config = adv7511_config_zc702;
 
 	switch (mode) {
 	case DRM_MODE_DPMS_ON:
@@ -399,18 +394,11 @@ static void analog_drm_write_clock_reg(struct analog_drm_private *private,
 #define ANALOG_CLOCK_REG_UPDATE_ENABLE	0x04
 #define ANALOG_CLOCK_REG_CONFIG(x)	(0x08 + (0x04 * x))
 
-void xslcr_set_fpga3_clock(unsigned int rate);
-
 static int analog_drm_encoder_set_clock(struct analog_drm_private *private, long clock)
 {
 	const struct analog_drm_crtc_clock_setting *best_setting;
 	unsigned int i;
 
-/*
-	xslcr_set_fpga3_clock(clock * 1000);
-	return 0;
-*/
-	xslcr_set_fpga3_clock(200000000);
 	best_setting = analog_drm_encoder_closest_clock(clock);
 
 	if (!best_setting)
@@ -565,7 +553,6 @@ static int analog_drm_connector_get_modes(struct drm_connector *connector)
 	struct edid *edid;
 	int count = 0;
 
-
 	kfree(connector->display_info.raw_edid);
 	connector->display_info.raw_edid = NULL;
 
@@ -585,24 +572,11 @@ static int analog_drm_connector_get_modes(struct drm_connector *connector)
 static int analog_drm_connector_mode_valid(struct drm_connector *connector,
 	struct drm_display_mode *mode)
 {
-	const struct analog_drm_crtc_clock_setting *best_setting;
-	long diff;
-
-	if (mode->flags & DRM_MODE_FLAG_DBLSCAN)
-		return MODE_NO_DBLESCAN;
+	if (mode->clock > 165000)
+		return MODE_CLOCK_HIGH;
 
 	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
 		return MODE_NO_INTERLACE;
-
-	return MODE_OK;
-
-	best_setting = analog_drm_encoder_closest_clock(mode->clock);
-
-	diff = abs(best_setting->clock - mode->clock);
-
-	/* Allow for a 1% tolerance */
-	if (diff / (mode->clock / 100) > 1)
-		return false;
 
 	return MODE_OK;
 }

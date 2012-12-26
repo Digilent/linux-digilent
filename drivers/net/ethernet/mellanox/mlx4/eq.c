@@ -39,6 +39,7 @@
 #include <linux/dma-mapping.h>
 
 #include <linux/mlx4/cmd.h>
+#include <linux/cpu_rmap.h>
 
 #include "mlx4.h"
 #include "fw.h"
@@ -79,7 +80,17 @@ enum {
 			       (1ull << MLX4_EVENT_TYPE_SRQ_LIMIT)	    | \
 			       (1ull << MLX4_EVENT_TYPE_CMD)		    | \
 			       (1ull << MLX4_EVENT_TYPE_COMM_CHANNEL)       | \
-			       (1ull << MLX4_EVENT_TYPE_FLR_EVENT))
+			       (1ull << MLX4_EVENT_TYPE_FLR_EVENT)	    | \
+			       (1ull << MLX4_EVENT_TYPE_FATAL_WARNING))
+
+static u64 get_async_ev_mask(struct mlx4_dev *dev)
+{
+	u64 async_ev_mask = MLX4_ASYNC_EVENT_MASK;
+	if (dev->caps.flags & MLX4_DEV_CAP_FLAG_PORT_MNG_CHG_EV)
+		async_ev_mask |= (1ull << MLX4_EVENT_TYPE_PORT_MNG_CHG_EVENT);
+
+	return async_ev_mask;
+}
 
 static void eq_set_ci(struct mlx4_eq *eq, int req_not)
 {
@@ -425,7 +436,7 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 
 			mlx4_dbg(dev, "FLR event for slave: %d\n", flr_slave);
 
-			if (flr_slave > dev->num_slaves) {
+			if (flr_slave >= dev->num_slaves) {
 				mlx4_warn(dev,
 					  "Got FLR for unknown function: %d\n",
 					  flr_slave);
@@ -443,6 +454,40 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 			queue_work(priv->mfunc.master.comm_wq,
 				   &priv->mfunc.master.slave_flr_event_work);
 			break;
+
+		case MLX4_EVENT_TYPE_FATAL_WARNING:
+			if (eqe->subtype == MLX4_FATAL_WARNING_SUBTYPE_WARMING) {
+				if (mlx4_is_master(dev))
+					for (i = 0; i < dev->num_slaves; i++) {
+						mlx4_dbg(dev, "%s: Sending "
+							"MLX4_FATAL_WARNING_SUBTYPE_WARMING"
+							" to slave: %d\n", __func__, i);
+						if (i == dev->caps.function)
+							continue;
+						mlx4_slave_event(dev, i, eqe);
+					}
+				mlx4_err(dev, "Temperature Threshold was reached! "
+					"Threshold: %d celsius degrees; "
+					"Current Temperature: %d\n",
+					be16_to_cpu(eqe->event.warming.warning_threshold),
+					be16_to_cpu(eqe->event.warming.current_temperature));
+			} else
+				mlx4_warn(dev, "Unhandled event FATAL WARNING (%02x), "
+					  "subtype %02x on EQ %d at index %u. owner=%x, "
+					  "nent=0x%x, slave=%x, ownership=%s\n",
+					  eqe->type, eqe->subtype, eq->eqn,
+					  eq->cons_index, eqe->owner, eq->nent,
+					  eqe->slave_id,
+					  !!(eqe->owner & 0x80) ^
+					  !!(eq->cons_index & eq->nent) ? "HW" : "SW");
+
+			break;
+
+		case MLX4_EVENT_TYPE_PORT_MNG_CHG_EVENT:
+			mlx4_dispatch_event(dev, MLX4_DEV_EVENT_PORT_MGMT_CHANGE,
+					    (unsigned long) eqe);
+			break;
+
 		case MLX4_EVENT_TYPE_EEC_CATAS_ERROR:
 		case MLX4_EVENT_TYPE_ECC_DETECT:
 		default:
@@ -926,7 +971,7 @@ int mlx4_init_eq_table(struct mlx4_dev *dev)
 		priv->eq_table.have_irq = 1;
 	}
 
-	err = mlx4_MAP_EQ(dev, MLX4_ASYNC_EVENT_MASK, 0,
+	err = mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
 			  priv->eq_table.eq[dev->caps.num_comp_vectors].eqn);
 	if (err)
 		mlx4_warn(dev, "MAP_EQ for async EQ %d failed (%d)\n",
@@ -966,7 +1011,7 @@ void mlx4_cleanup_eq_table(struct mlx4_dev *dev)
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	int i;
 
-	mlx4_MAP_EQ(dev, MLX4_ASYNC_EVENT_MASK, 1,
+	mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 1,
 		    priv->eq_table.eq[dev->caps.num_comp_vectors].eqn);
 
 	mlx4_free_irqs(dev);
@@ -1010,7 +1055,7 @@ int mlx4_test_interrupts(struct mlx4_dev *dev)
 		mlx4_cmd_use_polling(dev);
 
 		/* Map the new eq to handle all asyncronous events */
-		err = mlx4_MAP_EQ(dev, MLX4_ASYNC_EVENT_MASK, 0,
+		err = mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
 				  priv->eq_table.eq[i].eqn);
 		if (err) {
 			mlx4_warn(dev, "Failed mapping eq for interrupt test\n");
@@ -1024,13 +1069,14 @@ int mlx4_test_interrupts(struct mlx4_dev *dev)
 	}
 
 	/* Return to default */
-	mlx4_MAP_EQ(dev, MLX4_ASYNC_EVENT_MASK, 0,
+	mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
 		    priv->eq_table.eq[dev->caps.num_comp_vectors].eqn);
 	return err;
 }
 EXPORT_SYMBOL(mlx4_test_interrupts);
 
-int mlx4_assign_eq(struct mlx4_dev *dev, char* name, int * vector)
+int mlx4_assign_eq(struct mlx4_dev *dev, char *name, struct cpu_rmap *rmap,
+		   int *vector)
 {
 
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -1044,6 +1090,14 @@ int mlx4_assign_eq(struct mlx4_dev *dev, char* name, int * vector)
 			snprintf(priv->eq_table.irq_names +
 					vec * MLX4_IRQNAME_SIZE,
 					MLX4_IRQNAME_SIZE, "%s", name);
+#ifdef CONFIG_RFS_ACCEL
+			if (rmap) {
+				err = irq_cpu_rmap_add(rmap,
+						       priv->eq_table.eq[vec].irq);
+				if (err)
+					mlx4_warn(dev, "Failed adding irq rmap\n");
+			}
+#endif
 			err = request_irq(priv->eq_table.eq[vec].irq,
 					  mlx4_msi_x_interrupt, 0,
 					  &priv->eq_table.irq_names[vec<<5],

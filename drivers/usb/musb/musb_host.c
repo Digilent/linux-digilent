@@ -375,11 +375,21 @@ static void musb_advance_schedule(struct musb *musb, struct urb *urb,
 	 */
 	if (list_empty(&qh->hep->urb_list)) {
 		struct list_head	*head;
+		struct dma_controller	*dma = musb->dma_controller;
 
-		if (is_in)
+		if (is_in) {
 			ep->rx_reinit = 1;
-		else
+			if (ep->rx_channel) {
+				dma->channel_release(ep->rx_channel);
+				ep->rx_channel = NULL;
+			}
+		} else {
 			ep->tx_reinit = 1;
+			if (ep->tx_channel) {
+				dma->channel_release(ep->tx_channel);
+				ep->tx_channel = NULL;
+			}
+		}
 
 		/* Clobber old pointers to this qh */
 		musb_ep_set_qh(ep, is_in, NULL);
@@ -1736,7 +1746,11 @@ void musb_host_rx(struct musb *musb, u8 epnum)
 				c->channel_release(dma);
 				hw_ep->rx_channel = NULL;
 				dma = NULL;
-				/* REVISIT reset CSR */
+				val = musb_readw(epio, MUSB_RXCSR);
+				val &= ~(MUSB_RXCSR_DMAENAB
+					| MUSB_RXCSR_H_AUTOREQ
+					| MUSB_RXCSR_AUTOCLEAR);
+				musb_writew(epio, MUSB_RXCSR, val);
 			}
 		}
 #endif	/* Mentor DMA */
@@ -2035,7 +2049,7 @@ static int musb_urb_enqueue(
 	 * we only have work to do in the former case.
 	 */
 	spin_lock_irqsave(&musb->lock, flags);
-	if (hep->hcpriv) {
+	if (hep->hcpriv || !next_urb(qh)) {
 		/* some concurrent activity submitted another urb to hep...
 		 * odd, rare, error prone, but legal.
 		 */
@@ -2098,7 +2112,7 @@ static int musb_cleanup_urb(struct urb *urb, struct musb_qh *qh)
 	}
 
 	/* turn off DMA requests, discard state, stop polling ... */
-	if (is_in) {
+	if (ep->epnum && is_in) {
 		/* giveback saves bulk toggle */
 		csr = musb_h_flush_rxfifo(ep, 0);
 

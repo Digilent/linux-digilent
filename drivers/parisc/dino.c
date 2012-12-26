@@ -55,7 +55,6 @@
 
 #include <asm/pdc.h>
 #include <asm/page.h>
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/hardware.h>
 
@@ -175,7 +174,7 @@ static int dino_cfg_read(struct pci_bus *bus, unsigned int devfn, int where,
 		int size, u32 *val)
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
-	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -210,7 +209,7 @@ static int dino_cfg_write(struct pci_bus *bus, unsigned int devfn, int where,
 	int size, u32 val)
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
-	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -553,10 +552,9 @@ dino_fixup_bus(struct pci_bus *bus)
 	struct list_head *ln;
         struct pci_dev *dev;
         struct dino_device *dino_dev = DINO_DEV(parisc_walk_tree(bus->bridge));
-	int port_base = HBA_PORT_BASE(dino_dev->hba.hba_num);
 
 	DBG(KERN_WARNING "%s(0x%p) bus %d platform_data 0x%p\n",
-	    __func__, bus, bus->secondary,
+	    __func__, bus, bus->busn_res.start,
 	    bus->bridge->platform_data);
 
 	/* Firmware doesn't set up card-mode dino, so we have to */
@@ -599,8 +597,6 @@ dino_fixup_bus(struct pci_bus *bus)
 
 
 	list_for_each(ln, &bus->devices) {
-		int i;
-
 		dev = pci_dev_b(ln);
 		if (is_card_dino(&dino_dev->hba.dev->id))
 			dino_card_fixup(dev);
@@ -612,21 +608,6 @@ dino_fixup_bus(struct pci_bus *bus)
 		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)
 			continue;
 
-		/* Adjust the I/O Port space addresses */
-		for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-			struct resource *res = &dev->resource[i];
-			if (res->flags & IORESOURCE_IO) {
-				res->start |= port_base;
-				res->end |= port_base;
-			}
-#ifdef __LP64__
-			/* Sign Extend MMIO addresses */
-			else if (res->flags & IORESOURCE_MEM) {
-				res->start |= F_EXTEND(0UL);
-				res->end   |= F_EXTEND(0UL);
-			}
-#endif
-		}
 		/* null out the ROM resource if there is one (we don't
 		 * care about an expansion rom on parisc, since it
 		 * usually contains (x86) bios code) */
@@ -917,6 +898,7 @@ static int __init dino_probe(struct parisc_device *dev)
 	LIST_HEAD(resources);
 	struct pci_bus *bus;
 	unsigned long hpa = dev->hpa.start;
+	int max;
 
 	name = "Dino";
 	if (is_card_dino(&dev->id)) {
@@ -991,14 +973,21 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	dev->dev.platform_data = dino_dev;
 
-	pci_add_resource(&resources, &dino_dev->hba.io_space);
+	pci_add_resource_offset(&resources, &dino_dev->hba.io_space,
+				HBA_PORT_BASE(dino_dev->hba.hba_num));
 	if (dino_dev->hba.lmmio_space.flags)
-		pci_add_resource(&resources, &dino_dev->hba.lmmio_space);
+		pci_add_resource_offset(&resources, &dino_dev->hba.lmmio_space,
+					dino_dev->hba.lmmio_space_offset);
 	if (dino_dev->hba.elmmio_space.flags)
-		pci_add_resource(&resources, &dino_dev->hba.elmmio_space);
+		pci_add_resource_offset(&resources, &dino_dev->hba.elmmio_space,
+					dino_dev->hba.lmmio_space_offset);
 	if (dino_dev->hba.gmmio_space.flags)
 		pci_add_resource(&resources, &dino_dev->hba.gmmio_space);
 
+	dino_dev->hba.bus_num.start = dino_current_bus;
+	dino_dev->hba.bus_num.end = 255;
+	dino_dev->hba.bus_num.flags = IORESOURCE_BUS;
+	pci_add_resource(&resources, &dino_dev->hba.bus_num);
 	/*
 	** It's not used to avoid chicken/egg problems
 	** with configuration accessor functions.
@@ -1014,12 +1003,13 @@ static int __init dino_probe(struct parisc_device *dev)
 		return 0;
 	}
 
-	bus->subordinate = pci_scan_child_bus(bus);
+	max = pci_scan_child_bus(bus);
+	pci_bus_update_busn_res_end(bus, max);
 
 	/* This code *depends* on scanning being single threaded
 	 * if it isn't, this global bus number count will fail
 	 */
-	dino_current_bus = bus->subordinate + 1;
+	dino_current_bus = max + 1;
 	pci_bus_assign_resources(bus);
 	pci_bus_add_devices(bus);
 	return 0;

@@ -15,6 +15,7 @@
  */
 
 #define __UNDEF_NO_VERSION__
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/etherdevice.h>
 #include <linux/sched.h>
@@ -24,7 +25,6 @@
 #include <linux/bcma/bcma.h>
 #include <net/mac80211.h>
 #include <defs.h>
-#include "nicpci.h"
 #include "phy/phy_int.h"
 #include "d11.h"
 #include "channel.h"
@@ -96,10 +96,10 @@ static struct bcma_device_id brcms_coreid_table[] = {
 };
 MODULE_DEVICE_TABLE(bcma, brcms_coreid_table);
 
-#ifdef BCMDBG
+#ifdef DEBUG
 static int msglevel = 0xdeadbeef;
 module_param(msglevel, int, 0);
-#endif				/* BCMDBG */
+#endif				/* DEBUG */
 
 static struct ieee80211_channel brcms_2ghz_chantable[] = {
 	CHAN2GHZ(1, 2412, IEEE80211_CHAN_NO_HT40MINUS),
@@ -121,7 +121,8 @@ static struct ieee80211_channel brcms_2ghz_chantable[] = {
 		 IEEE80211_CHAN_NO_HT40PLUS),
 	CHAN2GHZ(14, 2484,
 		 IEEE80211_CHAN_PASSIVE_SCAN | IEEE80211_CHAN_NO_IBSS |
-		 IEEE80211_CHAN_NO_HT40PLUS | IEEE80211_CHAN_NO_HT40MINUS)
+		 IEEE80211_CHAN_NO_HT40PLUS | IEEE80211_CHAN_NO_HT40MINUS |
+		 IEEE80211_CHAN_NO_OFDM)
 };
 
 static struct ieee80211_channel brcms_5ghz_nphy_chantable[] = {
@@ -267,6 +268,7 @@ static void brcms_set_basic_rate(struct brcm_rateset *rs, u16 rate, bool is_br)
 static void brcms_ops_tx(struct ieee80211_hw *hw, struct sk_buff *skb)
 {
 	struct brcms_info *wl = hw->priv;
+	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(skb);
 
 	spin_lock_bh(&wl->lock);
 	if (!wl->pub->up) {
@@ -275,6 +277,7 @@ static void brcms_ops_tx(struct ieee80211_hw *hw, struct sk_buff *skb)
 		goto done;
 	}
 	brcms_c_sendpkt_mac80211(wl->wlc, skb, hw);
+	tx_info->rate_driver_data[0] = tx_info->control.sta;
  done:
 	spin_unlock_bh(&wl->lock);
 }
@@ -319,8 +322,7 @@ static void brcms_ops_stop(struct ieee80211_hw *hw)
 		return;
 
 	spin_lock_bh(&wl->lock);
-	status = brcms_c_chipmatch(wl->wlc->hw->vendorid,
-				   wl->wlc->hw->deviceid);
+	status = brcms_c_chipmatch(wl->wlc->hw->d11core);
 	spin_unlock_bh(&wl->lock);
 	if (!status) {
 		wiphy_err(wl->wiphy,
@@ -721,14 +723,6 @@ static const struct ieee80211_ops brcms_ops = {
 	.flush = brcms_ops_flush,
 };
 
-/*
- * is called in brcms_bcma_probe() context, therefore no locking required.
- */
-static int brcms_set_hint(struct brcms_info *wl, char *abbrev)
-{
-	return regulatory_hint(wl->pub->ieee_hw->wiphy, abbrev);
-}
-
 void brcms_dpc(unsigned long data)
 {
 	struct brcms_info *wl;
@@ -769,7 +763,7 @@ void brcms_dpc(unsigned long data)
  * Precondition: Since this function is called in brcms_pci_probe() context,
  * no locking is required.
  */
-static int brcms_request_fw(struct brcms_info *wl, struct pci_dev *pdev)
+static int brcms_request_fw(struct brcms_info *wl, struct bcma_device *pdev)
 {
 	int status;
 	struct device *device = &pdev->dev;
@@ -857,7 +851,7 @@ static void brcms_free(struct brcms_info *wl)
 	/* free timers */
 	for (t = wl->timers; t; t = next) {
 		next = t->next;
-#ifdef BCMDBG
+#ifdef DEBUG
 		kfree(t->name);
 #endif
 		kfree(t);
@@ -1021,7 +1015,7 @@ static struct brcms_info *brcms_attach(struct bcma_device *pdev)
 	spin_lock_init(&wl->isr_lock);
 
 	/* prepare ucode */
-	if (brcms_request_fw(wl, pdev->bus->host_pci) < 0) {
+	if (brcms_request_fw(wl, pdev) < 0) {
 		wiphy_err(wl->wiphy, "%s: Failed to find firmware usually in "
 			  "%s\n", KBUILD_MODNAME, "/lib/firmware/brcm");
 		brcms_release_fw(wl);
@@ -1042,12 +1036,12 @@ static struct brcms_info *brcms_attach(struct bcma_device *pdev)
 	wl->pub->ieee_hw = hw;
 
 	/* register our interrupt handler */
-	if (request_irq(pdev->bus->host_pci->irq, brcms_isr,
+	if (request_irq(pdev->irq, brcms_isr,
 			IRQF_SHARED, KBUILD_MODNAME, wl)) {
 		wiphy_err(wl->wiphy, "wl%d: request_irq() failed\n", unit);
 		goto fail;
 	}
-	wl->irq = pdev->bus->host_pci->irq;
+	wl->irq = pdev->irq;
 
 	/* register module */
 	brcms_c_module_register(wl->pub, "linux", wl, NULL);
@@ -1057,6 +1051,8 @@ static struct brcms_info *brcms_attach(struct bcma_device *pdev)
 			  __func__);
 		goto fail;
 	}
+
+	brcms_c_regd_init(wl->wlc);
 
 	memcpy(perm, &wl->pub->cur_etheraddr, ETH_ALEN);
 	if (WARN_ON(!is_valid_ether_addr(perm)))
@@ -1068,13 +1064,9 @@ static struct brcms_info *brcms_attach(struct bcma_device *pdev)
 		wiphy_err(wl->wiphy, "%s: ieee80211_register_hw failed, status"
 			  "%d\n", __func__, err);
 
-	if (wl->pub->srom_ccode[0])
-		err = brcms_set_hint(wl, wl->pub->srom_ccode);
-	else
-		err = brcms_set_hint(wl, "US");
-	if (err)
-		wiphy_err(wl->wiphy, "%s: regulatory_hint failed, status %d\n",
-			  __func__, err);
+	if (wl->pub->srom_ccode[0] &&
+	    regulatory_hint(wl->wiphy, wl->pub->srom_ccode))
+		wiphy_err(wl->wiphy, "%s: regulatory hint failed\n", __func__);
 
 	n_adapters_found++;
 	return wl;
@@ -1101,7 +1093,7 @@ static int __devinit brcms_bcma_probe(struct bcma_device *pdev)
 
 	dev_info(&pdev->dev, "mfg %x core %x rev %d class %d irq %d\n",
 		 pdev->id.manuf, pdev->id.id, pdev->id.rev, pdev->id.class,
-		 pdev->bus->host_pci->irq);
+		 pdev->irq);
 
 	if ((pdev->id.manuf != BCMA_MANUF_BCM) ||
 	    (pdev->id.id != BCMA_CORE_80211))
@@ -1121,8 +1113,7 @@ static int __devinit brcms_bcma_probe(struct bcma_device *pdev)
 
 	wl = brcms_attach(pdev);
 	if (!wl) {
-		pr_err("%s: %s: brcms_attach failed!\n", KBUILD_MODNAME,
-		       __func__);
+		pr_err("%s: brcms_attach failed!\n", __func__);
 		return -ENODEV;
 	}
 	return 0;
@@ -1136,8 +1127,8 @@ static int brcms_suspend(struct bcma_device *pdev)
 	hw = bcma_get_drvdata(pdev);
 	wl = hw->priv;
 	if (!wl) {
-		wiphy_err(wl->wiphy,
-			  "brcms_suspend: bcma_get_drvdata failed\n");
+		pr_err("%s: %s: no driver private struct!\n", KBUILD_MODNAME,
+		       __func__);
 		return -ENODEV;
 	}
 
@@ -1169,25 +1160,31 @@ static struct bcma_driver brcms_bcma_driver = {
 /**
  * This is the main entry point for the brcmsmac driver.
  *
- * This function determines if a device pointed to by pdev is a WL device,
- * and if so, performs a brcms_attach() on it.
- *
+ * This function is scheduled upon module initialization and
+ * does the driver registration, which result in brcms_bcma_probe()
+ * call resulting in the driver bringup.
  */
-static int __init brcms_module_init(void)
+static void brcms_driver_init(struct work_struct *work)
 {
-	int error = -ENODEV;
-
-#ifdef BCMDBG
-	if (msglevel != 0xdeadbeef)
-		brcm_msg_level = msglevel;
-#endif				/* BCMDBG */
+	int error;
 
 	error = bcma_driver_register(&brcms_bcma_driver);
-	printk(KERN_ERR "%s: register returned %d\n", __func__, error);
-	if (!error)
-		return 0;
+	if (error)
+		pr_err("%s: register returned %d\n", __func__, error);
+}
 
-	return error;
+static DECLARE_WORK(brcms_driver_work, brcms_driver_init);
+
+static int __init brcms_module_init(void)
+{
+#ifdef DEBUG
+	if (msglevel != 0xdeadbeef)
+		brcm_msg_level = msglevel;
+#endif
+	if (!schedule_work(&brcms_driver_work))
+		return -EBUSY;
+
+	return 0;
 }
 
 /**
@@ -1199,6 +1196,7 @@ static int __init brcms_module_init(void)
  */
 static void __exit brcms_module_exit(void)
 {
+	cancel_work_sync(&brcms_driver_work);
 	bcma_driver_unregister(&brcms_bcma_driver);
 }
 
@@ -1234,6 +1232,9 @@ uint brcms_reset(struct brcms_info *wl)
 
 	/* dpc will not be rescheduled */
 	wl->resched = false;
+
+	/* inform publicly that interface is down */
+	wl->pub->up = false;
 
 	return 0;
 }
@@ -1367,7 +1368,7 @@ struct brcms_timer *brcms_init_timer(struct brcms_info *wl,
 	t->next = wl->timers;
 	wl->timers = t;
 
-#ifdef BCMDBG
+#ifdef DEBUG
 	t->name = kmalloc(strlen(name) + 1, GFP_ATOMIC);
 	if (t->name)
 		strcpy(t->name, name);
@@ -1386,7 +1387,7 @@ void brcms_add_timer(struct brcms_timer *t, uint ms, int periodic)
 {
 	struct ieee80211_hw *hw = t->wl->pub->ieee_hw;
 
-#ifdef BCMDBG
+#ifdef DEBUG
 	if (t->set)
 		wiphy_err(hw->wiphy, "%s: Already set. Name: %s, per %d\n",
 			  __func__, t->name, periodic);
@@ -1431,7 +1432,7 @@ void brcms_free_timer(struct brcms_timer *t)
 
 	if (wl->timers == t) {
 		wl->timers = wl->timers->next;
-#ifdef BCMDBG
+#ifdef DEBUG
 		kfree(t->name);
 #endif
 		kfree(t);
@@ -1443,7 +1444,7 @@ void brcms_free_timer(struct brcms_timer *t)
 	while (tmp) {
 		if (tmp->next == t) {
 			tmp->next = t->next;
-#ifdef BCMDBG
+#ifdef DEBUG
 			kfree(t->name);
 #endif
 			kfree(t);

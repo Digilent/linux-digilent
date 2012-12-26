@@ -1329,13 +1329,9 @@ static int pegasus_probe(struct usb_interface *intf,
 	}
 	pegasus_count++;
 
-	usb_get_dev(dev);
-
 	net = alloc_etherdev(sizeof(struct pegasus));
-	if (!net) {
-		dev_err(&intf->dev, "can't allocate %s\n", "device");
+	if (!net)
 		goto out;
-	}
 
 	pegasus = netdev_priv(net);
 	pegasus->dev_index = dev_index;
@@ -1409,7 +1405,6 @@ out2:
 out1:
 	free_netdev(net);
 out:
-	usb_put_dev(dev);
 	pegasus_dec_workqueue();
 	return res;
 }
@@ -1427,7 +1422,6 @@ static void pegasus_disconnect(struct usb_interface *intf)
 	pegasus->flags |= PEGASUS_UNPLUG;
 	cancel_delayed_work(&pegasus->carrier_check);
 	unregister_netdev(pegasus->net);
-	usb_put_dev(interface_to_usbdev(intf));
 	unlink_all_urbs(pegasus);
 	free_all_urbs(pegasus);
 	free_skb_pool(pegasus);
@@ -1491,6 +1485,7 @@ static struct usb_driver pegasus_driver = {
 	.id_table = pegasus_ids,
 	.suspend = pegasus_suspend,
 	.resume = pegasus_resume,
+	.disable_hub_initiated_lpm = 1,
 };
 
 static void __init parse_id(char *id)

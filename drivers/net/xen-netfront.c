@@ -47,6 +47,7 @@
 #include <xen/xenbus.h>
 #include <xen/events.h>
 #include <xen/page.h>
+#include <xen/platform_pci.h>
 #include <xen/grant_table.h>
 
 #include <xen/interface/io/netif.h>
@@ -56,8 +57,7 @@
 static const struct ethtool_ops xennet_ethtool_ops;
 
 struct netfront_cb {
-	struct page *page;
-	unsigned offset;
+	int pull_to;
 };
 
 #define NETFRONT_SKB_CB(skb)	((struct netfront_cb *)((skb)->cb))
@@ -489,6 +489,7 @@ static int xennet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	int frags = skb_shinfo(skb)->nr_frags;
 	unsigned int offset = offset_in_page(data);
 	unsigned int len = skb_headlen(skb);
+	unsigned long flags;
 
 	frags += DIV_ROUND_UP(offset + len, PAGE_SIZE);
 	if (unlikely(frags > MAX_SKB_FRAGS + 1)) {
@@ -498,12 +499,12 @@ static int xennet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto drop;
 	}
 
-	spin_lock_irq(&np->tx_lock);
+	spin_lock_irqsave(&np->tx_lock, flags);
 
 	if (unlikely(!netif_carrier_ok(dev) ||
 		     (frags > 1 && !xennet_can_sg(dev)) ||
 		     netif_needs_gso(skb, netif_skb_features(skb)))) {
-		spin_unlock_irq(&np->tx_lock);
+		spin_unlock_irqrestore(&np->tx_lock, flags);
 		goto drop;
 	}
 
@@ -574,7 +575,7 @@ static int xennet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (!netfront_tx_slot_available(np))
 		netif_stop_queue(dev);
 
-	spin_unlock_irq(&np->tx_lock);
+	spin_unlock_irqrestore(&np->tx_lock, flags);
 
 	return NETDEV_TX_OK;
 
@@ -865,15 +866,9 @@ static int handle_incoming_queue(struct net_device *dev,
 	struct sk_buff *skb;
 
 	while ((skb = __skb_dequeue(rxq)) != NULL) {
-		struct page *page = NETFRONT_SKB_CB(skb)->page;
-		void *vaddr = page_address(page);
-		unsigned offset = NETFRONT_SKB_CB(skb)->offset;
+		int pull_to = NETFRONT_SKB_CB(skb)->pull_to;
 
-		memcpy(skb->data, vaddr + offset,
-		       skb_headlen(skb));
-
-		if (page != skb_frag_page(&skb_shinfo(skb)->frags[0]))
-			__free_page(page);
+		__pskb_pull_tail(skb, pull_to - skb_headlen(skb));
 
 		/* Ethernet work: Delayed to here as it peeks the header. */
 		skb->protocol = eth_type_trans(skb, dev);
@@ -911,7 +906,6 @@ static int xennet_poll(struct napi_struct *napi, int budget)
 	struct sk_buff_head errq;
 	struct sk_buff_head tmpq;
 	unsigned long flags;
-	unsigned int len;
 	int err;
 
 	spin_lock(&np->rx_lock);
@@ -953,24 +947,13 @@ err:
 			}
 		}
 
-		NETFRONT_SKB_CB(skb)->page =
-			skb_frag_page(&skb_shinfo(skb)->frags[0]);
-		NETFRONT_SKB_CB(skb)->offset = rx->offset;
+		NETFRONT_SKB_CB(skb)->pull_to = rx->status;
+		if (NETFRONT_SKB_CB(skb)->pull_to > RX_COPY_THRESHOLD)
+			NETFRONT_SKB_CB(skb)->pull_to = RX_COPY_THRESHOLD;
 
-		len = rx->status;
-		if (len > RX_COPY_THRESHOLD)
-			len = RX_COPY_THRESHOLD;
-		skb_put(skb, len);
-
-		if (rx->status > len) {
-			skb_shinfo(skb)->frags[0].page_offset =
-				rx->offset + len;
-			skb_frag_size_set(&skb_shinfo(skb)->frags[0], rx->status - len);
-			skb->data_len = rx->status - len;
-		} else {
-			__skb_fill_page_desc(skb, 0, NULL, 0, 0);
-			skb_shinfo(skb)->nr_frags = 0;
-		}
+		skb_shinfo(skb)->frags[0].page_offset = rx->offset;
+		skb_frag_size_set(&skb_shinfo(skb)->frags[0], rx->status);
+		skb->data_len = rx->status;
 
 		i = xennet_fill_frags(np, skb, &tmpq);
 
@@ -997,7 +980,7 @@ err:
 		 * receive throughout using the standard receive
 		 * buffer size was cut by 25%(!!!).
 		 */
-		skb->truesize += skb->data_len - (RX_COPY_THRESHOLD - len);
+		skb->truesize += skb->data_len - RX_COPY_THRESHOLD;
 		skb->len += skb->data_len;
 
 		if (rx->flags & XEN_NETRXF_csum_blank)
@@ -1228,6 +1211,33 @@ static int xennet_set_features(struct net_device *dev,
 	return 0;
 }
 
+static irqreturn_t xennet_interrupt(int irq, void *dev_id)
+{
+	struct net_device *dev = dev_id;
+	struct netfront_info *np = netdev_priv(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&np->tx_lock, flags);
+
+	if (likely(netif_carrier_ok(dev))) {
+		xennet_tx_buf_gc(dev);
+		/* Under tx_lock: protects access to rx shared-ring indexes. */
+		if (RING_HAS_UNCONSUMED_RESPONSES(&np->rx))
+			napi_schedule(&np->napi);
+	}
+
+	spin_unlock_irqrestore(&np->tx_lock, flags);
+
+	return IRQ_HANDLED;
+}
+
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void xennet_poll_controller(struct net_device *dev)
+{
+	xennet_interrupt(0, dev);
+}
+#endif
+
 static const struct net_device_ops xennet_netdev_ops = {
 	.ndo_open            = xennet_open,
 	.ndo_uninit          = xennet_uninit,
@@ -1239,6 +1249,9 @@ static const struct net_device_ops xennet_netdev_ops = {
 	.ndo_validate_addr   = eth_validate_addr,
 	.ndo_fix_features    = xennet_fix_features,
 	.ndo_set_features    = xennet_set_features,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller = xennet_poll_controller,
+#endif
 };
 
 static struct net_device * __devinit xennet_create_dev(struct xenbus_device *dev)
@@ -1248,11 +1261,8 @@ static struct net_device * __devinit xennet_create_dev(struct xenbus_device *dev
 	struct netfront_info *np;
 
 	netdev = alloc_etherdev(sizeof(struct netfront_info));
-	if (!netdev) {
-		printk(KERN_WARNING "%s> alloc_etherdev failed.\n",
-		       __func__);
+	if (!netdev)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	np                   = netdev_priv(netdev);
 	np->xbdev            = dev;
@@ -1446,26 +1456,6 @@ static int xen_net_read_mac(struct xenbus_device *dev, u8 mac[])
 
 	kfree(macstr);
 	return 0;
-}
-
-static irqreturn_t xennet_interrupt(int irq, void *dev_id)
-{
-	struct net_device *dev = dev_id;
-	struct netfront_info *np = netdev_priv(dev);
-	unsigned long flags;
-
-	spin_lock_irqsave(&np->tx_lock, flags);
-
-	if (likely(netif_carrier_ok(dev))) {
-		xennet_tx_buf_gc(dev);
-		/* Under tx_lock: protects access to rx shared-ring indexes. */
-		if (RING_HAS_UNCONSUMED_RESPONSES(&np->rx))
-			napi_schedule(&np->napi);
-	}
-
-	spin_unlock_irqrestore(&np->tx_lock, flags);
-
-	return IRQ_HANDLED;
 }
 
 static int setup_netfront(struct xenbus_device *dev, struct netfront_info *info)
@@ -1926,13 +1916,13 @@ static int __devexit xennet_remove(struct xenbus_device *dev)
 
 	dev_dbg(&dev->dev, "%s\n", dev->nodename);
 
-	unregister_netdev(info->netdev);
-
 	xennet_disconnect_backend(info);
 
-	del_timer_sync(&info->rx_refill_timer);
-
 	xennet_sysfs_delif(info->netdev);
+
+	unregister_netdev(info->netdev);
+
+	del_timer_sync(&info->rx_refill_timer);
 
 	free_percpu(info->stats);
 
@@ -1953,8 +1943,8 @@ static int __init netif_init(void)
 	if (!xen_domain())
 		return -ENODEV;
 
-	if (xen_initial_domain())
-		return 0;
+	if (xen_hvm_domain() && !xen_platform_pci_unplug)
+		return -ENODEV;
 
 	printk(KERN_INFO "Initialising Xen virtual ethernet driver.\n");
 
@@ -1965,9 +1955,6 @@ module_init(netif_init);
 
 static void __exit netif_exit(void)
 {
-	if (xen_initial_domain())
-		return;
-
 	xenbus_unregister_driver(&netfront_driver);
 }
 module_exit(netif_exit);

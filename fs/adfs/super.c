@@ -246,7 +246,6 @@ static struct inode *adfs_alloc_inode(struct super_block *sb)
 static void adfs_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
-	INIT_LIST_HEAD(&inode->i_dentry);
 	kmem_cache_free(adfs_inode_cachep, ADFS_I(inode));
 }
 
@@ -483,10 +482,9 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 
 	sb->s_d_op = &adfs_dentry_operations;
 	root = adfs_iget(sb, &root_obj);
-	sb->s_root = d_alloc_root(root);
+	sb->s_root = d_make_root(root);
 	if (!sb->s_root) {
 		int i;
-		iput(root);
 		for (i = 0; i < asb->s_map_size; i++)
 			brelse(asb->s_map[i].dm_bh);
 		kfree(asb->s_map);

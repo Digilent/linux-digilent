@@ -27,6 +27,8 @@
 #include <linux/security.h>
 #include <linux/pci-aspm.h>
 #include <linux/slab.h>
+#include <linux/vgaarb.h>
+#include <linux/pm_runtime.h>
 #include "pci.h"
 
 static int sysfs_initialized;	/* = 0 */
@@ -330,7 +332,7 @@ static void remove_callback(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev);
 
 	mutex_lock(&pci_remove_rescan_mutex);
-	pci_remove_bus_device(pdev);
+	pci_stop_and_remove_bus_device(pdev);
 	mutex_unlock(&pci_remove_rescan_mutex);
 }
 
@@ -366,12 +368,40 @@ dev_bus_rescan_store(struct device *dev, struct device_attribute *attr,
 
 	if (val) {
 		mutex_lock(&pci_remove_rescan_mutex);
-		pci_rescan_bus(bus);
+		if (!pci_is_root_bus(bus) && list_empty(&bus->devices))
+			pci_rescan_bus_bridge_resize(bus->self);
+		else
+			pci_rescan_bus(bus);
 		mutex_unlock(&pci_remove_rescan_mutex);
 	}
 	return count;
 }
 
+#endif
+
+#if defined(CONFIG_PM_RUNTIME) && defined(CONFIG_ACPI)
+static ssize_t d3cold_allowed_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	unsigned long val;
+
+	if (strict_strtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	pdev->d3cold_allowed = !!val;
+	pm_runtime_resume(dev);
+
+	return count;
+}
+
+static ssize_t d3cold_allowed_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	return sprintf (buf, "%u\n", pdev->d3cold_allowed);
+}
 #endif
 
 struct device_attribute pci_dev_attrs[] = {
@@ -398,6 +428,9 @@ struct device_attribute pci_dev_attrs[] = {
 	__ATTR(remove, (S_IWUSR|S_IWGRP), NULL, remove_store),
 	__ATTR(rescan, (S_IWUSR|S_IWGRP), NULL, dev_rescan_store),
 #endif
+#if defined(CONFIG_PM_RUNTIME) && defined(CONFIG_ACPI)
+	__ATTR(d3cold_allowed, 0644, d3cold_allowed_show, d3cold_allowed_store),
+#endif
 	__ATTR_NULL,
 };
 
@@ -414,12 +447,50 @@ static ssize_t
 boot_vga_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
+	struct pci_dev *vga_dev = vga_default_device();
+
+	if (vga_dev)
+		return sprintf(buf, "%u\n", (pdev == vga_dev));
 
 	return sprintf(buf, "%u\n",
 		!!(pdev->resource[PCI_ROM_RESOURCE].flags &
 		   IORESOURCE_ROM_SHADOW));
 }
 struct device_attribute vga_attr = __ATTR_RO(boot_vga);
+
+static void
+pci_config_pm_runtime_get(struct pci_dev *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct device *parent = dev->parent;
+
+	if (parent)
+		pm_runtime_get_sync(parent);
+	pm_runtime_get_noresume(dev);
+	/*
+	 * pdev->current_state is set to PCI_D3cold during suspending,
+	 * so wait until suspending completes
+	 */
+	pm_runtime_barrier(dev);
+	/*
+	 * Only need to resume devices in D3cold, because config
+	 * registers are still accessible for devices suspended but
+	 * not in D3cold.
+	 */
+	if (pdev->current_state == PCI_D3cold)
+		pm_runtime_resume(dev);
+}
+
+static void
+pci_config_pm_runtime_put(struct pci_dev *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct device *parent = dev->parent;
+
+	pm_runtime_put(dev);
+	if (parent)
+		pm_runtime_put_sync(parent);
+}
 
 static ssize_t
 pci_read_config(struct file *filp, struct kobject *kobj,
@@ -446,6 +517,8 @@ pci_read_config(struct file *filp, struct kobject *kobj,
 	} else {
 		size = count;
 	}
+
+	pci_config_pm_runtime_get(dev);
 
 	if ((off & 1) && size) {
 		u8 val;
@@ -492,6 +565,8 @@ pci_read_config(struct file *filp, struct kobject *kobj,
 		--size;
 	}
 
+	pci_config_pm_runtime_put(dev);
+
 	return count;
 }
 
@@ -512,6 +587,8 @@ pci_write_config(struct file* filp, struct kobject *kobj,
 		count = size;
 	}
 	
+	pci_config_pm_runtime_get(dev);
+
 	if ((off & 1) && size) {
 		pci_user_write_config_byte(dev, off, data[off - init_off]);
 		off++;
@@ -549,6 +626,8 @@ pci_write_config(struct file* filp, struct kobject *kobj,
 		off++;
 		--size;
 	}
+
+	pci_config_pm_runtime_put(dev);
 
 	return count;
 }
@@ -1104,7 +1183,7 @@ static struct bin_attribute pcie_config_attr = {
 	.write = pci_write_config,
 };
 
-int __attribute__ ((weak)) pcibios_add_platform_entries(struct pci_dev *dev)
+int __weak pcibios_add_platform_entries(struct pci_dev *dev)
 {
 	return 0;
 }

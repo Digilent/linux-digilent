@@ -34,6 +34,7 @@
 #include <asm/dscr.h>
 #include <asm/clock.h>
 #include <asm/soc.h>
+#include <asm/special_insns.h>
 
 static const char *c6x_soc_name;
 
@@ -140,6 +141,10 @@ static void __init get_cpuinfo(void)
 		break;
 	case 16:
 		p->cpu_name = "C64x+";
+		p->cpu_voltage = "1.2";
+		break;
+	case 21:
+		p->cpu_name = "C66X";
 		p->cpu_voltage = "1.2";
 		break;
 	default:

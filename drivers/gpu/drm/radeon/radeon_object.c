@@ -52,11 +52,7 @@ void radeon_bo_clear_va(struct radeon_bo *bo)
 
 	list_for_each_entry_safe(bo_va, tmp, &bo->va, bo_list) {
 		/* remove from all vm address space */
-		mutex_lock(&bo_va->vm->mutex);
-		list_del(&bo_va->vm_list);
-		mutex_unlock(&bo_va->vm->mutex);
-		list_del(&bo_va->bo_list);
-		kfree(bo_va);
+		radeon_vm_bo_rmv(bo->rdev, bo_va->vm, bo);
 	}
 }
 
@@ -104,7 +100,7 @@ void radeon_ttm_placement_from_domain(struct radeon_bo *rbo, u32 domain)
 
 int radeon_bo_create(struct radeon_device *rdev,
 		     unsigned long size, int byte_align, bool kernel, u32 domain,
-		     struct radeon_bo **bo_ptr)
+		     struct sg_table *sg, struct radeon_bo **bo_ptr)
 {
 	struct radeon_bo *bo;
 	enum ttm_bo_type type;
@@ -115,11 +111,11 @@ int radeon_bo_create(struct radeon_device *rdev,
 
 	size = ALIGN(size, PAGE_SIZE);
 
-	if (unlikely(rdev->mman.bdev.dev_mapping == NULL)) {
-		rdev->mman.bdev.dev_mapping = rdev->ddev->dev_mapping;
-	}
+	rdev->mman.bdev.dev_mapping = rdev->ddev->dev_mapping;
 	if (kernel) {
 		type = ttm_bo_type_kernel;
+	} else if (sg) {
+		type = ttm_bo_type_sg;
 	} else {
 		type = ttm_bo_type_device;
 	}
@@ -152,11 +148,11 @@ retry:
 	INIT_LIST_HEAD(&bo->va);
 	radeon_ttm_placement_from_domain(bo, domain);
 	/* Kernel allocation are uninterruptible */
-	mutex_lock(&rdev->vram_mutex);
+	down_read(&rdev->pm.mclk_lock);
 	r = ttm_bo_init(&rdev->mman.bdev, &bo->tbo, size, type,
 			&bo->placement, page_align, 0, !kernel, NULL,
-			acc_size, &radeon_ttm_bo_destroy);
-	mutex_unlock(&rdev->vram_mutex);
+			acc_size, sg, &radeon_ttm_bo_destroy);
+	up_read(&rdev->pm.mclk_lock);
 	if (unlikely(r != 0)) {
 		if (r != -ERESTARTSYS) {
 			if (domain == RADEON_GEM_DOMAIN_VRAM) {
@@ -217,14 +213,15 @@ void radeon_bo_unref(struct radeon_bo **bo)
 		return;
 	rdev = (*bo)->rdev;
 	tbo = &((*bo)->tbo);
-	mutex_lock(&rdev->vram_mutex);
+	down_read(&rdev->pm.mclk_lock);
 	ttm_bo_unref(&tbo);
-	mutex_unlock(&rdev->vram_mutex);
+	up_read(&rdev->pm.mclk_lock);
 	if (tbo == NULL)
 		*bo = NULL;
 }
 
-int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr)
+int radeon_bo_pin_restricted(struct radeon_bo *bo, u32 domain, u64 max_offset,
+			     u64 *gpu_addr)
 {
 	int r, i;
 
@@ -232,12 +229,33 @@ int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr)
 		bo->pin_count++;
 		if (gpu_addr)
 			*gpu_addr = radeon_bo_gpu_offset(bo);
+
+		if (max_offset != 0) {
+			u64 domain_start;
+
+			if (domain == RADEON_GEM_DOMAIN_VRAM)
+				domain_start = bo->rdev->mc.vram_start;
+			else
+				domain_start = bo->rdev->mc.gtt_start;
+			WARN_ON_ONCE(max_offset <
+				     (radeon_bo_gpu_offset(bo) - domain_start));
+		}
+
 		return 0;
 	}
 	radeon_ttm_placement_from_domain(bo, domain);
 	if (domain == RADEON_GEM_DOMAIN_VRAM) {
 		/* force to pin into visible video ram */
 		bo->placement.lpfn = bo->rdev->mc.visible_vram_size >> PAGE_SHIFT;
+	}
+	if (max_offset) {
+		u64 lpfn = max_offset >> PAGE_SHIFT;
+
+		if (!bo->placement.lpfn)
+			bo->placement.lpfn = bo->rdev->mc.gtt_size >> PAGE_SHIFT;
+
+		if (lpfn < bo->placement.lpfn)
+			bo->placement.lpfn = lpfn;
 	}
 	for (i = 0; i < bo->placement.num_placement; i++)
 		bo->placements[i] |= TTM_PL_FLAG_NO_EVICT;
@@ -250,6 +268,11 @@ int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr)
 	if (unlikely(r != 0))
 		dev_err(bo->rdev->dev, "%p pin failed\n", bo);
 	return r;
+}
+
+int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr)
+{
+	return radeon_bo_pin_restricted(bo, domain, 0, gpu_addr);
 }
 
 int radeon_bo_unpin(struct radeon_bo *bo)
@@ -445,8 +468,54 @@ static void radeon_bo_clear_surface_reg(struct radeon_bo *bo)
 int radeon_bo_set_tiling_flags(struct radeon_bo *bo,
 				uint32_t tiling_flags, uint32_t pitch)
 {
+	struct radeon_device *rdev = bo->rdev;
 	int r;
 
+	if (rdev->family >= CHIP_CEDAR) {
+		unsigned bankw, bankh, mtaspect, tilesplit, stilesplit;
+
+		bankw = (tiling_flags >> RADEON_TILING_EG_BANKW_SHIFT) & RADEON_TILING_EG_BANKW_MASK;
+		bankh = (tiling_flags >> RADEON_TILING_EG_BANKH_SHIFT) & RADEON_TILING_EG_BANKH_MASK;
+		mtaspect = (tiling_flags >> RADEON_TILING_EG_MACRO_TILE_ASPECT_SHIFT) & RADEON_TILING_EG_MACRO_TILE_ASPECT_MASK;
+		tilesplit = (tiling_flags >> RADEON_TILING_EG_TILE_SPLIT_SHIFT) & RADEON_TILING_EG_TILE_SPLIT_MASK;
+		stilesplit = (tiling_flags >> RADEON_TILING_EG_STENCIL_TILE_SPLIT_SHIFT) & RADEON_TILING_EG_STENCIL_TILE_SPLIT_MASK;
+		switch (bankw) {
+		case 0:
+		case 1:
+		case 2:
+		case 4:
+		case 8:
+			break;
+		default:
+			return -EINVAL;
+		}
+		switch (bankh) {
+		case 0:
+		case 1:
+		case 2:
+		case 4:
+		case 8:
+			break;
+		default:
+			return -EINVAL;
+		}
+		switch (mtaspect) {
+		case 0:
+		case 1:
+		case 2:
+		case 4:
+		case 8:
+			break;
+		default:
+			return -EINVAL;
+		}
+		if (tilesplit > 6) {
+			return -EINVAL;
+		}
+		if (stilesplit > 6) {
+			return -EINVAL;
+		}
+	}
 	r = radeon_bo_reserve(bo, false);
 	if (unlikely(r != 0))
 		return r;

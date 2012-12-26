@@ -39,7 +39,6 @@
 
 #include <linux/isdn/capilli.h>
 
-#include <asm/system.h>
 
 #include "cmtp.h"
 
@@ -73,7 +72,7 @@ static int cmtp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 	switch (cmd) {
 	case CMTPCONNADD:
 		if (!capable(CAP_NET_ADMIN))
-			return -EACCES;
+			return -EPERM;
 
 		if (copy_from_user(&ca, argp, sizeof(ca)))
 			return -EFAULT;
@@ -98,7 +97,7 @@ static int cmtp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 
 	case CMTPCONNDEL:
 		if (!capable(CAP_NET_ADMIN))
-			return -EACCES;
+			return -EPERM;
 
 		if (copy_from_user(&cd, argp, sizeof(cd)))
 			return -EFAULT;
@@ -137,10 +136,10 @@ static int cmtp_sock_compat_ioctl(struct socket *sock, unsigned int cmd, unsigne
 {
 	if (cmd == CMTPGETCONNLIST) {
 		struct cmtp_connlist_req cl;
-		uint32_t uci;
+		u32 uci;
 		int err;
 
-		if (get_user(cl.cnum, (uint32_t __user *) arg) ||
+		if (get_user(cl.cnum, (u32 __user *) arg) ||
 				get_user(uci, (u32 __user *) (arg + 4)))
 			return -EFAULT;
 
@@ -151,7 +150,7 @@ static int cmtp_sock_compat_ioctl(struct socket *sock, unsigned int cmd, unsigne
 
 		err = cmtp_get_connlist(&cl);
 
-		if (!err && put_user(cl.cnum, (uint32_t __user *) arg))
+		if (!err && put_user(cl.cnum, (u32 __user *) arg))
 			err = -EFAULT;
 
 		return err;

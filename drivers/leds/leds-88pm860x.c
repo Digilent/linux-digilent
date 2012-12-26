@@ -114,6 +114,27 @@ static inline int __blink_ctl_mask(int port)
 	return ret;
 }
 
+static int led_power_set(struct pm860x_chip *chip, int port, int on)
+{
+	int ret = -EINVAL;
+
+	switch (port) {
+	case PM8606_LED1_RED:
+	case PM8606_LED1_GREEN:
+	case PM8606_LED1_BLUE:
+		ret = on ? pm8606_osc_enable(chip, RGB1_ENABLE) :
+			pm8606_osc_disable(chip, RGB1_ENABLE);
+		break;
+	case PM8606_LED2_RED:
+	case PM8606_LED2_GREEN:
+	case PM8606_LED2_BLUE:
+		ret = on ? pm8606_osc_enable(chip, RGB2_ENABLE) :
+			pm8606_osc_disable(chip, RGB2_ENABLE);
+		break;
+	}
+	return ret;
+}
+
 static void pm860x_led_work(struct work_struct *work)
 {
 
@@ -126,6 +147,7 @@ static void pm860x_led_work(struct work_struct *work)
 	chip = led->chip;
 	mutex_lock(&led->lock);
 	if ((led->current_brightness == 0) && led->brightness) {
+		led_power_set(chip, led->port, 1);
 		if (led->iset) {
 			pm860x_set_bits(led->i2c, __led_off(led->port),
 					LED_CURRENT_MASK, led->iset);
@@ -149,6 +171,7 @@ static void pm860x_led_work(struct work_struct *work)
 					LED_CURRENT_MASK, 0);
 			mask = __blink_ctl_mask(led->port);
 			pm860x_set_bits(led->i2c, PM8606_WLED3B, mask, 0);
+			led_power_set(chip, led->port, 0);
 		}
 	}
 	led->current_brightness = led->brightness;
@@ -186,7 +209,7 @@ static int pm860x_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	data = kzalloc(sizeof(struct pm860x_led), GFP_KERNEL);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct pm860x_led), GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 	strncpy(data->name, res->name, MFD_NAME_SIZE - 1);
@@ -197,7 +220,6 @@ static int pm860x_led_probe(struct platform_device *pdev)
 	data->port = pdata->flags;
 	if (data->port < 0) {
 		dev_err(&pdev->dev, "check device failed\n");
-		kfree(data);
 		return -EINVAL;
 	}
 
@@ -210,13 +232,10 @@ static int pm860x_led_probe(struct platform_device *pdev)
 	ret = led_classdev_register(chip->dev, &data->cdev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to register LED: %d\n", ret);
-		goto out;
+		return ret;
 	}
 	pm860x_led_set(&data->cdev, 0);
 	return 0;
-out:
-	kfree(data);
-	return ret;
 }
 
 static int pm860x_led_remove(struct platform_device *pdev)
@@ -224,7 +243,6 @@ static int pm860x_led_remove(struct platform_device *pdev)
 	struct pm860x_led *data = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&data->cdev);
-	kfree(data);
 
 	return 0;
 }

@@ -30,7 +30,7 @@ static ssize_t key_##name##_read(struct file *file,			\
 #define KEY_OPS(name)							\
 static const struct file_operations key_ ##name## _ops = {		\
 	.read = key_##name##_read,					\
-	.open = mac80211_open_file_generic,				\
+	.open = simple_open,						\
 	.llseek = generic_file_llseek,					\
 }
 
@@ -45,7 +45,7 @@ static const struct file_operations key_ ##name## _ops = {		\
 #define KEY_CONF_OPS(name)						\
 static const struct file_operations key_ ##name## _ops = {		\
 	.read = key_conf_##name##_read,					\
-	.open = mac80211_open_file_generic,				\
+	.open = simple_open,						\
 	.llseek = generic_file_llseek,					\
 }
 
@@ -283,6 +283,11 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 
 	lockdep_assert_held(&sdata->local->key_mtx);
 
+	if (sdata->debugfs.default_unicast_key) {
+		debugfs_remove(sdata->debugfs.default_unicast_key);
+		sdata->debugfs.default_unicast_key = NULL;
+	}
+
 	if (sdata->default_unicast_key) {
 		key = key_mtx_dereference(sdata->local,
 					  sdata->default_unicast_key);
@@ -290,9 +295,11 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 		sdata->debugfs.default_unicast_key =
 			debugfs_create_symlink("default_unicast_key",
 					       sdata->debugfs.dir, buf);
-	} else {
-		debugfs_remove(sdata->debugfs.default_unicast_key);
-		sdata->debugfs.default_unicast_key = NULL;
+	}
+
+	if (sdata->debugfs.default_multicast_key) {
+		debugfs_remove(sdata->debugfs.default_multicast_key);
+		sdata->debugfs.default_multicast_key = NULL;
 	}
 
 	if (sdata->default_multicast_key) {
@@ -302,9 +309,6 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 		sdata->debugfs.default_multicast_key =
 			debugfs_create_symlink("default_multicast_key",
 					       sdata->debugfs.dir, buf);
-	} else {
-		debugfs_remove(sdata->debugfs.default_multicast_key);
-		sdata->debugfs.default_multicast_key = NULL;
 	}
 }
 

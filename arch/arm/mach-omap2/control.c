@@ -15,9 +15,11 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 
-#include "common.h"
+#include <plat/hardware.h>
 #include <plat/sdrc.h>
 
+#include "iomap.h"
+#include "common.h"
 #include "cm-regbits-34xx.h"
 #include "prm-regbits-34xx.h"
 #include "prm2xxx_3xxx.h"
@@ -238,6 +240,49 @@ void omap3_ctrl_write_boot_mode(u8 bootmode)
 }
 
 #endif
+
+/**
+ * omap_ctrl_write_dsp_boot_addr - set boot address for a remote processor
+ * @bootaddr: physical address of the boot loader
+ *
+ * Set boot address for the boot loader of a supported processor
+ * when a power ON sequence occurs.
+ */
+void omap_ctrl_write_dsp_boot_addr(u32 bootaddr)
+{
+	u32 offset = cpu_is_omap243x() ? OMAP243X_CONTROL_IVA2_BOOTADDR :
+		     cpu_is_omap34xx() ? OMAP343X_CONTROL_IVA2_BOOTADDR :
+		     cpu_is_omap44xx() ? OMAP4_CTRL_MODULE_CORE_DSP_BOOTADDR :
+		     0;
+
+	if (!offset) {
+		pr_err("%s: unsupported omap type\n", __func__);
+		return;
+	}
+
+	omap_ctrl_writel(bootaddr, offset);
+}
+
+/**
+ * omap_ctrl_write_dsp_boot_mode - set boot mode for a remote processor
+ * @bootmode: 8-bit value to pass to some boot code
+ *
+ * Sets boot mode for the boot loader of a supported processor
+ * when a power ON sequence occurs.
+ */
+void omap_ctrl_write_dsp_boot_mode(u8 bootmode)
+{
+	u32 offset = cpu_is_omap243x() ? OMAP243X_CONTROL_IVA2_BOOTMOD :
+		     cpu_is_omap34xx() ? OMAP343X_CONTROL_IVA2_BOOTMOD :
+		     0;
+
+	if (!offset) {
+		pr_err("%s: unsupported omap type\n", __func__);
+		return;
+	}
+
+	omap_ctrl_writel(bootmode, offset);
+}
 
 #if defined(CONFIG_ARCH_OMAP3) && defined(CONFIG_PM)
 /*

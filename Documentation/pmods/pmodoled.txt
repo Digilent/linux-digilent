@@ -1,4 +1,4 @@
-﻿PmodOLED
+PmodOLED
 ========
 
 Copyright 2012, Digilent Inc.
@@ -7,27 +7,27 @@ Copyright 2012, Digilent Inc.
 Description
 -----------
 
-The PmodOLED features an SPI-controlled monochrome OLED display, 
+The PmodOLED features an SPI-controlled monochrome OLED display,
 perfect for embedded applications requiring small, complex visual output.
 
-The PmodOLED uses a standard 12-pin connector to display output on 
-a 128x32 pixel organic LED (OLED) panel. The graphic display panel uses 
+The PmodOLED uses a standard 12-pin connector to display output on
+a 128x32 pixel organic LED (OLED) panel. The graphic display panel uses
 the Solomon Systech SSD1306 display controller.
 
-An SPI interface is used to configure the display, 
-as well as to send the bitmap data to the device. 
+An SPI interface is used to configure the display,
+as well as to send the bitmap data to the device.
 
-The PmodOLED displays the last image drawn on the screen until it is 
-powered down or a new image is drawn to the display. Refreshing and 
-updating is handled internally. 
+The PmodOLED displays the last image drawn on the screen until it is
+powered down or a new image is drawn to the display. Refreshing and
+updating is handled internally.
 
 The Reference Manual for PmodOLED display is available online at
 Digilent Inc. Website (www.digilentinc.com)
 
-For more information on the OLED display interface, see the 
+For more information on the OLED display interface, see the
 UG-2832HSWEG04 datasheet available online or from Univisio.
 
-The OLED display uses a compatible command set from the SSD1306 device. 
+The OLED display uses a compatible command set from the SSD1306 device.
 For more information, see the SSD1306 datasheet available at
 www.solomon-systech.com.
 
@@ -52,20 +52,20 @@ Devicetree
 Required Properties:
 - compatible : Should be "dlgnt,pmodoled-gpio"
 - vbat-gpio :  Should specify the GPIO for VBATC, see "gpios property" in
-  Documentation/devicetree/gpio.txt. 
+  Documentation/devicetree/gpio.txt.
 - vdd-gpio :  Should specify the GPIO for VDDC, see "gpios property" in
   Documentation/devicetree/gpio.txt.
 - res-gpio :  Should specify the GPIO for RES, see "gpios property" in
-  Documentation/devicetree/gpio.txt. 
+  Documentation/devicetree/gpio.txt.
 - dc-gpio :  Should specify the GPIO for D/C, see "gpios property" in
-  Documentation/devicetree/gpio.txt. 
+  Documentation/devicetree/gpio.txt.
 - spi-bus-num :  Should specify the bus number for PmodOLED SPI controller.
   This value cannot be shared by any other SPI controller present in the
   device tree.
 - spi-sclk-gpio :  Should specify the GPIO for SCLK, see "gpios property" in
-  Documentation/devicetree/gpio.txt. 
+  Documentation/devicetree/gpio.txt.
 - spi-sdin-gpio :  Should specify the GPIO for SDIN, see "gpios property" in
-  Documentation/devicetree/gpio.txt. 
+  Documentation/devicetree/gpio.txt.
 
 Optional Properties:
 - spi-cs-gpio :  Should specify the GPIO for CS, see "gpios property" in

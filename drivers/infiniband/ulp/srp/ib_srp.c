@@ -30,6 +30,8 @@
  * SOFTWARE.
  */
 
+#define pr_fmt(fmt) PFX fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -165,7 +167,7 @@ static void srp_free_iu(struct srp_host *host, struct srp_iu *iu)
 
 static void srp_qp_event(struct ib_event *event, void *context)
 {
-	printk(KERN_ERR PFX "QP event %d\n", event->event);
+	pr_debug("QP event %d\n", event->event);
 }
 
 static int srp_init_qp(struct srp_target_port *target,
@@ -472,6 +474,21 @@ static void srp_free_req_data(struct srp_target_port *target)
 	}
 }
 
+/**
+ * srp_del_scsi_host_attr() - Remove attributes defined in the host template.
+ * @shost: SCSI host whose attributes to remove from sysfs.
+ *
+ * Note: Any attributes defined in the host template and that did not exist
+ * before invocation of this function will be ignored.
+ */
+static void srp_del_scsi_host_attr(struct Scsi_Host *shost)
+{
+	struct device_attribute **attr;
+
+	for (attr = shost->hostt->shost_attrs; attr && *attr; ++attr)
+		device_remove_file(&shost->shost_dev, *attr);
+}
+
 static void srp_remove_work(struct work_struct *work)
 {
 	struct srp_target_port *target =
@@ -484,6 +501,7 @@ static void srp_remove_work(struct work_struct *work)
 	list_del(&target->list);
 	spin_unlock(&target->srp_host->target_lock);
 
+	srp_del_scsi_host_attr(target->scsi_host);
 	srp_remove_host(target->scsi_host);
 	scsi_remove_host(target->scsi_host);
 	ib_destroy_cm_id(target->cm_id);
@@ -568,24 +586,62 @@ static void srp_unmap_data(struct scsi_cmnd *scmnd,
 			scmnd->sc_data_direction);
 }
 
-static void srp_remove_req(struct srp_target_port *target,
-			   struct srp_request *req, s32 req_lim_delta)
+/**
+ * srp_claim_req - Take ownership of the scmnd associated with a request.
+ * @target: SRP target port.
+ * @req: SRP request.
+ * @scmnd: If NULL, take ownership of @req->scmnd. If not NULL, only take
+ *         ownership of @req->scmnd if it equals @scmnd.
+ *
+ * Return value:
+ * Either NULL or a pointer to the SCSI command the caller became owner of.
+ */
+static struct scsi_cmnd *srp_claim_req(struct srp_target_port *target,
+				       struct srp_request *req,
+				       struct scsi_cmnd *scmnd)
 {
 	unsigned long flags;
 
-	srp_unmap_data(req->scmnd, target, req);
+	spin_lock_irqsave(&target->lock, flags);
+	if (!scmnd) {
+		scmnd = req->scmnd;
+		req->scmnd = NULL;
+	} else if (req->scmnd == scmnd) {
+		req->scmnd = NULL;
+	} else {
+		scmnd = NULL;
+	}
+	spin_unlock_irqrestore(&target->lock, flags);
+
+	return scmnd;
+}
+
+/**
+ * srp_free_req() - Unmap data and add request to the free request list.
+ */
+static void srp_free_req(struct srp_target_port *target,
+			 struct srp_request *req, struct scsi_cmnd *scmnd,
+			 s32 req_lim_delta)
+{
+	unsigned long flags;
+
+	srp_unmap_data(scmnd, target, req);
+
 	spin_lock_irqsave(&target->lock, flags);
 	target->req_lim += req_lim_delta;
-	req->scmnd = NULL;
 	list_add_tail(&req->list, &target->free_reqs);
 	spin_unlock_irqrestore(&target->lock, flags);
 }
 
 static void srp_reset_req(struct srp_target_port *target, struct srp_request *req)
 {
-	req->scmnd->result = DID_RESET << 16;
-	req->scmnd->scsi_done(req->scmnd);
-	srp_remove_req(target, req, 0);
+	struct scsi_cmnd *scmnd = srp_claim_req(target, req, NULL);
+
+	if (scmnd) {
+		scmnd->result = DID_RESET << 16;
+		scmnd->scsi_done(scmnd);
+		srp_free_req(target, req, scmnd, 0);
+	}
 }
 
 static int srp_reconnect_target(struct srp_target_port *target)
@@ -1055,11 +1111,18 @@ static void srp_process_rsp(struct srp_target_port *target, struct srp_rsp *rsp)
 		complete(&target->tsk_mgmt_done);
 	} else {
 		req = &target->req_ring[rsp->tag];
-		scmnd = req->scmnd;
-		if (!scmnd)
+		scmnd = srp_claim_req(target, req, NULL);
+		if (!scmnd) {
 			shost_printk(KERN_ERR, target->scsi_host,
 				     "Null scmnd for RSP w/tag %016llx\n",
 				     (unsigned long long) rsp->tag);
+
+			spin_lock_irqsave(&target->lock, flags);
+			target->req_lim += be32_to_cpu(rsp->req_lim_delta);
+			spin_unlock_irqrestore(&target->lock, flags);
+
+			return;
+		}
 		scmnd->result = rsp->status;
 
 		if (rsp->flags & SRP_RSP_FLAG_SNSVALID) {
@@ -1074,7 +1137,9 @@ static void srp_process_rsp(struct srp_target_port *target, struct srp_rsp *rsp)
 		else if (rsp->flags & (SRP_RSP_FLAG_DIOVER | SRP_RSP_FLAG_DIUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_in_res_cnt));
 
-		srp_remove_req(target, req, be32_to_cpu(rsp->req_lim_delta));
+		srp_free_req(target, req, scmnd,
+			     be32_to_cpu(rsp->req_lim_delta));
+
 		scmnd->host_scribble = NULL;
 		scmnd->scsi_done(scmnd);
 	}
@@ -1613,25 +1678,17 @@ static int srp_abort(struct scsi_cmnd *scmnd)
 {
 	struct srp_target_port *target = host_to_target(scmnd->device->host);
 	struct srp_request *req = (struct srp_request *) scmnd->host_scribble;
-	int ret = SUCCESS;
 
 	shost_printk(KERN_ERR, target->scsi_host, "SRP abort called\n");
 
-	if (!req || target->qp_in_error)
+	if (!req || target->qp_in_error || !srp_claim_req(target, req, scmnd))
 		return FAILED;
-	if (srp_send_tsk_mgmt(target, req->index, scmnd->device->lun,
-			      SRP_TSK_ABORT_TASK))
-		return FAILED;
+	srp_send_tsk_mgmt(target, req->index, scmnd->device->lun,
+			  SRP_TSK_ABORT_TASK);
+	srp_free_req(target, req, scmnd, 0);
+	scmnd->result = DID_ABORT << 16;
 
-	if (req->scmnd) {
-		if (!target->tsk_mgmt_status) {
-			srp_remove_req(target, req, 0);
-			scmnd->result = DID_ABORT << 16;
-		} else
-			ret = FAILED;
-	}
-
-	return ret;
+	return SUCCESS;
 }
 
 static int srp_reset_device(struct scsi_cmnd *scmnd)
@@ -1676,10 +1733,6 @@ static ssize_t show_id_ext(struct device *dev, struct device_attribute *attr,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
-
 	return sprintf(buf, "0x%016llx\n",
 		       (unsigned long long) be64_to_cpu(target->id_ext));
 }
@@ -1688,10 +1741,6 @@ static ssize_t show_ioc_guid(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
-
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
 
 	return sprintf(buf, "0x%016llx\n",
 		       (unsigned long long) be64_to_cpu(target->ioc_guid));
@@ -1702,10 +1751,6 @@ static ssize_t show_service_id(struct device *dev,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
-
 	return sprintf(buf, "0x%016llx\n",
 		       (unsigned long long) be64_to_cpu(target->service_id));
 }
@@ -1715,10 +1760,6 @@ static ssize_t show_pkey(struct device *dev, struct device_attribute *attr,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
-
 	return sprintf(buf, "0x%04x\n", be16_to_cpu(target->path.pkey));
 }
 
@@ -1726,10 +1767,6 @@ static ssize_t show_dgid(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
-
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
 
 	return sprintf(buf, "%pI6\n", target->path.dgid.raw);
 }
@@ -1739,10 +1776,6 @@ static ssize_t show_orig_dgid(struct device *dev,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
-
 	return sprintf(buf, "%pI6\n", target->orig_dgid);
 }
 
@@ -1751,10 +1784,6 @@ static ssize_t show_req_lim(struct device *dev,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
-
 	return sprintf(buf, "%d\n", target->req_lim);
 }
 
@@ -1762,10 +1791,6 @@ static ssize_t show_zero_req_lim(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
-
-	if (target->state == SRP_TARGET_DEAD ||
-	    target->state == SRP_TARGET_REMOVED)
-		return -ENODEV;
 
 	return sprintf(buf, "%d\n", target->zero_req_lim);
 }
@@ -1989,7 +2014,7 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 				goto out;
 			}
 			if (strlen(p) != 32) {
-				printk(KERN_WARNING PFX "bad dest GID parameter '%s'\n", p);
+				pr_warn("bad dest GID parameter '%s'\n", p);
 				kfree(p);
 				goto out;
 			}
@@ -2004,7 +2029,7 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_PKEY:
 			if (match_hex(args, &token)) {
-				printk(KERN_WARNING PFX "bad P_Key parameter '%s'\n", p);
+				pr_warn("bad P_Key parameter '%s'\n", p);
 				goto out;
 			}
 			target->path.pkey = cpu_to_be16(token);
@@ -2023,7 +2048,7 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_MAX_SECT:
 			if (match_int(args, &token)) {
-				printk(KERN_WARNING PFX "bad max sect parameter '%s'\n", p);
+				pr_warn("bad max sect parameter '%s'\n", p);
 				goto out;
 			}
 			target->scsi_host->max_sectors = token;
@@ -2031,7 +2056,8 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_MAX_CMD_PER_LUN:
 			if (match_int(args, &token)) {
-				printk(KERN_WARNING PFX "bad max cmd_per_lun parameter '%s'\n", p);
+				pr_warn("bad max cmd_per_lun parameter '%s'\n",
+					p);
 				goto out;
 			}
 			target->scsi_host->cmd_per_lun = min(token, SRP_CMD_SQ_SIZE);
@@ -2039,14 +2065,14 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_IO_CLASS:
 			if (match_hex(args, &token)) {
-				printk(KERN_WARNING PFX "bad  IO class parameter '%s' \n", p);
+				pr_warn("bad IO class parameter '%s'\n", p);
 				goto out;
 			}
 			if (token != SRP_REV10_IB_IO_CLASS &&
 			    token != SRP_REV16A_IB_IO_CLASS) {
-				printk(KERN_WARNING PFX "unknown IO class parameter value"
-				       " %x specified (use %x or %x).\n",
-				       token, SRP_REV10_IB_IO_CLASS, SRP_REV16A_IB_IO_CLASS);
+				pr_warn("unknown IO class parameter value %x specified (use %x or %x).\n",
+					token, SRP_REV10_IB_IO_CLASS,
+					SRP_REV16A_IB_IO_CLASS);
 				goto out;
 			}
 			target->io_class = token;
@@ -2064,7 +2090,8 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_CMD_SG_ENTRIES:
 			if (match_int(args, &token) || token < 1 || token > 255) {
-				printk(KERN_WARNING PFX "bad max cmd_sg_entries parameter '%s'\n", p);
+				pr_warn("bad max cmd_sg_entries parameter '%s'\n",
+					p);
 				goto out;
 			}
 			target->cmd_sg_cnt = token;
@@ -2072,7 +2099,7 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 
 		case SRP_OPT_ALLOW_EXT_SG:
 			if (match_int(args, &token)) {
-				printk(KERN_WARNING PFX "bad allow_ext_sg parameter '%s'\n", p);
+				pr_warn("bad allow_ext_sg parameter '%s'\n", p);
 				goto out;
 			}
 			target->allow_ext_sg = !!token;
@@ -2081,15 +2108,16 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 		case SRP_OPT_SG_TABLESIZE:
 			if (match_int(args, &token) || token < 1 ||
 					token > SCSI_MAX_SG_CHAIN_SEGMENTS) {
-				printk(KERN_WARNING PFX "bad max sg_tablesize parameter '%s'\n", p);
+				pr_warn("bad max sg_tablesize parameter '%s'\n",
+					p);
 				goto out;
 			}
 			target->sg_tablesize = token;
 			break;
 
 		default:
-			printk(KERN_WARNING PFX "unknown parameter or missing value "
-			       "'%s' in target creation request\n", p);
+			pr_warn("unknown parameter or missing value '%s' in target creation request\n",
+				p);
 			goto out;
 		}
 	}
@@ -2100,9 +2128,8 @@ static int srp_parse_options(const char *buf, struct srp_target_port *target)
 		for (i = 0; i < ARRAY_SIZE(srp_opt_tokens); ++i)
 			if ((srp_opt_tokens[i].token & SRP_OPT_ALL) &&
 			    !(srp_opt_tokens[i].token & opt_mask))
-				printk(KERN_WARNING PFX "target creation request is "
-				       "missing parameter '%s'\n",
-				       srp_opt_tokens[i].pattern);
+				pr_warn("target creation request is missing parameter '%s'\n",
+					srp_opt_tokens[i].pattern);
 
 out:
 	kfree(options);
@@ -2149,7 +2176,7 @@ static ssize_t srp_create_target(struct device *dev,
 
 	if (!host->srp_dev->fmr_pool && !target->allow_ext_sg &&
 				target->cmd_sg_cnt < target->sg_tablesize) {
-		printk(KERN_WARNING PFX "No FMR pool and no external indirect descriptors, limiting sg_tablesize to cmd_sg_cnt\n");
+		pr_warn("No FMR pool and no external indirect descriptors, limiting sg_tablesize to cmd_sg_cnt\n");
 		target->sg_tablesize = target->cmd_sg_cnt;
 	}
 
@@ -2309,8 +2336,7 @@ static void srp_add_one(struct ib_device *device)
 		return;
 
 	if (ib_query_device(device, dev_attr)) {
-		printk(KERN_WARNING PFX "Query device failed for %s\n",
-		       device->name);
+		pr_warn("Query device failed for %s\n", device->name);
 		goto free_attr;
 	}
 
@@ -2429,6 +2455,7 @@ static void srp_remove_one(struct ib_device *device)
 
 		list_for_each_entry_safe(target, tmp_target,
 					 &host->target_list, list) {
+			srp_del_scsi_host_attr(target->scsi_host);
 			srp_remove_host(target->scsi_host);
 			scsi_remove_host(target->scsi_host);
 			srp_disconnect_target(target);
@@ -2459,7 +2486,7 @@ static int __init srp_init_module(void)
 	BUILD_BUG_ON(FIELD_SIZEOF(struct ib_wc, wr_id) < sizeof(void *));
 
 	if (srp_sg_tablesize) {
-		printk(KERN_WARNING PFX "srp_sg_tablesize is deprecated, please use cmd_sg_entries\n");
+		pr_warn("srp_sg_tablesize is deprecated, please use cmd_sg_entries\n");
 		if (!cmd_sg_entries)
 			cmd_sg_entries = srp_sg_tablesize;
 	}
@@ -2468,14 +2495,15 @@ static int __init srp_init_module(void)
 		cmd_sg_entries = SRP_DEF_SG_TABLESIZE;
 
 	if (cmd_sg_entries > 255) {
-		printk(KERN_WARNING PFX "Clamping cmd_sg_entries to 255\n");
+		pr_warn("Clamping cmd_sg_entries to 255\n");
 		cmd_sg_entries = 255;
 	}
 
 	if (!indirect_sg_entries)
 		indirect_sg_entries = cmd_sg_entries;
 	else if (indirect_sg_entries < cmd_sg_entries) {
-		printk(KERN_WARNING PFX "Bumping up indirect_sg_entries to match cmd_sg_entries (%u)\n", cmd_sg_entries);
+		pr_warn("Bumping up indirect_sg_entries to match cmd_sg_entries (%u)\n",
+			cmd_sg_entries);
 		indirect_sg_entries = cmd_sg_entries;
 	}
 
@@ -2486,7 +2514,7 @@ static int __init srp_init_module(void)
 
 	ret = class_register(&srp_class);
 	if (ret) {
-		printk(KERN_ERR PFX "couldn't register class infiniband_srp\n");
+		pr_err("couldn't register class infiniband_srp\n");
 		srp_release_transport(ib_srp_transport_template);
 		return ret;
 	}
@@ -2495,7 +2523,7 @@ static int __init srp_init_module(void)
 
 	ret = ib_register_client(&srp_client);
 	if (ret) {
-		printk(KERN_ERR PFX "couldn't register IB client\n");
+		pr_err("couldn't register IB client\n");
 		srp_release_transport(ib_srp_transport_template);
 		ib_sa_unregister_client(&srp_sa_client);
 		class_unregister(&srp_class);

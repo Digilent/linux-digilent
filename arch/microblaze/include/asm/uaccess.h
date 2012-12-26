@@ -80,7 +80,7 @@ extern unsigned long search_exception_table(unsigned long);
 static inline int ___range_ok(unsigned long addr, unsigned long size)
 {
 	return ((addr < memory_start) ||
-		((addr + size) > memory_end));
+		((addr + size - 1) > (memory_start + memory_size - 1)));
 }
 
 #define __range_ok(addr, size) \
@@ -298,11 +298,10 @@ extern long __user_bad(void);
 
 #define __put_user_check(x, ptr, size)					\
 ({									\
-	typeof(*(ptr)) __pu_val;					\
+	typeof(*(ptr)) volatile __pu_val = x;					\
 	typeof(*(ptr)) __user *__pu_addr = (ptr);			\
 	int __pu_err = 0;						\
 									\
-	__pu_val = (x);							\
 	if (access_ok(VERIFY_WRITE, __pu_addr, size)) {			\
 		switch (size) {						\
 		case 1:							\

@@ -687,10 +687,9 @@ static int __devinit tca6507_probe(struct i2c_client *client,
 			NUM_LEDS);
 		return -ENODEV;
 	}
-	err = -ENOMEM;
-	tca = kzalloc(sizeof(*tca), GFP_KERNEL);
+	tca = devm_kzalloc(&client->dev, sizeof(*tca), GFP_KERNEL);
 	if (!tca)
-		goto exit;
+		return -ENOMEM;
 
 	tca->client = client;
 	INIT_WORK(&tca->work, tca6507_work);
@@ -724,12 +723,10 @@ static int __devinit tca6507_probe(struct i2c_client *client,
 
 	return 0;
 exit:
-	while (i--)
+	while (i--) {
 		if (tca->leds[i].led_cdev.name)
 			led_classdev_unregister(&tca->leds[i].led_cdev);
-	cancel_work_sync(&tca->work);
-	i2c_set_clientdata(client, NULL);
-	kfree(tca);
+	}
 	return err;
 }
 
@@ -745,8 +742,6 @@ static int __devexit tca6507_remove(struct i2c_client *client)
 	}
 	tca6507_remove_gpio(tca);
 	cancel_work_sync(&tca->work);
-	i2c_set_clientdata(client, NULL);
-	kfree(tca);
 
 	return 0;
 }
@@ -761,18 +756,7 @@ static struct i2c_driver tca6507_driver = {
 	.id_table = tca6507_id,
 };
 
-static int __init tca6507_leds_init(void)
-{
-	return i2c_add_driver(&tca6507_driver);
-}
-
-static void __exit tca6507_leds_exit(void)
-{
-	i2c_del_driver(&tca6507_driver);
-}
-
-module_init(tca6507_leds_init);
-module_exit(tca6507_leds_exit);
+module_i2c_driver(tca6507_driver);
 
 MODULE_AUTHOR("NeilBrown <neilb@suse.de>");
 MODULE_DESCRIPTION("TCA6507 LED/GPO driver");

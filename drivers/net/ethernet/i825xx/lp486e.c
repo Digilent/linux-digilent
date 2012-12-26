@@ -454,8 +454,6 @@ init_rx_bufs(struct net_device *dev, int num) {
 			}
 
 			rfd->rbd = rbd;
-		} else {
-			printk("Could not kmalloc rbd\n");
 		}
 	}
 	lp->rbd_tail->next = rfd->rbd;
@@ -631,10 +629,10 @@ init_i596(struct net_device *dev) {
 
 	memcpy ((void *)lp->eth_addr, dev->dev_addr, 6);
 	lp->set_add.command = CmdIASetup;
-	i596_add_cmd(dev, (struct i596_cmd *)&lp->set_add);
+	i596_add_cmd(dev, &lp->set_add);
 
 	lp->tdr.command = CmdTDR;
-	i596_add_cmd(dev, (struct i596_cmd *)&lp->tdr);
+	i596_add_cmd(dev, &lp->tdr);
 
 	if (lp->scb.command && i596_timeout(dev, "i82596 init", 200))
 		return 1;
@@ -658,7 +656,7 @@ i596_rx_one(struct net_device *dev, struct i596_private *lp,
 	if (rfd->stat & RFD_STAT_OK) {
 		/* a good frame */
 		int pkt_len = (rfd->count & 0x3fff);
-		struct sk_buff *skb = dev_alloc_skb(pkt_len);
+		struct sk_buff *skb = netdev_alloc_skb(dev, pkt_len);
 
 		(*frames)++;
 
@@ -739,7 +737,7 @@ i596_cleanup_cmd(struct net_device *dev) {
 
 	lp = netdev_priv(dev);
 	while (lp->cmd_head) {
-		cmd = (struct i596_cmd *)lp->cmd_head;
+		cmd = lp->cmd_head;
 
 		lp->cmd_head = pa_to_va(lp->cmd_head->pa_next);
 		lp->cmd_backlog--;
@@ -1283,7 +1281,7 @@ static void set_multicast_list(struct net_device *dev) {
 			lp->i596_config[8] |= 0x01;
 		}
 
-		i596_add_cmd(dev, (struct i596_cmd *) &lp->set_conf);
+		i596_add_cmd(dev, &lp->set_conf);
 	}
 }
 

@@ -13,6 +13,12 @@
 MODULE_DESCRIPTION("Broadcom's specific AMBA driver");
 MODULE_LICENSE("GPL");
 
+/* contains the number the next bus should get. */
+static unsigned int bcma_bus_next_num = 0;
+
+/* bcma_buses_mutex locks the bcma_bus_next_num */
+static DEFINE_MUTEX(bcma_buses_mutex);
+
 static int bcma_bus_match(struct device *dev, struct device_driver *drv);
 static int bcma_device_probe(struct device *dev);
 static int bcma_device_remove(struct device *dev);
@@ -55,7 +61,14 @@ static struct bus_type bcma_bus_type = {
 	.dev_attrs	= bcma_device_attrs,
 };
 
-static struct bcma_device *bcma_find_core(struct bcma_bus *bus, u16 coreid)
+static u16 bcma_cc_core_id(struct bcma_bus *bus)
+{
+	if (bus->chipinfo.id == BCMA_CHIP_ID_BCM4706)
+		return BCMA_CORE_4706_CHIPCOMMON;
+	return BCMA_CORE_CHIPCOMMON;
+}
+
+struct bcma_device *bcma_find_core(struct bcma_bus *bus, u16 coreid)
 {
 	struct bcma_device *core;
 
@@ -65,6 +78,7 @@ static struct bcma_device *bcma_find_core(struct bcma_bus *bus, u16 coreid)
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(bcma_find_core);
 
 static void bcma_release_core_dev(struct device *dev)
 {
@@ -84,16 +98,18 @@ static int bcma_register_cores(struct bcma_bus *bus)
 	list_for_each_entry(core, &bus->cores, list) {
 		/* We support that cores ourself */
 		switch (core->id.id) {
+		case BCMA_CORE_4706_CHIPCOMMON:
 		case BCMA_CORE_CHIPCOMMON:
 		case BCMA_CORE_PCI:
 		case BCMA_CORE_PCIE:
 		case BCMA_CORE_MIPS_74K:
+		case BCMA_CORE_4706_MAC_GBIT_COMMON:
 			continue;
 		}
 
 		core->dev.release = bcma_release_core_dev;
 		core->dev.bus = &bcma_bus_type;
-		dev_set_name(&core->dev, "bcma%d:%d", 0/*bus->num*/, dev_id);
+		dev_set_name(&core->dev, "bcma%d:%d", bus->num, dev_id);
 
 		switch (bus->hosttype) {
 		case BCMA_HOSTTYPE_PCI:
@@ -111,8 +127,9 @@ static int bcma_register_cores(struct bcma_bus *bus)
 
 		err = device_register(&core->dev);
 		if (err) {
-			pr_err("Could not register dev for core 0x%03X\n",
-			       core->id.id);
+			bcma_err(bus,
+				 "Could not register dev for core 0x%03X\n",
+				 core->id.id);
 			continue;
 		}
 		core->dev_registered = true;
@@ -132,20 +149,24 @@ static void bcma_unregister_cores(struct bcma_bus *bus)
 	}
 }
 
-int bcma_bus_register(struct bcma_bus *bus)
+int __devinit bcma_bus_register(struct bcma_bus *bus)
 {
 	int err;
 	struct bcma_device *core;
 
+	mutex_lock(&bcma_buses_mutex);
+	bus->num = bcma_bus_next_num++;
+	mutex_unlock(&bcma_buses_mutex);
+
 	/* Scan for devices (cores) */
 	err = bcma_bus_scan(bus);
 	if (err) {
-		pr_err("Failed to scan: %d\n", err);
+		bcma_err(bus, "Failed to scan: %d\n", err);
 		return -1;
 	}
 
 	/* Init CC core */
-	core = bcma_find_core(bus, BCMA_CORE_CHIPCOMMON);
+	core = bcma_find_core(bus, bcma_cc_core_id(bus));
 	if (core) {
 		bus->drv_cc.core = core;
 		bcma_core_chipcommon_init(&bus->drv_cc);
@@ -165,17 +186,24 @@ int bcma_bus_register(struct bcma_bus *bus)
 		bcma_core_pci_init(&bus->drv_pci);
 	}
 
+	/* Init GBIT MAC COMMON core */
+	core = bcma_find_core(bus, BCMA_CORE_4706_MAC_GBIT_COMMON);
+	if (core) {
+		bus->drv_gmac_cmn.core = core;
+		bcma_core_gmac_cmn_init(&bus->drv_gmac_cmn);
+	}
+
 	/* Try to get SPROM */
 	err = bcma_sprom_get(bus);
 	if (err == -ENOENT) {
-		pr_err("No SPROM available\n");
+		bcma_err(bus, "No SPROM available\n");
 	} else if (err)
-		pr_err("Failed to get SPROM: %d\n", err);
+		bcma_err(bus, "Failed to get SPROM: %d\n", err);
 
 	/* Register found cores */
 	bcma_register_cores(bus);
 
-	pr_info("Bus registered\n");
+	bcma_info(bus, "Bus registered\n");
 
 	return 0;
 }
@@ -196,14 +224,14 @@ int __init bcma_bus_early_register(struct bcma_bus *bus,
 	bcma_init_bus(bus);
 
 	match.manuf = BCMA_MANUF_BCM;
-	match.id = BCMA_CORE_CHIPCOMMON;
+	match.id = bcma_cc_core_id(bus);
 	match.class = BCMA_CL_SIM;
 	match.rev = BCMA_ANY_REV;
 
 	/* Scan for chip common core */
 	err = bcma_bus_scan_early(bus, &match, core_cc);
 	if (err) {
-		pr_err("Failed to scan for common core: %d\n", err);
+		bcma_err(bus, "Failed to scan for common core: %d\n", err);
 		return -1;
 	}
 
@@ -215,12 +243,12 @@ int __init bcma_bus_early_register(struct bcma_bus *bus,
 	/* Scan for mips core */
 	err = bcma_bus_scan_early(bus, &match, core_mips);
 	if (err) {
-		pr_err("Failed to scan for mips core: %d\n", err);
+		bcma_err(bus, "Failed to scan for mips core: %d\n", err);
 		return -1;
 	}
 
 	/* Init CC core */
-	core = bcma_find_core(bus, BCMA_CORE_CHIPCOMMON);
+	core = bcma_find_core(bus, bcma_cc_core_id(bus));
 	if (core) {
 		bus->drv_cc.core = core;
 		bcma_core_chipcommon_init(&bus->drv_cc);
@@ -233,7 +261,7 @@ int __init bcma_bus_early_register(struct bcma_bus *bus,
 		bcma_core_mips_init(&bus->drv_mips);
 	}
 
-	pr_info("Early bus registered\n");
+	bcma_info(bus, "Early bus registered\n");
 
 	return 0;
 }
@@ -259,8 +287,7 @@ int bcma_bus_resume(struct bcma_bus *bus)
 	struct bcma_device *core;
 
 	/* Init CC core */
-	core = bcma_find_core(bus, BCMA_CORE_CHIPCOMMON);
-	if (core) {
+	if (bus->drv_cc.core) {
 		bus->drv_cc.setup_done = false;
 		bcma_core_chipcommon_init(&bus->drv_cc);
 	}

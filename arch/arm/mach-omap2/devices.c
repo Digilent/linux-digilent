@@ -17,6 +17,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/platform_data/omap4-keypad.h>
 
 #include <mach/hardware.h>
 #include <mach/irqs.h>
@@ -24,10 +25,8 @@
 #include <asm/mach/map.h>
 #include <asm/pmu.h>
 
-#include <plat/tc.h>
+#include "iomap.h"
 #include <plat/board.h>
-#include <plat/mcbsp.h>
-#include <plat/mmc.h>
 #include <plat/dma.h>
 #include <plat/omap_hwmod.h>
 #include <plat/omap_device.h>
@@ -42,7 +41,6 @@
 
 static int __init omap3_l3_init(void)
 {
-	int l;
 	struct omap_hwmod *oh;
 	struct platform_device *pdev;
 	char oh_name[L3_MODULES_MAX_LEN];
@@ -54,7 +52,7 @@ static int __init omap3_l3_init(void)
 	if (!(cpu_is_omap34xx()))
 		return -ENODEV;
 
-	l = snprintf(oh_name, L3_MODULES_MAX_LEN, "l3_main");
+	snprintf(oh_name, L3_MODULES_MAX_LEN, "l3_main");
 
 	oh = omap_hwmod_lookup(oh_name);
 
@@ -72,7 +70,7 @@ postcore_initcall(omap3_l3_init);
 
 static int __init omap4_l3_init(void)
 {
-	int l, i;
+	int i;
 	struct omap_hwmod *oh[3];
 	struct platform_device *pdev;
 	char oh_name[L3_MODULES_MAX_LEN];
@@ -85,11 +83,11 @@ static int __init omap4_l3_init(void)
 	 * To avoid code running on other OMAPs in
 	 * multi-omap builds
 	 */
-	if (!(cpu_is_omap44xx()))
+	if (!cpu_is_omap44xx() && !soc_is_omap54xx())
 		return -ENODEV;
 
 	for (i = 0; i < L3_MODULES; i++) {
-		l = snprintf(oh_name, L3_MODULES_MAX_LEN, "l3_main_%d", i+1);
+		snprintf(oh_name, L3_MODULES_MAX_LEN, "l3_main_%d", i+1);
 
 		oh[i] = omap_hwmod_lookup(oh_name);
 		if (!(oh[i]))
@@ -276,7 +274,7 @@ int __init omap4_keyboard_init(struct omap4_keypad_platform_data
 }
 
 #if defined(CONFIG_OMAP_MBOX_FWK) || defined(CONFIG_OMAP_MBOX_FWK_MODULE)
-static inline void omap_init_mbox(void)
+static inline void __init omap_init_mbox(void)
 {
 	struct omap_hwmod *oh;
 	struct platform_device *pdev;
@@ -304,29 +302,8 @@ static struct platform_device omap_pcm = {
 	.id	= -1,
 };
 
-/*
- * OMAP2420 has 2 McBSP ports
- * OMAP2430 has 5 McBSP ports
- * OMAP3 has 5 McBSP ports
- * OMAP4 has 4 McBSP ports
- */
-OMAP_MCBSP_PLATFORM_DEVICE(1);
-OMAP_MCBSP_PLATFORM_DEVICE(2);
-OMAP_MCBSP_PLATFORM_DEVICE(3);
-OMAP_MCBSP_PLATFORM_DEVICE(4);
-OMAP_MCBSP_PLATFORM_DEVICE(5);
-
 static void omap_init_audio(void)
 {
-	platform_device_register(&omap_mcbsp1);
-	platform_device_register(&omap_mcbsp2);
-	if (cpu_is_omap243x() || cpu_is_omap34xx() || cpu_is_omap44xx()) {
-		platform_device_register(&omap_mcbsp3);
-		platform_device_register(&omap_mcbsp4);
-	}
-	if (cpu_is_omap243x() || cpu_is_omap34xx())
-		platform_device_register(&omap_mcbsp5);
-
 	platform_device_register(&omap_pcm);
 }
 
@@ -337,7 +314,7 @@ static inline void omap_init_audio(void) {}
 #if defined(CONFIG_SND_OMAP_SOC_MCPDM) || \
 		defined(CONFIG_SND_OMAP_SOC_MCPDM_MODULE)
 
-static void omap_init_mcpdm(void)
+static void __init omap_init_mcpdm(void)
 {
 	struct omap_hwmod *oh;
 	struct platform_device *pdev;
@@ -358,7 +335,7 @@ static inline void omap_init_mcpdm(void) {}
 #if defined(CONFIG_SND_OMAP_SOC_DMIC) || \
 		defined(CONFIG_SND_OMAP_SOC_DMIC_MODULE)
 
-static void omap_init_dmic(void)
+static void __init omap_init_dmic(void)
 {
 	struct omap_hwmod *oh;
 	struct platform_device *pdev;
@@ -376,11 +353,41 @@ static void omap_init_dmic(void)
 static inline void omap_init_dmic(void) {}
 #endif
 
+#if defined(CONFIG_SND_OMAP_SOC_OMAP_HDMI) || \
+		defined(CONFIG_SND_OMAP_SOC_OMAP_HDMI_MODULE)
+
+static struct platform_device omap_hdmi_audio = {
+	.name	= "omap-hdmi-audio",
+	.id	= -1,
+};
+
+static void __init omap_init_hdmi_audio(void)
+{
+	struct omap_hwmod *oh;
+	struct platform_device *pdev;
+
+	oh = omap_hwmod_lookup("dss_hdmi");
+	if (!oh) {
+		printk(KERN_ERR "Could not look up dss_hdmi hw_mod\n");
+		return;
+	}
+
+	pdev = omap_device_build("omap-hdmi-audio-dai",
+		-1, oh, NULL, 0, NULL, 0, 0);
+	WARN(IS_ERR(pdev),
+	     "Can't build omap_device for omap-hdmi-audio-dai.\n");
+
+	platform_device_register(&omap_hdmi_audio);
+}
+#else
+static inline void omap_init_hdmi_audio(void) {}
+#endif
+
 #if defined(CONFIG_SPI_OMAP24XX) || defined(CONFIG_SPI_OMAP24XX_MODULE)
 
 #include <plat/mcspi.h>
 
-static int omap_mcspi_init(struct omap_hwmod *oh, void *unused)
+static int __init omap_mcspi_init(struct omap_hwmod *oh, void *unused)
 {
 	struct platform_device *pdev;
 	char *name = "omap2_mcspi";
@@ -595,98 +602,6 @@ static inline void omap_init_aes(void) { }
 
 /*-------------------------------------------------------------------------*/
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
-
-static inline void omap242x_mmc_mux(struct omap_mmc_platform_data
-							*mmc_controller)
-{
-	if ((mmc_controller->slots[0].switch_pin > 0) && \
-		(mmc_controller->slots[0].switch_pin < OMAP_MAX_GPIO_LINES))
-		omap_mux_init_gpio(mmc_controller->slots[0].switch_pin,
-					OMAP_PIN_INPUT_PULLUP);
-	if ((mmc_controller->slots[0].gpio_wp > 0) && \
-		(mmc_controller->slots[0].gpio_wp < OMAP_MAX_GPIO_LINES))
-		omap_mux_init_gpio(mmc_controller->slots[0].gpio_wp,
-					OMAP_PIN_INPUT_PULLUP);
-
-	omap_mux_init_signal("sdmmc_cmd", 0);
-	omap_mux_init_signal("sdmmc_clki", 0);
-	omap_mux_init_signal("sdmmc_clko", 0);
-	omap_mux_init_signal("sdmmc_dat0", 0);
-	omap_mux_init_signal("sdmmc_dat_dir0", 0);
-	omap_mux_init_signal("sdmmc_cmd_dir", 0);
-	if (mmc_controller->slots[0].caps & MMC_CAP_4_BIT_DATA) {
-		omap_mux_init_signal("sdmmc_dat1", 0);
-		omap_mux_init_signal("sdmmc_dat2", 0);
-		omap_mux_init_signal("sdmmc_dat3", 0);
-		omap_mux_init_signal("sdmmc_dat_dir1", 0);
-		omap_mux_init_signal("sdmmc_dat_dir2", 0);
-		omap_mux_init_signal("sdmmc_dat_dir3", 0);
-	}
-
-	/*
-	 * Use internal loop-back in MMC/SDIO Module Input Clock
-	 * selection
-	 */
-	if (mmc_controller->slots[0].internal_clock) {
-		u32 v = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0);
-		v |= (1 << 24);
-		omap_ctrl_writel(v, OMAP2_CONTROL_DEVCONF0);
-	}
-}
-
-void __init omap242x_init_mmc(struct omap_mmc_platform_data **mmc_data)
-{
-	char *name = "mmci-omap";
-
-	if (!mmc_data[0]) {
-		pr_err("%s fails: Incomplete platform data\n", __func__);
-		return;
-	}
-
-	omap242x_mmc_mux(mmc_data[0]);
-	omap_mmc_add(name, 0, OMAP2_MMC1_BASE, OMAP2420_MMC_SIZE,
-					INT_24XX_MMC_IRQ, mmc_data[0]);
-}
-
-#endif
-
-/*-------------------------------------------------------------------------*/
-
-#if defined(CONFIG_HDQ_MASTER_OMAP) || defined(CONFIG_HDQ_MASTER_OMAP_MODULE)
-#if defined(CONFIG_SOC_OMAP2430) || defined(CONFIG_SOC_OMAP3430)
-#define OMAP_HDQ_BASE	0x480B2000
-#endif
-static struct resource omap_hdq_resources[] = {
-	{
-		.start		= OMAP_HDQ_BASE,
-		.end		= OMAP_HDQ_BASE + 0x1C,
-		.flags		= IORESOURCE_MEM,
-	},
-	{
-		.start		= INT_24XX_HDQ_IRQ,
-		.flags		= IORESOURCE_IRQ,
-	},
-};
-static struct platform_device omap_hdq_dev = {
-	.name = "omap_hdq",
-	.id = 0,
-	.dev = {
-		.platform_data = NULL,
-	},
-	.num_resources	= ARRAY_SIZE(omap_hdq_resources),
-	.resource	= omap_hdq_resources,
-};
-static inline void omap_hdq_init(void)
-{
-	(void) platform_device_register(&omap_hdq_dev);
-}
-#else
-static inline void omap_hdq_init(void) {}
-#endif
-
-/*---------------------------------------------------------------------------*/
-
 #if defined(CONFIG_VIDEO_OMAP2_VOUT) || \
 	defined(CONFIG_VIDEO_OMAP2_VOUT_MODULE)
 #if defined(CONFIG_FB_OMAP2) || defined(CONFIG_FB_OMAP2_MODULE)
@@ -721,13 +636,16 @@ static int __init omap2_init_devices(void)
 	 * in alphabetical order so they're easier to sort through.
 	 */
 	omap_init_audio();
-	omap_init_mcpdm();
-	omap_init_dmic();
 	omap_init_camera();
+	omap_init_hdmi_audio();
 	omap_init_mbox();
-	omap_init_mcspi();
+	/* If dtb is there, the devices will be created dynamically */
+	if (!of_have_populated_dt()) {
+		omap_init_dmic();
+		omap_init_mcpdm();
+		omap_init_mcspi();
+	}
 	omap_init_pmu();
-	omap_hdq_init();
 	omap_init_sti();
 	omap_init_sham();
 	omap_init_aes();
@@ -746,7 +664,7 @@ static int __init omap_init_wdt(void)
 	char *oh_name = "wd_timer2";
 	char *dev_name = "omap_wdt";
 
-	if (!cpu_class_is_omap2())
+	if (!cpu_class_is_omap2() || of_have_populated_dt())
 		return 0;
 
 	oh = omap_hwmod_lookup(oh_name);

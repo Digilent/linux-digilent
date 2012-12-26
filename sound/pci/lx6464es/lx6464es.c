@@ -851,6 +851,8 @@ static int __devinit lx_pcm_create(struct lx6464es *chip)
 	/* hardcoded device name & channel count */
 	err = snd_pcm_new(chip->card, (char *)card_name, 0,
 			  1, 1, &pcm);
+	if (err < 0)
+		return err;
 
 	pcm->private_data = chip;
 
@@ -1141,24 +1143,11 @@ static void __devexit snd_lx6464es_remove(struct pci_dev *pci)
 }
 
 
-static struct pci_driver driver = {
+static struct pci_driver lx6464es_driver = {
 	.name =     KBUILD_MODNAME,
 	.id_table = snd_lx6464es_ids,
 	.probe =    snd_lx6464es_probe,
 	.remove = __devexit_p(snd_lx6464es_remove),
 };
 
-
-/* module initialization */
-static int __init mod_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit mod_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(mod_init);
-module_exit(mod_exit);
+module_pci_driver(lx6464es_driver);

@@ -31,7 +31,6 @@
 #define RBD_MIN_OBJ_ORDER       16
 #define RBD_MAX_OBJ_ORDER       30
 
-#define RBD_MAX_OBJ_NAME_LEN	96
 #define RBD_MAX_SEG_NAME_LEN	128
 
 #define RBD_COMP_NONE		0
@@ -40,10 +39,6 @@
 #define RBD_HEADER_TEXT		"<<< Rados Block Device Image >>>\n"
 #define RBD_HEADER_SIGNATURE	"RBD"
 #define RBD_HEADER_VERSION	"001.005"
-
-struct rbd_info {
-	__le64 max_id;
-} __attribute__ ((packed));
 
 struct rbd_image_snap_ondisk {
 	__le64 id;

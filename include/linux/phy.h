@@ -19,7 +19,6 @@
 #define __PHY_H
 
 #include <linux/spinlock.h>
-#include <linux/device.h>
 #include <linux/ethtool.h>
 #include <linux/mii.h>
 #include <linux/timer.h>
@@ -87,6 +86,9 @@ typedef enum {
 /* Or MII_ADDR_C45 into regnum for read/write on mii_bus to enable the 21 bit
    IEEE 802.3ae clause 45 addressing mode used by 10GIGE phy chips. */
 #define MII_ADDR_C45 (1<<30)
+
+struct device;
+struct sk_buff;
 
 /*
  * The Bus class for PHYs.  Devices which provide access to
@@ -241,7 +243,15 @@ enum phy_state {
 	PHY_RESUMING
 };
 
-struct sk_buff;
+/**
+ * struct phy_c45_device_ids - 802.3-c45 Device Identifiers
+ * @devices_in_package: Bit vector of devices present.
+ * @device_ids: The device identifer for each present device.
+ */
+struct phy_c45_device_ids {
+	u32 devices_in_package;
+	u32 device_ids[8];
+};
 
 /* phy_device: An instance of a PHY
  *
@@ -249,6 +259,8 @@ struct sk_buff;
  * bus: Pointer to the bus this PHY is on
  * dev: driver model device structure for this PHY
  * phy_id: UID for this device found during discovery
+ * c45_ids: 802.3-c45 Device Identifers if is_c45.
+ * is_c45:  Set to true if this phy uses clause 45 addressing.
  * state: state of the PHY for management purposes
  * dev_flags: Device-specific flags used by the PHY driver.
  * addr: Bus address of PHY
@@ -283,6 +295,9 @@ struct phy_device {
 	struct device dev;
 
 	u32 phy_id;
+
+	struct phy_c45_device_ids c45_ids;
+	bool is_c45;
 
 	enum phy_state state;
 
@@ -411,6 +426,15 @@ struct phy_driver {
 	/* Clears up any memory if needed */
 	void (*remove)(struct phy_device *phydev);
 
+	/* Returns true if this is a suitable driver for the given
+	 * phydev.  If NULL, matching is based on phy_id and
+	 * phy_id_mask.
+	 */
+	int (*match_phy_device)(struct phy_device *phydev);
+
+	/* Handles ethtool queries for hardware time stamping. */
+	int (*ts_info)(struct phy_device *phydev, struct ethtool_ts_info *ti);
+
 	/* Handles SIOCSHWTSTAMP ioctl for hardware time stamping. */
 	int  (*hwtstamp)(struct phy_device *phydev, struct ifreq *ifr);
 
@@ -476,8 +500,9 @@ static inline int phy_write(struct phy_device *phydev, u32 regnum, u16 val)
 	return mdiobus_write(phydev->bus, phydev->addr, regnum, val);
 }
 
-int get_phy_id(struct mii_bus *bus, int addr, u32 *phy_id);
-struct phy_device* get_phy_device(struct mii_bus *bus, int addr);
+struct phy_device *phy_device_create(struct mii_bus *bus, int addr, int phy_id,
+		bool is_c45, struct phy_c45_device_ids *c45_ids);
+struct phy_device *get_phy_device(struct mii_bus *bus, int addr, bool is_c45);
 int phy_device_register(struct phy_device *phy);
 int phy_init_hw(struct phy_device *phydev);
 struct phy_device * phy_attach(struct net_device *dev,
@@ -508,7 +533,9 @@ int genphy_read_status(struct phy_device *phydev);
 int genphy_suspend(struct phy_device *phydev);
 int genphy_resume(struct phy_device *phydev);
 void phy_driver_unregister(struct phy_driver *drv);
+void phy_drivers_unregister(struct phy_driver *drv, int n);
 int phy_driver_register(struct phy_driver *new_driver);
+int phy_drivers_register(struct phy_driver *new_driver, int n);
 void phy_state_machine(struct work_struct *work);
 void phy_start_machine(struct phy_device *phydev,
 		void (*handler)(struct net_device *));
@@ -528,6 +555,11 @@ int phy_register_fixup_for_id(const char *bus_id,
 int phy_register_fixup_for_uid(u32 phy_uid, u32 phy_uid_mask,
 		int (*run)(struct phy_device *));
 int phy_scan_fixups(struct phy_device *phydev);
+
+int phy_init_eee(struct phy_device *phydev, bool clk_stop_enable);
+int phy_get_eee_err(struct phy_device *phydev);
+int phy_ethtool_set_eee(struct phy_device *phydev, struct ethtool_eee *data);
+int phy_ethtool_get_eee(struct phy_device *phydev, struct ethtool_eee *data);
 
 int __init mdio_bus_init(void);
 void mdio_bus_exit(void);

@@ -73,7 +73,7 @@ int __ref cb_alloc(struct pcmcia_socket *s)
 	s->functions = pci_scan_slot(bus, PCI_DEVFN(0, 0));
 	pci_fixup_cardbus(bus);
 
-	max = bus->secondary;
+	max = bus->busn_res.start;
 	for (pass = 0; pass < 2; pass++)
 		list_for_each_entry(dev, &bus->devices, bus_list)
 			if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
@@ -108,5 +108,5 @@ void cb_free(struct pcmcia_socket *s)
 	struct pci_dev *bridge = s->cb_dev;
 
 	if (bridge)
-		pci_remove_behind_bridge(bridge);
+		pci_stop_and_remove_behind_bridge(bridge);
 }

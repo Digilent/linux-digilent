@@ -1,8 +1,7 @@
 /*
- *  drivers/s390/cio/device.c
  *  bus driver for ccw devices
  *
- *    Copyright IBM Corp. 2002,2008
+ *    Copyright IBM Corp. 2002, 2008
  *    Author(s): Arnd Bergmann (arndb@de.ibm.com)
  *		 Cornelia Huck (cornelia.huck@de.ibm.com)
  *		 Martin Schwidefsky (schwidefsky@de.ibm.com)
@@ -695,7 +694,17 @@ static int match_dev_id(struct device *dev, void *data)
 	return ccw_dev_id_is_equal(&cdev->private->dev_id, dev_id);
 }
 
-static struct ccw_device *get_ccwdev_by_dev_id(struct ccw_dev_id *dev_id)
+/**
+ * get_ccwdev_by_dev_id() - obtain device from a ccw device id
+ * @dev_id: id of the device to be searched
+ *
+ * This function searches all devices attached to the ccw bus for a device
+ * matching @dev_id.
+ * Returns:
+ *  If a device is found its reference count is increased and returned;
+ *  else %NULL is returned.
+ */
+struct ccw_device *get_ccwdev_by_dev_id(struct ccw_dev_id *dev_id)
 {
 	struct device *dev;
 
@@ -703,6 +712,7 @@ static struct ccw_device *get_ccwdev_by_dev_id(struct ccw_dev_id *dev_id)
 
 	return dev ? to_ccwdev(dev) : NULL;
 }
+EXPORT_SYMBOL_GPL(get_ccwdev_by_dev_id);
 
 static void ccw_device_do_unbind_bind(struct ccw_device *cdev)
 {
@@ -1416,6 +1426,8 @@ static enum io_sch_action sch_get_action(struct subchannel *sch)
 		return IO_SCH_REPROBE;
 	if (cdev->online)
 		return IO_SCH_VERIFY;
+	if (cdev->private->state == DEV_STATE_NOT_OPER)
+		return IO_SCH_UNREG_ATTACH;
 	return IO_SCH_NOP;
 }
 
@@ -1509,11 +1521,14 @@ static int io_subchannel_sch_event(struct subchannel *sch, int process)
 			goto out;
 		break;
 	case IO_SCH_UNREG_ATTACH:
+		spin_lock_irqsave(sch->lock, flags);
 		if (cdev->private->flags.resuming) {
 			/* Device will be handled later. */
 			rc = 0;
-			goto out;
+			goto out_unlock;
 		}
+		sch_set_cdev(sch, NULL);
+		spin_unlock_irqrestore(sch->lock, flags);
 		/* Unregister ccw device. */
 		ccw_device_unregister(cdev);
 		break;
@@ -1676,15 +1691,9 @@ struct ccw_device *get_ccwdev_by_busid(struct ccw_driver *cdrv,
 				       const char *bus_id)
 {
 	struct device *dev;
-	struct device_driver *drv;
 
-	drv = get_driver(&cdrv->driver);
-	if (!drv)
-		return NULL;
-
-	dev = driver_find_device(drv, NULL, (void *)bus_id,
+	dev = driver_find_device(&cdrv->driver, NULL, (void *)bus_id,
 				 __ccwdev_check_busid);
-	put_driver(drv);
 
 	return dev ? to_ccwdev(dev) : NULL;
 }

@@ -34,6 +34,7 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
+#include <linux/pm_runtime.h>
 #include <linux/davinci_emac.h>
 
 /*
@@ -53,7 +54,7 @@ struct davinci_mdio_regs {
 	u32	control;
 #define CONTROL_IDLE		BIT(31)
 #define CONTROL_ENABLE		BIT(30)
-#define CONTROL_MAX_DIV		(0xff)
+#define CONTROL_MAX_DIV		(0xffff)
 
 	u32	alive;
 	u32	link;
@@ -181,6 +182,11 @@ static inline int wait_for_user_access(struct davinci_mdio_data *data)
 		__davinci_mdio_reset(data);
 		return -EAGAIN;
 	}
+
+	reg = __raw_readl(&regs->user[0].access);
+	if ((reg & USERACCESS_GO) == 0)
+		return 0;
+
 	dev_err(data->dev, "timed out waiting for user access\n");
 	return -ETIMEDOUT;
 }
@@ -316,15 +322,15 @@ static int __devinit davinci_mdio_probe(struct platform_device *pdev)
 	snprintf(data->bus->id, MII_BUS_ID_SIZE, "%s-%x",
 		pdev->name, pdev->id);
 
-	data->clk = clk_get(dev, NULL);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_get_sync(&pdev->dev);
+	data->clk = clk_get(&pdev->dev, "fck");
 	if (IS_ERR(data->clk)) {
 		dev_err(dev, "failed to get device clock\n");
 		ret = PTR_ERR(data->clk);
 		data->clk = NULL;
 		goto bail_out;
 	}
-
-	clk_enable(data->clk);
 
 	dev_set_drvdata(dev, data);
 	data->dev = dev;
@@ -373,10 +379,10 @@ bail_out:
 	if (data->bus)
 		mdiobus_free(data->bus);
 
-	if (data->clk) {
-		clk_disable(data->clk);
+	if (data->clk)
 		clk_put(data->clk);
-	}
+	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
 
 	kfree(data);
 
@@ -388,13 +394,15 @@ static int __devexit davinci_mdio_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct davinci_mdio_data *data = dev_get_drvdata(dev);
 
-	if (data->bus)
+	if (data->bus) {
+		mdiobus_unregister(data->bus);
 		mdiobus_free(data->bus);
-
-	if (data->clk) {
-		clk_disable(data->clk);
-		clk_put(data->clk);
 	}
+
+	if (data->clk)
+		clk_put(data->clk);
+	pm_runtime_put_sync(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
 
 	dev_set_drvdata(dev, NULL);
 
@@ -416,8 +424,7 @@ static int davinci_mdio_suspend(struct device *dev)
 	__raw_writel(ctrl, &data->regs->control);
 	wait_for_idle(data);
 
-	if (data->clk)
-		clk_disable(data->clk);
+	pm_runtime_put_sync(data->dev);
 
 	data->suspended = true;
 	spin_unlock(&data->lock);
@@ -431,8 +438,7 @@ static int davinci_mdio_resume(struct device *dev)
 	u32 ctrl;
 
 	spin_lock(&data->lock);
-	if (data->clk)
-		clk_enable(data->clk);
+	pm_runtime_put_sync(data->dev);
 
 	/* restart the scan state machine */
 	ctrl = __raw_readl(&data->regs->control);

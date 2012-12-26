@@ -27,12 +27,12 @@ static inline void __tlb_flush_global(void)
 	register unsigned long reg4 asm("4");
 	long dummy;
 
-#ifndef __s390x__
+#ifndef CONFIG_64BIT
 	if (!MACHINE_HAS_CSP) {
 		smp_ptlb_all();
 		return;
 	}
-#endif /* __s390x__ */
+#endif /* CONFIG_64BIT */
 
 	dummy = 0;
 	reg2 = reg3 = 0;
@@ -90,12 +90,10 @@ static inline void __tlb_flush_mm(struct mm_struct * mm)
 
 static inline void __tlb_flush_mm_cond(struct mm_struct * mm)
 {
-	spin_lock(&mm->page_table_lock);
 	if (mm->context.flush_mm) {
 		__tlb_flush_mm(mm);
 		mm->context.flush_mm = 0;
 	}
-	spin_unlock(&mm->page_table_lock);
 }
 
 /*

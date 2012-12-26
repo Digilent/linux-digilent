@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2012 Nicira Networks.
+ * Copyright (c) 2007-2012 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -38,7 +38,6 @@
 #include <linux/udp.h>
 #include <linux/ethtool.h>
 #include <linux/wait.h>
-#include <asm/system.h>
 #include <asm/div64.h>
 #include <linux/highmem.h>
 #include <linux/netfilter_bridge.h>
@@ -264,14 +263,15 @@ err:
 static int queue_gso_packets(int dp_ifindex, struct sk_buff *skb,
 			     const struct dp_upcall_info *upcall_info)
 {
+	unsigned short gso_type = skb_shinfo(skb)->gso_type;
 	struct dp_upcall_info later_info;
 	struct sw_flow_key later_key;
 	struct sk_buff *segs, *nskb;
 	int err;
 
 	segs = skb_gso_segment(skb, NETIF_F_SG | NETIF_F_HW_CSUM);
-	if (IS_ERR(skb))
-		return PTR_ERR(skb);
+	if (IS_ERR(segs))
+		return PTR_ERR(segs);
 
 	/* Queue all of the segments. */
 	skb = segs;
@@ -280,7 +280,7 @@ static int queue_gso_packets(int dp_ifindex, struct sk_buff *skb,
 		if (err)
 			break;
 
-		if (skb == segs && skb_shinfo(skb)->gso_type & SKB_GSO_UDP) {
+		if (skb == segs && gso_type & SKB_GSO_UDP) {
 			/* The initial flow key extracted by ovs_flow_extract()
 			 * in this case is for a first fragment, so we need to
 			 * properly mark later fragments.
@@ -322,7 +322,7 @@ static int queue_userspace_packet(int dp_ifindex, struct sk_buff *skb,
 			return -ENOMEM;
 
 		nskb = __vlan_put_tag(nskb, vlan_tx_tag_get(nskb));
-		if (!skb)
+		if (!nskb)
 			return -ENOMEM;
 
 		nskb->vlan_tci = 0;
@@ -422,6 +422,19 @@ static int validate_sample(const struct nlattr *attr,
 	return validate_actions(actions, key, depth + 1);
 }
 
+static int validate_tp_port(const struct sw_flow_key *flow_key)
+{
+	if (flow_key->eth.type == htons(ETH_P_IP)) {
+		if (flow_key->ipv4.tp.src || flow_key->ipv4.tp.dst)
+			return 0;
+	} else if (flow_key->eth.type == htons(ETH_P_IPV6)) {
+		if (flow_key->ipv6.tp.src || flow_key->ipv6.tp.dst)
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
 static int validate_set(const struct nlattr *a,
 			const struct sw_flow_key *flow_key)
 {
@@ -447,7 +460,7 @@ static int validate_set(const struct nlattr *a,
 		if (flow_key->eth.type != htons(ETH_P_IP))
 			return -EINVAL;
 
-		if (!flow_key->ipv4.addr.src || !flow_key->ipv4.addr.dst)
+		if (!flow_key->ip.proto)
 			return -EINVAL;
 
 		ipv4_key = nla_data(ovs_key);
@@ -463,18 +476,13 @@ static int validate_set(const struct nlattr *a,
 		if (flow_key->ip.proto != IPPROTO_TCP)
 			return -EINVAL;
 
-		if (!flow_key->ipv4.tp.src || !flow_key->ipv4.tp.dst)
-			return -EINVAL;
-
-		break;
+		return validate_tp_port(flow_key);
 
 	case OVS_KEY_ATTR_UDP:
 		if (flow_key->ip.proto != IPPROTO_UDP)
 			return -EINVAL;
 
-		if (!flow_key->ipv4.tp.src || !flow_key->ipv4.tp.dst)
-			return -EINVAL;
-		break;
+		return validate_tp_port(flow_key);
 
 	default:
 		return -EINVAL;
@@ -779,15 +787,18 @@ static int ovs_flow_cmd_fill_info(struct sw_flow *flow, struct datapath *dp,
 	tcp_flags = flow->tcp_flags;
 	spin_unlock_bh(&flow->lock);
 
-	if (used)
-		NLA_PUT_U64(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(used));
+	if (used &&
+	    nla_put_u64(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(used)))
+		goto nla_put_failure;
 
-	if (stats.n_packets)
-		NLA_PUT(skb, OVS_FLOW_ATTR_STATS,
-			sizeof(struct ovs_flow_stats), &stats);
+	if (stats.n_packets &&
+	    nla_put(skb, OVS_FLOW_ATTR_STATS,
+		    sizeof(struct ovs_flow_stats), &stats))
+		goto nla_put_failure;
 
-	if (tcp_flags)
-		NLA_PUT_U8(skb, OVS_FLOW_ATTR_TCP_FLAGS, tcp_flags);
+	if (tcp_flags &&
+	    nla_put_u8(skb, OVS_FLOW_ATTR_TCP_FLAGS, tcp_flags))
+		goto nla_put_failure;
 
 	/* If OVS_FLOW_ATTR_ACTIONS doesn't fit, skip dumping the actions if
 	 * this is the first flow to be dumped into 'skb'.  This is unusual for
@@ -1169,7 +1180,8 @@ static int ovs_dp_cmd_fill_info(struct datapath *dp, struct sk_buff *skb,
 		goto nla_put_failure;
 
 	get_dp_stats(dp, &dp_stats);
-	NLA_PUT(skb, OVS_DP_ATTR_STATS, sizeof(struct ovs_dp_stats), &dp_stats);
+	if (nla_put(skb, OVS_DP_ATTR_STATS, sizeof(struct ovs_dp_stats), &dp_stats))
+		goto nla_put_failure;
 
 	return genlmsg_end(skb, ovs_header);
 
@@ -1469,14 +1481,16 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
 
 	ovs_header->dp_ifindex = get_dpifindex(vport->dp);
 
-	NLA_PUT_U32(skb, OVS_VPORT_ATTR_PORT_NO, vport->port_no);
-	NLA_PUT_U32(skb, OVS_VPORT_ATTR_TYPE, vport->ops->type);
-	NLA_PUT_STRING(skb, OVS_VPORT_ATTR_NAME, vport->ops->get_name(vport));
-	NLA_PUT_U32(skb, OVS_VPORT_ATTR_UPCALL_PID, vport->upcall_pid);
+	if (nla_put_u32(skb, OVS_VPORT_ATTR_PORT_NO, vport->port_no) ||
+	    nla_put_u32(skb, OVS_VPORT_ATTR_TYPE, vport->ops->type) ||
+	    nla_put_string(skb, OVS_VPORT_ATTR_NAME, vport->ops->get_name(vport)) ||
+	    nla_put_u32(skb, OVS_VPORT_ATTR_UPCALL_PID, vport->upcall_pid))
+		goto nla_put_failure;
 
 	ovs_vport_get_stats(vport, &vport_stats);
-	NLA_PUT(skb, OVS_VPORT_ATTR_STATS, sizeof(struct ovs_vport_stats),
-		&vport_stats);
+	if (nla_put(skb, OVS_VPORT_ATTR_STATS, sizeof(struct ovs_vport_stats),
+		    &vport_stats))
+		goto nla_put_failure;
 
 	err = ovs_vport_get_options(vport, skb);
 	if (err == -EMSGSIZE)
@@ -1636,16 +1650,17 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 
 	if (!err && a[OVS_VPORT_ATTR_OPTIONS])
 		err = ovs_vport_set_options(vport, a[OVS_VPORT_ATTR_OPTIONS]);
-	if (!err && a[OVS_VPORT_ATTR_UPCALL_PID])
+	if (err)
+		goto exit_unlock;
+	if (a[OVS_VPORT_ATTR_UPCALL_PID])
 		vport->upcall_pid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
 
 	reply = ovs_vport_cmd_build_info(vport, info->snd_pid, info->snd_seq,
 					 OVS_VPORT_CMD_NEW);
 	if (IS_ERR(reply)) {
-		err = PTR_ERR(reply);
 		netlink_set_err(init_net.genl_sock, 0,
-				ovs_dp_vport_multicast_group.id, err);
-		return 0;
+				ovs_dp_vport_multicast_group.id, PTR_ERR(reply));
+		goto exit_unlock;
 	}
 
 	genl_notify(reply, genl_info_net(info), info->snd_pid,

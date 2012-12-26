@@ -88,7 +88,7 @@ int of_n_size_cells(struct device_node *np)
 }
 EXPORT_SYMBOL(of_n_size_cells);
 
-#if !defined(CONFIG_SPARC)   /* SPARC doesn't do ref counting (yet) */
+#if defined(CONFIG_OF_DYNAMIC)
 /**
  *	of_node_get - Increment refcount of a node
  *	@node:	Node to inc refcount, NULL is supported to
@@ -161,7 +161,7 @@ void of_node_put(struct device_node *node)
 		kref_put(&node->kref, of_node_release);
 }
 EXPORT_SYMBOL(of_node_put);
-#endif /* !CONFIG_SPARC */
+#endif /* CONFIG_OF_DYNAMIC */
 
 struct property *of_find_property(const struct device_node *np,
 				  const char *name,
@@ -173,9 +173,9 @@ struct property *of_find_property(const struct device_node *np,
 		return NULL;
 
 	read_lock(&devtree_lock);
-	for (pp = np->properties; pp != 0; pp = pp->next) {
+	for (pp = np->properties; pp; pp = pp->next) {
 		if (of_prop_cmp(pp->name, name) == 0) {
-			if (lenp != 0)
+			if (lenp)
 				*lenp = pp->length;
 			break;
 		}
@@ -364,6 +364,33 @@ struct device_node *of_get_next_child(const struct device_node *node,
 EXPORT_SYMBOL(of_get_next_child);
 
 /**
+ *	of_get_next_available_child - Find the next available child node
+ *	@node:	parent node
+ *	@prev:	previous child of the parent node, or NULL to get first
+ *
+ *      This function is like of_get_next_child(), except that it
+ *      automatically skips any disabled nodes (i.e. status = "disabled").
+ */
+struct device_node *of_get_next_available_child(const struct device_node *node,
+	struct device_node *prev)
+{
+	struct device_node *next;
+
+	read_lock(&devtree_lock);
+	next = prev ? prev->sibling : node->child;
+	for (; next; next = next->sibling) {
+		if (!of_device_is_available(next))
+			continue;
+		if (of_node_get(next))
+			break;
+	}
+	of_node_put(prev);
+	read_unlock(&devtree_lock);
+	return next;
+}
+EXPORT_SYMBOL(of_get_next_available_child);
+
+/**
  *	of_find_node_by_path - Find a node matching a full OF path
  *	@path:	The full path to match
  *
@@ -497,7 +524,7 @@ struct device_node *of_find_node_with_property(struct device_node *from,
 	read_lock(&devtree_lock);
 	np = from ? from->allnext : allnodes;
 	for (; np; np = np->allnext) {
-		for (pp = np->properties; pp != 0; pp = pp->next) {
+		for (pp = np->properties; pp; pp = pp->next) {
 			if (of_prop_cmp(pp->name, prop_name) == 0) {
 				of_node_get(np);
 				goto out;
@@ -761,6 +788,42 @@ int of_property_read_string_index(struct device_node *np, const char *propname,
 }
 EXPORT_SYMBOL_GPL(of_property_read_string_index);
 
+/**
+ * of_property_match_string() - Find string in a list and return index
+ * @np: pointer to node containing string list property
+ * @propname: string list property name
+ * @string: pointer to string to search for in string list
+ *
+ * This function searches a string list property and returns the index
+ * of a specific string value.
+ */
+int of_property_match_string(struct device_node *np, const char *propname,
+			     const char *string)
+{
+	struct property *prop = of_find_property(np, propname, NULL);
+	size_t l;
+	int i;
+	const char *p, *end;
+
+	if (!prop)
+		return -EINVAL;
+	if (!prop->value)
+		return -ENODATA;
+
+	p = prop->value;
+	end = p + prop->length;
+
+	for (i = 0; p < end; i++, p += l) {
+		l = strlen(p) + 1;
+		if (p + l > end)
+			return -EILSEQ;
+		pr_debug("comparing %s with %s\n", string, p);
+		if (strcmp(string, p) == 0)
+			return i; /* Found it; return index */
+	}
+	return -ENODATA;
+}
+EXPORT_SYMBOL_GPL(of_property_match_string);
 
 /**
  * of_property_count_strings - Find and return the number of strings from a
@@ -866,7 +929,7 @@ int of_parse_phandle_with_args(struct device_node *np, const char *list_name,
 	/* Retrieve the phandle list property */
 	list = of_get_property(np, list_name, &size);
 	if (!list)
-		return -EINVAL;
+		return -ENOENT;
 	list_end = list + size / sizeof(*list);
 
 	/* Loop over the phandles until all the requested entry is found */
@@ -1015,7 +1078,8 @@ int prom_remove_property(struct device_node *np, struct property *prop)
 }
 
 /*
- * prom_update_property - Update a property in a node.
+ * prom_update_property - Update a property in a node, if the property does
+ * not exist, add it.
  *
  * Note that we don't actually remove it, since we have given out
  * who-knows-how-many pointers to the data using get-property.
@@ -1023,12 +1087,18 @@ int prom_remove_property(struct device_node *np, struct property *prop)
  * and add the new property to the property list
  */
 int prom_update_property(struct device_node *np,
-			 struct property *newprop,
-			 struct property *oldprop)
+			 struct property *newprop)
 {
-	struct property **next;
+	struct property **next, *oldprop;
 	unsigned long flags;
 	int found = 0;
+
+	if (!newprop->name)
+		return -EINVAL;
+
+	oldprop = of_find_property(np, newprop->name, NULL);
+	if (!oldprop)
+		return prom_add_property(np, newprop);
 
 	write_lock_irqsave(&devtree_lock, flags);
 	next = &np->properties;
@@ -1137,7 +1207,7 @@ static void of_alias_add(struct alias_prop *ap, struct device_node *np,
 	ap->stem[stem_len] = 0;
 	list_add_tail(&ap->link, &aliases_lookup);
 	pr_debug("adding DT alias:%s: stem=%s id=%i node=%s\n",
-		 ap->alias, ap->stem, ap->id, np ? np->full_name : NULL);
+		 ap->alias, ap->stem, ap->id, of_node_full_name(np));
 }
 
 /**
@@ -1224,3 +1294,44 @@ int of_alias_get_id(struct device_node *np, const char *stem)
 	return id;
 }
 EXPORT_SYMBOL_GPL(of_alias_get_id);
+
+const __be32 *of_prop_next_u32(struct property *prop, const __be32 *cur,
+			       u32 *pu)
+{
+	const void *curv = cur;
+
+	if (!prop)
+		return NULL;
+
+	if (!cur) {
+		curv = prop->value;
+		goto out_val;
+	}
+
+	curv += sizeof(*cur);
+	if (curv >= prop->value + prop->length)
+		return NULL;
+
+out_val:
+	*pu = be32_to_cpup(curv);
+	return curv;
+}
+EXPORT_SYMBOL_GPL(of_prop_next_u32);
+
+const char *of_prop_next_string(struct property *prop, const char *cur)
+{
+	const void *curv = cur;
+
+	if (!prop)
+		return NULL;
+
+	if (!cur)
+		return prop->value;
+
+	curv += strlen(cur) + 1;
+	if (curv >= prop->value + prop->length)
+		return NULL;
+
+	return curv;
+}
+EXPORT_SYMBOL_GPL(of_prop_next_string);

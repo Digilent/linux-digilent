@@ -30,7 +30,6 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/dm644x.h>
 #include <mach/common.h>
 #include <mach/i2c.h>
 #include <mach/serial.h>
@@ -38,6 +37,8 @@
 #include <mach/nand.h>
 #include <mach/mmc.h>
 #include <mach/usb.h>
+
+#include "davinci.h"
 
 #define NEUROS_OSD2_PHY_ID		"davinci_mdio-0:01"
 #define LXT971_PHY_ID			0x001378e2
@@ -161,38 +162,6 @@ static void __init davinci_ntosd2_map_io(void)
 	dm644x_init();
 }
 
-/*
- I2C initialization
-*/
-static struct davinci_i2c_platform_data ntosd2_i2c_pdata = {
-	.bus_freq	= 20 /* kHz */,
-	.bus_delay	= 100 /* usec */,
-};
-
-static struct i2c_board_info __initdata ntosd2_i2c_info[] =  {
-};
-
-static	int ntosd2_init_i2c(void)
-{
-	int	status;
-
-	davinci_init_i2c(&ntosd2_i2c_pdata);
-	status = gpio_request(NTOSD2_MSP430_IRQ, ntosd2_i2c_info[0].type);
-	if (status == 0) {
-		status = gpio_direction_input(NTOSD2_MSP430_IRQ);
-		if (status == 0) {
-			status = gpio_to_irq(NTOSD2_MSP430_IRQ);
-			if (status > 0) {
-				ntosd2_i2c_info[0].irq = status;
-				i2c_register_board_info(1,
-					ntosd2_i2c_info,
-					ARRAY_SIZE(ntosd2_i2c_info));
-			}
-		}
-	}
-	return status;
-}
-
 static struct davinci_mmc_config davinci_ntosd2_mmc_config = {
 	.wires		= 4,
 	.version	= MMC_CTLR_VERSION_1
@@ -217,7 +186,6 @@ static __init void davinci_ntosd2_init(void)
 {
 	struct clk *aemif_clk;
 	struct davinci_soc_info *soc_info = &davinci_soc_info;
-	int	status;
 
 	aemif_clk = clk_get(NULL, "aemif");
 	clk_enable(aemif_clk);
@@ -240,12 +208,6 @@ static __init void davinci_ntosd2_init(void)
 
 	platform_add_devices(davinci_ntosd2_devices,
 				ARRAY_SIZE(davinci_ntosd2_devices));
-
-	/* Initialize I2C interface specific for this board */
-	status = ntosd2_init_i2c();
-	if (status < 0)
-		pr_warning("davinci_ntosd2_init: msp430 irq setup failed:"
-						"	 %d\n", status);
 
 	davinci_serial_init(&uart_config);
 	dm644x_init_asp(&dm644x_ntosd2_snd_data);
@@ -277,6 +239,7 @@ MACHINE_START(NEUROS_OSD2, "Neuros OSD2")
 	.init_irq	= davinci_irq_init,
 	.timer		= &davinci_timer,
 	.init_machine = davinci_ntosd2_init,
+	.init_late	= davinci_init_late,
 	.dma_zone_size	= SZ_128M,
 	.restart	= davinci_restart,
 MACHINE_END

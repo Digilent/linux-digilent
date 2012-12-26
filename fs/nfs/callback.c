@@ -37,31 +37,7 @@ static struct nfs_callback_data nfs_callback_info[NFS4_MAX_MINOR_VERSION + 1];
 static DEFINE_MUTEX(nfs_callback_mutex);
 static struct svc_program nfs4_callback_program;
 
-unsigned int nfs_callback_set_tcpport;
-unsigned short nfs_callback_tcpport;
 unsigned short nfs_callback_tcpport6;
-#define NFS_CALLBACK_MAXPORTNR (65535U)
-
-static int param_set_portnr(const char *val, const struct kernel_param *kp)
-{
-	unsigned long num;
-	int ret;
-
-	if (!val)
-		return -EINVAL;
-	ret = strict_strtoul(val, 0, &num);
-	if (ret == -EINVAL || num > NFS_CALLBACK_MAXPORTNR)
-		return -EINVAL;
-	*((unsigned int *)kp->arg) = num;
-	return 0;
-}
-static struct kernel_param_ops param_ops_portnr = {
-	.set = param_set_portnr,
-	.get = param_get_uint,
-};
-#define param_check_portnr(name, p) __param_check(name, p, unsigned int);
-
-module_param_named(callback_tcpport, nfs_callback_set_tcpport, portnr, 0644);
 
 /*
  * This is the NFSv4 callback kernel thread.
@@ -85,7 +61,7 @@ nfs4_callback_svc(void *vrqstp)
 		}
 		if (err < 0) {
 			if (err != preverr) {
-				printk(KERN_WARNING "%s: unexpected error "
+				printk(KERN_WARNING "NFS: %s: unexpected error "
 					"from svc_recv (%d)\n", __func__, err);
 				preverr = err;
 			}
@@ -101,8 +77,8 @@ nfs4_callback_svc(void *vrqstp)
 /*
  * Prepare to bring up the NFSv4 callback service
  */
-struct svc_rqst *
-nfs4_callback_up(struct svc_serv *serv)
+static struct svc_rqst *
+nfs4_callback_up(struct svc_serv *serv, struct rpc_xprt *xprt)
 {
 	int ret;
 
@@ -172,7 +148,7 @@ nfs41_callback_svc(void *vrqstp)
 /*
  * Bring up the NFSv4.1 callback service
  */
-struct svc_rqst *
+static struct svc_rqst *
 nfs41_callback_up(struct svc_serv *serv, struct rpc_xprt *xprt)
 {
 	struct svc_rqst *rqstp;
@@ -253,6 +229,7 @@ int nfs_callback_up(u32 minorversion, struct rpc_xprt *xprt)
 	char svc_name[12];
 	int ret = 0;
 	int minorversion_setup;
+	struct net *net = &init_net;
 
 	mutex_lock(&nfs_callback_mutex);
 	if (cb_info->users++ || cb_info->task != NULL) {
@@ -264,12 +241,22 @@ int nfs_callback_up(u32 minorversion, struct rpc_xprt *xprt)
 		ret = -ENOMEM;
 		goto out_err;
 	}
+	/* As there is only one thread we need to over-ride the
+	 * default maximum of 80 connections
+	 */
+	serv->sv_maxconn = 1024;
+
+	ret = svc_bind(serv, net);
+	if (ret < 0) {
+		printk(KERN_WARNING "NFS: bind callback service failed\n");
+		goto out_err;
+	}
 
 	minorversion_setup =  nfs_minorversion_callback_svc_setup(minorversion,
 					serv, xprt, &rqstp, &callback_svc);
 	if (!minorversion_setup) {
 		/* v4.0 callback setup */
-		rqstp = nfs4_callback_up(serv);
+		rqstp = nfs4_callback_up(serv, xprt);
 		callback_svc = nfs4_callback_svc;
 	}
 
@@ -306,6 +293,8 @@ out_err:
 	dprintk("NFS: Couldn't create callback socket or server thread; "
 		"err = %d\n", ret);
 	cb_info->users--;
+	if (serv)
+		svc_shutdown_net(serv, net);
 	goto out;
 }
 
@@ -320,6 +309,7 @@ void nfs_callback_down(int minorversion)
 	cb_info->users--;
 	if (cb_info->users == 0 && cb_info->task != NULL) {
 		kthread_stop(cb_info->task);
+		svc_shutdown_net(cb_info->serv, &init_net);
 		svc_exit_thread(cb_info->rqst);
 		cb_info->serv = NULL;
 		cb_info->rqst = NULL;
@@ -332,8 +322,7 @@ void nfs_callback_down(int minorversion)
 int
 check_gss_callback_principal(struct nfs_client *clp, struct svc_rqst *rqstp)
 {
-	struct rpc_clnt *r = clp->cl_rpcclient;
-	char *p = svc_gss_principal(rqstp);
+	char *p = rqstp->rq_cred.cr_principal;
 
 	if (rqstp->rq_authop->flavour != RPC_AUTH_GSS)
 		return 1;
@@ -353,7 +342,7 @@ check_gss_callback_principal(struct nfs_client *clp, struct svc_rqst *rqstp)
 	if (memcmp(p, "nfs@", 4) != 0)
 		return 0;
 	p += 4;
-	if (strcmp(p, r->cl_server) != 0)
+	if (strcmp(p, clp->cl_hostname) != 0)
 		return 0;
 	return 1;
 }

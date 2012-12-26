@@ -70,7 +70,7 @@ static unsigned long fll_recalc(struct clk *clk)
 	return (clk->parent->rate * mult) / div;
 }
 
-static struct clk_ops fll_clk_ops = {
+static struct sh_clk_ops fll_clk_ops = {
 	.recalc		= fll_recalc,
 };
 
@@ -90,7 +90,7 @@ static unsigned long pll_recalc(struct clk *clk)
 	return clk->parent->rate * mult;
 }
 
-static struct clk_ops pll_clk_ops = {
+static struct sh_clk_ops pll_clk_ops = {
 	.recalc		= pll_recalc,
 };
 
@@ -105,7 +105,7 @@ static unsigned long div3_recalc(struct clk *clk)
 	return clk->parent->rate / 3;
 }
 
-static struct clk_ops div3_clk_ops = {
+static struct sh_clk_ops div3_clk_ops = {
 	.recalc		= div3_recalc,
 };
 
@@ -334,8 +334,8 @@ static struct clk_lookup lookups[] = {
 	CLKDEV_CON_ID("tpu0", &mstp_clks[HWBLK_TPU]),
 	CLKDEV_CON_ID("irda0", &mstp_clks[HWBLK_IRDA]),
 	CLKDEV_CON_ID("tsif0", &mstp_clks[HWBLK_TSIF]),
-	CLKDEV_CON_ID("usb1", &mstp_clks[HWBLK_USB1]),
-	CLKDEV_CON_ID("usb0", &mstp_clks[HWBLK_USB0]),
+	CLKDEV_DEV_ID("renesas_usbhs.1", &mstp_clks[HWBLK_USB1]),
+	CLKDEV_DEV_ID("renesas_usbhs.0", &mstp_clks[HWBLK_USB0]),
 	CLKDEV_CON_ID("2dg0", &mstp_clks[HWBLK_2DG]),
 	CLKDEV_DEV_ID("sh_mobile_sdhi.0", &mstp_clks[HWBLK_SDHI0]),
 	CLKDEV_DEV_ID("sh_mobile_sdhi.1", &mstp_clks[HWBLK_SDHI1]),
@@ -375,7 +375,7 @@ int __init arch_clk_init(void)
 		ret = sh_clk_div6_reparent_register(div6_clks, DIV6_NR);
 
 	if (!ret)
-		ret = sh_clk_mstp32_register(mstp_clks, HWBLK_NR);
+		ret = sh_clk_mstp_register(mstp_clks, HWBLK_NR);
 
 	return ret;
 }

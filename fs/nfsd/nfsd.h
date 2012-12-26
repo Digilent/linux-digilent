@@ -72,6 +72,19 @@ int		nfsd_nrthreads(void);
 int		nfsd_nrpools(void);
 int		nfsd_get_nrthreads(int n, int *);
 int		nfsd_set_nrthreads(int n, int *);
+int		nfsd_pool_stats_open(struct inode *, struct file *);
+int		nfsd_pool_stats_release(struct inode *, struct file *);
+
+static inline void nfsd_destroy(struct net *net)
+{
+	int destroy = (nfsd_serv->sv_nrthreads == 1);
+
+	if (destroy)
+		svc_shutdown_net(nfsd_serv, net);
+	svc_destroy(nfsd_serv);
+	if (destroy)
+		nfsd_serv = NULL;
+}
 
 #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
 #ifdef CONFIG_NFSD_V2_ACL
@@ -364,11 +377,16 @@ static inline u32 nfsd_suppattrs2(u32 minorversion)
 	NFSD_WRITEABLE_ATTRS_WORD2
 
 extern int nfsd4_is_junction(struct dentry *dentry);
-#else
+extern int register_cld_notifier(void);
+extern void unregister_cld_notifier(void);
+#else /* CONFIG_NFSD_V4 */
 static inline int nfsd4_is_junction(struct dentry *dentry)
 {
 	return 0;
 }
+
+#define register_cld_notifier() 0
+#define unregister_cld_notifier() do { } while(0)
 
 #endif /* CONFIG_NFSD_V4 */
 

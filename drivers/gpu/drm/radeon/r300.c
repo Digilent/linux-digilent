@@ -105,8 +105,8 @@ int rv370_pcie_gart_init(struct radeon_device *rdev)
 	if (r)
 		DRM_ERROR("Failed to register debugfs file for PCIE gart !\n");
 	rdev->gart.table_size = rdev->gart.num_gpu_pages * 4;
-	rdev->asic->gart_tlb_flush = &rv370_pcie_gart_tlb_flush;
-	rdev->asic->gart_set_page = &rv370_pcie_gart_set_page;
+	rdev->asic->gart.tlb_flush = &rv370_pcie_gart_tlb_flush;
+	rdev->asic->gart.set_page = &rv370_pcie_gart_set_page;
 	return radeon_gart_table_vram_alloc(rdev);
 }
 
@@ -206,9 +206,8 @@ void r300_fence_ring_emit(struct radeon_device *rdev,
 	radeon_ring_write(ring, RADEON_SW_INT_FIRE);
 }
 
-void r300_ring_start(struct radeon_device *rdev)
+void r300_ring_start(struct radeon_device *rdev, struct radeon_ring *ring)
 {
-	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 	unsigned gb_tile_config;
 	int r;
 
@@ -378,28 +377,6 @@ void r300_gpu_init(struct radeon_device *rdev)
 		 rdev->num_gb_pipes, rdev->num_z_pipes);
 }
 
-bool r300_gpu_is_lockup(struct radeon_device *rdev, struct radeon_ring *ring)
-{
-	u32 rbbm_status;
-	int r;
-
-	rbbm_status = RREG32(R_000E40_RBBM_STATUS);
-	if (!G_000E40_GUI_ACTIVE(rbbm_status)) {
-		r100_gpu_lockup_update(&rdev->config.r300.lockup, ring);
-		return false;
-	}
-	/* force CP activities */
-	r = radeon_ring_lock(rdev, ring, 2);
-	if (!r) {
-		/* PACKET2 NOP */
-		radeon_ring_write(ring, 0x80000000);
-		radeon_ring_write(ring, 0x80000000);
-		radeon_ring_unlock_commit(rdev, ring);
-	}
-	ring->rptr = RREG32(RADEON_CP_RB_RPTR);
-	return r100_gpu_cp_is_lockup(rdev, &rdev->config.r300.lockup, ring);
-}
-
 int r300_asic_reset(struct radeon_device *rdev)
 {
 	struct r100_mc_save save;
@@ -450,7 +427,6 @@ int r300_asic_reset(struct radeon_device *rdev)
 	/* Check if GPU is idle */
 	if (G_000E40_GA_BUSY(status) || G_000E40_VAP_BUSY(status)) {
 		dev_err(rdev->dev, "failed to reset GPU\n");
-		rdev->gpu_lockup = true;
 		ret = -1;
 	} else
 		dev_info(rdev->dev, "GPU reset succeed\n");
@@ -628,7 +604,7 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	int r;
 	u32 idx_value;
 
-	ib = p->ib->ptr;
+	ib = p->ib.ptr;
 	track = (struct r100_cs_track *)p->track;
 	idx_value = radeon_get_ib_value(p, idx);
 
@@ -1170,7 +1146,7 @@ static int r300_packet3_check(struct radeon_cs_parser *p,
 	unsigned idx;
 	int r;
 
-	ib = p->ib->ptr;
+	ib = p->ib.ptr;
 	idx = pkt->idx + 1;
 	track = (struct r100_cs_track *)p->track;
 	switch(pkt->opcode) {
@@ -1415,14 +1391,9 @@ static int r300_startup(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = radeon_ib_pool_start(rdev);
-	if (r)
-		return r;
-
-	r = r100_ib_test(rdev);
+	r = radeon_ib_pool_init(rdev);
 	if (r) {
-		dev_err(rdev->dev, "failed testing IB (%d).\n", r);
-		rdev->accel_working = false;
+		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
 		return r;
 	}
 
@@ -1463,7 +1434,6 @@ int r300_resume(struct radeon_device *rdev)
 
 int r300_suspend(struct radeon_device *rdev)
 {
-	radeon_ib_pool_suspend(rdev);
 	r100_cp_disable(rdev);
 	radeon_wb_disable(rdev);
 	r100_irq_disable(rdev);
@@ -1478,7 +1448,7 @@ void r300_fini(struct radeon_device *rdev)
 {
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
-	r100_ib_fini(rdev);
+	radeon_ib_pool_fini(rdev);
 	radeon_gem_fini(rdev);
 	if (rdev->flags & RADEON_IS_PCIE)
 		rv370_pcie_gart_fini(rdev);
@@ -1565,20 +1535,14 @@ int r300_init(struct radeon_device *rdev)
 	}
 	r300_set_reg_safe(rdev);
 
-	r = radeon_ib_pool_init(rdev);
 	rdev->accel_working = true;
-	if (r) {
-		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
-		rdev->accel_working = false;
-	}
-
 	r = r300_startup(rdev);
 	if (r) {
 		/* Somethings want wront with the accel init stop accel */
 		dev_err(rdev->dev, "Disabling GPU acceleration\n");
 		r100_cp_fini(rdev);
 		radeon_wb_fini(rdev);
-		r100_ib_fini(rdev);
+		radeon_ib_pool_fini(rdev);
 		radeon_irq_kms_fini(rdev);
 		if (rdev->flags & RADEON_IS_PCIE)
 			rv370_pcie_gart_fini(rdev);

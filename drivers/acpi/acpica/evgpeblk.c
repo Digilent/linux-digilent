@@ -48,7 +48,7 @@
 
 #define _COMPONENT          ACPI_EVENTS
 ACPI_MODULE_NAME("evgpeblk")
-
+#if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
 /* Local prototypes */
 static acpi_status
 acpi_ev_install_gpe_block(struct acpi_gpe_block_info *gpe_block,
@@ -318,7 +318,7 @@ acpi_ev_create_gpe_info_blocks(struct acpi_gpe_block_info *gpe_block)
  * FUNCTION:    acpi_ev_create_gpe_block
  *
  * PARAMETERS:  gpe_device          - Handle to the parent GPE block
- *              gpe_block_address   - Address and space_iD
+ *              gpe_block_address   - Address and space_ID
  *              register_count      - Number of GPE register pairs in the block
  *              gpe_block_base_number - Starting GPE number for the block
  *              interrupt_number    - H/W interrupt for the block
@@ -504,3 +504,5 @@ acpi_ev_initialize_gpe_block(struct acpi_gpe_xrupt_info *gpe_xrupt_info,
 
 	return_ACPI_STATUS(AE_OK);
 }
+
+#endif				/* !ACPI_REDUCED_HARDWARE */

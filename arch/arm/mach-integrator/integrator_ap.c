@@ -33,17 +33,19 @@
 #include <linux/io.h>
 #include <linux/mtd/physmap.h>
 #include <linux/clk.h>
+#include <linux/platform_data/clk-integrator.h>
 #include <video/vga.h>
 
 #include <mach/hardware.h>
 #include <mach/platform.h>
 #include <asm/hardware/arm_timer.h>
-#include <asm/irq.h>
 #include <asm/setup.h>
 #include <asm/param.h>		/* HZ */
 #include <asm/mach-types.h>
+#include <asm/sched_clock.h>
 
 #include <mach/lm.h>
+#include <mach/irqs.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/irq.h>
@@ -161,12 +163,6 @@ static void __init ap_map_io(void)
 
 #define INTEGRATOR_SC_VALID_INT	0x003fffff
 
-static struct fpga_irq_data sc_irq_data = {
-	.base		= VA_IC_BASE,
-	.irq_start	= 0,
-	.chip.name	= "SC",
-};
-
 static void __init ap_init_irq(void)
 {
 	/* Disable all interrupts initially. */
@@ -177,7 +173,9 @@ static void __init ap_init_irq(void)
 	writel(-1, VA_IC_BASE + IRQ_ENABLE_CLEAR);
 	writel(-1, VA_IC_BASE + FIQ_ENABLE_CLEAR);
 
-	fpga_irq_init(-1, INTEGRATOR_SC_VALID_INT, &sc_irq_data);
+	fpga_irq_init(VA_IC_BASE, "SC", IRQ_PIC_START,
+		-1, INTEGRATOR_SC_VALID_INT, NULL);
+	integrator_clk_init(false);
 }
 
 #ifdef CONFIG_PM
@@ -325,6 +323,11 @@ static void __init ap_init(void)
 
 static unsigned long timer_reload;
 
+static u32 notrace integrator_read_sched_clock(void)
+{
+	return -readl((void __iomem *) TIMER2_VA_BASE + TIMER_VALUE);
+}
+
 static void integrator_clocksource_init(unsigned long inrate)
 {
 	void __iomem *base = (void __iomem *)TIMER2_VA_BASE;
@@ -341,6 +344,7 @@ static void integrator_clocksource_init(unsigned long inrate)
 
 	clocksource_mmio_init(base + TIMER_VALUE, "timer2",
 			rate, 200, 16, clocksource_mmio_readl_down);
+	setup_sched_clock(integrator_read_sched_clock, 16, rate);
 }
 
 static void __iomem * const clkevt_base = (void __iomem *)TIMER1_VA_BASE;
@@ -438,6 +442,10 @@ static void integrator_clockevent_init(unsigned long inrate)
 					0xffffU);
 }
 
+void __init ap_init_early(void)
+{
+}
+
 /*
  * Set up timer(s).
  */
@@ -448,7 +456,7 @@ static void __init ap_init_timer(void)
 
 	clk = clk_get_sys("ap_timer", NULL);
 	BUG_ON(IS_ERR(clk));
-	clk_enable(clk);
+	clk_prepare_enable(clk);
 	rate = clk_get_rate(clk);
 
 	writel(0, TIMER0_VA_BASE + TIMER_CTRL);
@@ -468,8 +476,10 @@ MACHINE_START(INTEGRATOR, "ARM-Integrator")
 	.atag_offset	= 0x100,
 	.reserve	= integrator_reserve,
 	.map_io		= ap_map_io,
-	.init_early	= integrator_init_early,
+	.nr_irqs	= NR_IRQS_INTEGRATOR_AP,
+	.init_early	= ap_init_early,
 	.init_irq	= ap_init_irq,
+	.handle_irq	= fpga_handle_irq,
 	.timer		= &ap_timer,
 	.init_machine	= ap_init,
 	.restart	= integrator_restart,

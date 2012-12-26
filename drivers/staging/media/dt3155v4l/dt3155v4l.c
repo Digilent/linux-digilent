@@ -898,6 +898,10 @@ dt3155_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	INIT_LIST_HEAD(&pd->dmaq);
 	mutex_init(&pd->mux);
 	pd->vdev->lock = &pd->mux; /* for locking v4l2_file_operations */
+	/* Locking in file operations other than ioctl should be done
+	   by the driver, not the V4L2 core.
+	   This driver needs auditing so that this flag can be removed. */
+	set_bit(V4L2_FL_LOCK_ALL_FOPS, &pd->vdev->flags);
 	spin_lock_init(&pd->lock);
 	pd->csr2 = csr2_init;
 	pd->config = config_init;
@@ -967,20 +971,7 @@ static struct pci_driver pci_driver = {
 	.remove = __devexit_p(dt3155_remove),
 };
 
-static int __init
-dt3155_init_module(void)
-{
-	return pci_register_driver(&pci_driver);
-}
-
-static void __exit
-dt3155_exit_module(void)
-{
-	pci_unregister_driver(&pci_driver);
-}
-
-module_init(dt3155_init_module);
-module_exit(dt3155_exit_module);
+module_pci_driver(pci_driver);
 
 MODULE_DESCRIPTION("video4linux pci-driver for dt3155 frame grabber");
 MODULE_AUTHOR("Marin Mitov <mitov@issp.bas.bg>");

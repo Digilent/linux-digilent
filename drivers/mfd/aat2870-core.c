@@ -262,13 +262,6 @@ static ssize_t aat2870_dump_reg(struct aat2870_data *aat2870, char *buf)
 	return count;
 }
 
-static int aat2870_reg_open_file(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-
-	return 0;
-}
-
 static ssize_t aat2870_reg_read_file(struct file *file, char __user *user_buf,
 				     size_t count, loff_t *ppos)
 {
@@ -330,7 +323,7 @@ static ssize_t aat2870_reg_write_file(struct file *file,
 }
 
 static const struct file_operations aat2870_reg_fops = {
-	.open = aat2870_reg_open_file,
+	.open = simple_open,
 	.read = aat2870_reg_read_file,
 	.write = aat2870_reg_write_file,
 };
@@ -431,7 +424,7 @@ static int aat2870_i2c_probe(struct i2c_client *client,
 	}
 
 	ret = mfd_add_devices(aat2870->dev, 0, aat2870_devs,
-			      ARRAY_SIZE(aat2870_devs), NULL, 0);
+			      ARRAY_SIZE(aat2870_devs), NULL, 0, NULL);
 	if (ret != 0) {
 		dev_err(aat2870->dev, "Failed to add subdev: %d\n", ret);
 		goto out_disable;

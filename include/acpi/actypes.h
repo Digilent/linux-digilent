@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2011, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -173,7 +173,7 @@ typedef u64 acpi_physical_address;
  * to indicate that special precautions must be taken to avoid alignment faults.
  * (IA64 or ia64 is currently used by existing compilers to indicate IPF.)
  *
- * Note: Em64_t and other X86-64 processors support misaligned transfers,
+ * Note: EM64T and other X86-64 processors support misaligned transfers,
  * so there is no need to define this flag.
  */
 #if defined (__IA64__) || defined (__ia64__)
@@ -499,9 +499,10 @@ typedef u64 acpi_integer;
 #define ACPI_STATE_D0                   (u8) 0
 #define ACPI_STATE_D1                   (u8) 1
 #define ACPI_STATE_D2                   (u8) 2
-#define ACPI_STATE_D3                   (u8) 3
-#define ACPI_STATE_D3_COLD              (u8) 4
-#define ACPI_D_STATES_MAX               ACPI_STATE_D3_COLD
+#define ACPI_STATE_D3_HOT               (u8) 3
+#define ACPI_STATE_D3                   (u8) 4
+#define ACPI_STATE_D3_COLD              ACPI_STATE_D3
+#define ACPI_D_STATES_MAX               ACPI_STATE_D3
 #define ACPI_D_STATE_COUNT              5
 
 #define ACPI_STATE_C0                   (u8) 0
@@ -518,6 +519,13 @@ typedef u64 acpi_integer;
 #define ACPI_SLEEP_TYPE_INVALID         0xFF
 
 /*
+ * Sleep/Wake flags
+ */
+#define ACPI_NO_OPTIONAL_METHODS        0x00	/* Do not execute any optional methods */
+#define ACPI_EXECUTE_GTS                0x01	/* For enter sleep interface */
+#define ACPI_EXECUTE_BFS                0x02	/* For leave sleep prep interface */
+
+/*
  * Standard notify values
  */
 #define ACPI_NOTIFY_BUS_CHECK           (u8) 0x00
@@ -532,8 +540,9 @@ typedef u64 acpi_integer;
 #define ACPI_NOTIFY_DEVICE_PLD_CHECK    (u8) 0x09
 #define ACPI_NOTIFY_RESERVED            (u8) 0x0A
 #define ACPI_NOTIFY_LOCALITY_UPDATE     (u8) 0x0B
+#define ACPI_NOTIFY_SHUTDOWN_REQUEST    (u8) 0x0C
 
-#define ACPI_NOTIFY_MAX                 0x0B
+#define ACPI_NOTIFY_MAX                 0x0C
 
 /*
  * Types associated with ACPI names and objects. The first group of
@@ -627,7 +636,7 @@ typedef u32 acpi_event_type;
 #define ACPI_NUM_FIXED_EVENTS           ACPI_EVENT_MAX + 1
 
 /*
- * Event Status - Per event
+ * Event status - Per event
  * -------------
  * The encoding of acpi_event_status is illustrated below.
  * Note that a set bit (1) indicates the property is TRUE
@@ -697,8 +706,13 @@ typedef u32 acpi_event_status;
 #define ACPI_DEVICE_NOTIFY              0x2
 #define ACPI_ALL_NOTIFY                 (ACPI_SYSTEM_NOTIFY | ACPI_DEVICE_NOTIFY)
 #define ACPI_MAX_NOTIFY_HANDLER_TYPE    0x3
+#define ACPI_NUM_NOTIFY_TYPES           2
 
-#define ACPI_MAX_SYS_NOTIFY             0x7f
+#define ACPI_MAX_SYS_NOTIFY             0x7F
+#define ACPI_MAX_DEVICE_SPECIFIC_NOTIFY 0xBF
+
+#define ACPI_SYSTEM_HANDLER_LIST        0	/* Used as index, must be SYSTEM_NOTIFY -1 */
+#define ACPI_DEVICE_HANDLER_LIST        1	/* Used as index, must be DEVICE_NOTIFY -1 */
 
 /* Address Space (Operation Region) Types */
 
@@ -714,8 +728,9 @@ typedef u8 acpi_adr_space_type;
 #define ACPI_ADR_SPACE_IPMI             (acpi_adr_space_type) 7
 #define ACPI_ADR_SPACE_GPIO             (acpi_adr_space_type) 8
 #define ACPI_ADR_SPACE_GSBUS            (acpi_adr_space_type) 9
+#define ACPI_ADR_SPACE_PLATFORM_COMM    (acpi_adr_space_type) 10
 
-#define ACPI_NUM_PREDEFINED_REGIONS     10
+#define ACPI_NUM_PREDEFINED_REGIONS     11
 
 /*
  * Special Address Spaces
@@ -785,6 +800,15 @@ typedef u8 acpi_adr_space_type;
 
 #define ACPI_ENABLE_EVENT                       1
 #define ACPI_DISABLE_EVENT                      0
+
+/* Sleep function dispatch */
+
+typedef acpi_status(*ACPI_SLEEP_FUNCTION) (u8 sleep_state);
+
+struct acpi_sleep_functions {
+	ACPI_SLEEP_FUNCTION legacy_function;
+	ACPI_SLEEP_FUNCTION extended_function;
+};
 
 /*
  * External ACPI object definition

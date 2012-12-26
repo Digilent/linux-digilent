@@ -525,9 +525,10 @@ const struct fw_address_region fw_high_memory_region =
 	{ .start = 0x000100000000ULL, .end = 0xffffe0000000ULL,  };
 EXPORT_SYMBOL(fw_high_memory_region);
 
-#if 0
-const struct fw_address_region fw_low_memory_region =
+static const struct fw_address_region low_memory_region =
 	{ .start = 0x000000000000ULL, .end = 0x000100000000ULL,  };
+
+#if 0
 const struct fw_address_region fw_private_region =
 	{ .start = 0xffffe0000000ULL, .end = 0xfffff0000000ULL,  };
 const struct fw_address_region fw_csr_region =
@@ -565,7 +566,6 @@ int fw_core_add_address_handler(struct fw_address_handler *handler,
 				const struct fw_address_region *region)
 {
 	struct fw_address_handler *other;
-	unsigned long flags;
 	int ret = -EBUSY;
 
 	if (region->start & 0xffff000000000003ULL ||
@@ -575,7 +575,7 @@ int fw_core_add_address_handler(struct fw_address_handler *handler,
 	    handler->length == 0)
 		return -EINVAL;
 
-	spin_lock_irqsave(&address_handler_lock, flags);
+	spin_lock_bh(&address_handler_lock);
 
 	handler->offset = region->start;
 	while (handler->offset + handler->length <= region->end) {
@@ -594,7 +594,7 @@ int fw_core_add_address_handler(struct fw_address_handler *handler,
 		}
 	}
 
-	spin_unlock_irqrestore(&address_handler_lock, flags);
+	spin_unlock_bh(&address_handler_lock);
 
 	return ret;
 }
@@ -602,14 +602,15 @@ EXPORT_SYMBOL(fw_core_add_address_handler);
 
 /**
  * fw_core_remove_address_handler() - unregister an address handler
+ *
+ * When fw_core_remove_address_handler() returns, @handler->callback() is
+ * guaranteed to not run on any CPU anymore.
  */
 void fw_core_remove_address_handler(struct fw_address_handler *handler)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&address_handler_lock, flags);
+	spin_lock_bh(&address_handler_lock);
 	list_del(&handler->link);
-	spin_unlock_irqrestore(&address_handler_lock, flags);
+	spin_unlock_bh(&address_handler_lock);
 }
 EXPORT_SYMBOL(fw_core_remove_address_handler);
 
@@ -770,7 +771,7 @@ static struct fw_request *allocate_request(struct fw_card *card,
 		break;
 
 	default:
-		fw_error("ERROR - corrupt request received - %08x %08x %08x\n",
+		fw_notice(card, "ERROR - corrupt request received - %08x %08x %08x\n",
 			 p->header[0], p->header[1], p->header[2]);
 		return NULL;
 	}
@@ -820,13 +821,21 @@ void fw_send_response(struct fw_card *card,
 }
 EXPORT_SYMBOL(fw_send_response);
 
+/**
+ * fw_get_request_speed() - returns speed at which the @request was received
+ */
+int fw_get_request_speed(struct fw_request *request)
+{
+	return request->response.speed;
+}
+EXPORT_SYMBOL(fw_get_request_speed);
+
 static void handle_exclusive_region_request(struct fw_card *card,
 					    struct fw_packet *p,
 					    struct fw_request *request,
 					    unsigned long long offset)
 {
 	struct fw_address_handler *handler;
-	unsigned long flags;
 	int tcode, destination, source;
 
 	destination = HEADER_GET_DESTINATION(p->header[0]);
@@ -835,27 +844,19 @@ static void handle_exclusive_region_request(struct fw_card *card,
 	if (tcode == TCODE_LOCK_REQUEST)
 		tcode = 0x10 + HEADER_GET_EXTENDED_TCODE(p->header[3]);
 
-	spin_lock_irqsave(&address_handler_lock, flags);
+	spin_lock_bh(&address_handler_lock);
 	handler = lookup_enclosing_address_handler(&address_handler_list,
 						   offset, request->length);
-	spin_unlock_irqrestore(&address_handler_lock, flags);
-
-	/*
-	 * FIXME: lookup the fw_node corresponding to the sender of
-	 * this request and pass that to the address handler instead
-	 * of the node ID.  We may also want to move the address
-	 * allocations to fw_node so we only do this callback if the
-	 * upper layers registered it for this node.
-	 */
-
-	if (handler == NULL)
-		fw_send_response(card, request, RCODE_ADDRESS_ERROR);
-	else
+	if (handler)
 		handler->address_callback(card, request,
 					  tcode, destination, source,
 					  p->generation, offset,
 					  request->data, request->length,
 					  handler->callback_data);
+	spin_unlock_bh(&address_handler_lock);
+
+	if (!handler)
+		fw_send_response(card, request, RCODE_ADDRESS_ERROR);
 }
 
 static void handle_fcp_region_request(struct fw_card *card,
@@ -864,7 +865,6 @@ static void handle_fcp_region_request(struct fw_card *card,
 				      unsigned long long offset)
 {
 	struct fw_address_handler *handler;
-	unsigned long flags;
 	int tcode, destination, source;
 
 	if ((offset != (CSR_REGISTER_BASE | CSR_FCP_COMMAND) &&
@@ -886,7 +886,7 @@ static void handle_fcp_region_request(struct fw_card *card,
 		return;
 	}
 
-	spin_lock_irqsave(&address_handler_lock, flags);
+	spin_lock_bh(&address_handler_lock);
 	list_for_each_entry(handler, &address_handler_list, link) {
 		if (is_enclosing_handler(handler, offset, request->length))
 			handler->address_callback(card, NULL, tcode,
@@ -896,7 +896,7 @@ static void handle_fcp_region_request(struct fw_card *card,
 						  request->length,
 						  handler->callback_data);
 	}
-	spin_unlock_irqrestore(&address_handler_lock, flags);
+	spin_unlock_bh(&address_handler_lock);
 
 	fw_send_response(card, request, RCODE_COMPLETE);
 }
@@ -960,7 +960,7 @@ void fw_core_handle_response(struct fw_card *card, struct fw_packet *p)
 
 	if (&t->link == &card->transaction_list) {
  timed_out:
-		fw_notify("Unsolicited response (source %x, tlabel %x)\n",
+		fw_notice(card, "unsolicited response (source %x, tlabel %x)\n",
 			  source, tlabel);
 		return;
 	}
@@ -1003,6 +1003,32 @@ void fw_core_handle_response(struct fw_card *card, struct fw_packet *p)
 	t->callback(card, rcode, data, data_length, t->callback_data);
 }
 EXPORT_SYMBOL(fw_core_handle_response);
+
+/**
+ * fw_rcode_string - convert a firewire result code to an error description
+ * @rcode: the result code
+ */
+const char *fw_rcode_string(int rcode)
+{
+	static const char *const names[] = {
+		[RCODE_COMPLETE]       = "no error",
+		[RCODE_CONFLICT_ERROR] = "conflict error",
+		[RCODE_DATA_ERROR]     = "data error",
+		[RCODE_TYPE_ERROR]     = "type error",
+		[RCODE_ADDRESS_ERROR]  = "address error",
+		[RCODE_SEND_ERROR]     = "send error",
+		[RCODE_CANCELLED]      = "timeout",
+		[RCODE_BUSY]           = "busy",
+		[RCODE_GENERATION]     = "bus reset",
+		[RCODE_NO_ACK]         = "no ack",
+	};
+
+	if ((unsigned int)rcode < ARRAY_SIZE(names) && names[rcode])
+		return names[rcode];
+	else
+		return "unknown";
+}
+EXPORT_SYMBOL(fw_rcode_string);
 
 static const struct fw_address_region topology_map_region =
 	{ .start = CSR_REGISTER_BASE | CSR_TOPOLOGY_MAP,
@@ -1173,6 +1199,23 @@ static struct fw_address_handler registers = {
 	.address_callback	= handle_registers,
 };
 
+static void handle_low_memory(struct fw_card *card, struct fw_request *request,
+		int tcode, int destination, int source, int generation,
+		unsigned long long offset, void *payload, size_t length,
+		void *callback_data)
+{
+	/*
+	 * This catches requests not handled by the physical DMA unit,
+	 * i.e., wrong transaction types or unauthorized source nodes.
+	 */
+	fw_send_response(card, request, RCODE_TYPE_ERROR);
+}
+
+static struct fw_address_handler low_memory = {
+	.length			= 0x000100000000ULL,
+	.address_callback	= handle_low_memory,
+};
+
 MODULE_AUTHOR("Kristian Hoegsberg <krh@bitplanet.net>");
 MODULE_DESCRIPTION("Core IEEE1394 transaction logic");
 MODULE_LICENSE("GPL");
@@ -1234,6 +1277,7 @@ static int __init fw_core_init(void)
 
 	fw_core_add_address_handler(&topology_map, &topology_map_region);
 	fw_core_add_address_handler(&registers, &registers_region);
+	fw_core_add_address_handler(&low_memory, &low_memory_region);
 	fw_core_add_descriptor(&vendor_id_descriptor);
 	fw_core_add_descriptor(&model_id_descriptor);
 

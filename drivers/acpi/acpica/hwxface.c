@@ -104,8 +104,8 @@ ACPI_EXPORT_SYMBOL(acpi_reset)
  *
  * FUNCTION:    acpi_read
  *
- * PARAMETERS:  Value               - Where the value is returned
- *              Reg                 - GAS register structure
+ * PARAMETERS:  value               - Where the value is returned
+ *              reg                 - GAS register structure
  *
  * RETURN:      Status
  *
@@ -113,7 +113,7 @@ ACPI_EXPORT_SYMBOL(acpi_reset)
  *
  * LIMITATIONS: <These limitations also apply to acpi_write>
  *      bit_width must be exactly 8, 16, 32, or 64.
- *      space_iD must be system_memory or system_iO.
+ *      space_ID must be system_memory or system_IO.
  *      bit_offset and access_width are currently ignored, as there has
  *          not been a need to implement these.
  *
@@ -138,11 +138,6 @@ acpi_status acpi_read(u64 *return_value, struct acpi_generic_address *reg)
 		return (status);
 	}
 
-	width = reg->bit_width;
-	if (width == 64) {
-		width = 32;	/* Break into two 32-bit transfers */
-	}
-
 	/* Initialize entire 64-bit return value to zero */
 
 	*return_value = 0;
@@ -154,24 +149,17 @@ acpi_status acpi_read(u64 *return_value, struct acpi_generic_address *reg)
 	 */
 	if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
 		status = acpi_os_read_memory((acpi_physical_address)
-					     address, &value, width);
+					     address, return_value,
+					     reg->bit_width);
 		if (ACPI_FAILURE(status)) {
 			return (status);
 		}
-		*return_value = value;
-
-		if (reg->bit_width == 64) {
-
-			/* Read the top 32 bits */
-
-			status = acpi_os_read_memory((acpi_physical_address)
-						     (address + 4), &value, 32);
-			if (ACPI_FAILURE(status)) {
-				return (status);
-			}
-			*return_value |= ((u64)value << 32);
-		}
 	} else {		/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
+
+		width = reg->bit_width;
+		if (width == 64) {
+			width = 32;	/* Break into two 32-bit transfers */
+		}
 
 		status = acpi_hw_read_port((acpi_io_address)
 					   address, &value, width);
@@ -208,8 +196,8 @@ ACPI_EXPORT_SYMBOL(acpi_read)
  *
  * FUNCTION:    acpi_write
  *
- * PARAMETERS:  Value               - Value to be written
- *              Reg                 - GAS register structure
+ * PARAMETERS:  value               - Value to be written
+ *              reg                 - GAS register structure
  *
  * RETURN:      Status
  *
@@ -231,32 +219,22 @@ acpi_status acpi_write(u64 value, struct acpi_generic_address *reg)
 		return (status);
 	}
 
-	width = reg->bit_width;
-	if (width == 64) {
-		width = 32;	/* Break into two 32-bit transfers */
-	}
-
 	/*
 	 * Two address spaces supported: Memory or IO. PCI_Config is
 	 * not supported here because the GAS structure is insufficient
 	 */
 	if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
 		status = acpi_os_write_memory((acpi_physical_address)
-					      address, ACPI_LODWORD(value),
-					      width);
+					      address, value, reg->bit_width);
 		if (ACPI_FAILURE(status)) {
 			return (status);
 		}
-
-		if (reg->bit_width == 64) {
-			status = acpi_os_write_memory((acpi_physical_address)
-						      (address + 4),
-						      ACPI_HIDWORD(value), 32);
-			if (ACPI_FAILURE(status)) {
-				return (status);
-			}
-		}
 	} else {		/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
+
+		width = reg->bit_width;
+		if (width == 64) {
+			width = 32;	/* Break into two 32-bit transfers */
+		}
 
 		status = acpi_hw_write_port((acpi_io_address)
 					    address, ACPI_LODWORD(value),
@@ -286,6 +264,7 @@ acpi_status acpi_write(u64 value, struct acpi_generic_address *reg)
 
 ACPI_EXPORT_SYMBOL(acpi_write)
 
+#if (!ACPI_REDUCED_HARDWARE)
 /*******************************************************************************
  *
  * FUNCTION:    acpi_read_bit_register
@@ -453,7 +432,7 @@ unlock_and_exit:
 }
 
 ACPI_EXPORT_SYMBOL(acpi_write_bit_register)
-
+#endif				/* !ACPI_REDUCED_HARDWARE */
 /*******************************************************************************
  *
  * FUNCTION:    acpi_get_sleep_type_data
@@ -462,7 +441,7 @@ ACPI_EXPORT_SYMBOL(acpi_write_bit_register)
  *              *sleep_type_a        - Where SLP_TYPa is returned
  *              *sleep_type_b        - Where SLP_TYPb is returned
  *
- * RETURN:      Status - ACPI status
+ * RETURN:      status - ACPI status
  *
  * DESCRIPTION: Obtain the SLP_TYPa and SLP_TYPb values for the requested sleep
  *              state.

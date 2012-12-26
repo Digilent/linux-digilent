@@ -399,7 +399,7 @@ void e1000_set_media_type(struct e1000_hw *hw)
 }
 
 /**
- * e1000_reset_hw: reset the hardware completely
+ * e1000_reset_hw - reset the hardware completely
  * @hw: Struct containing variables accessed by shared code
  *
  * Reset the transmit and receive units; mask and clear all interrupts.
@@ -546,7 +546,7 @@ s32 e1000_reset_hw(struct e1000_hw *hw)
 }
 
 /**
- * e1000_init_hw: Performs basic configuration of the adapter.
+ * e1000_init_hw - Performs basic configuration of the adapter.
  * @hw: Struct containing variables accessed by shared code
  *
  * Assumes that the controller has previously been reset and is in a
@@ -2591,7 +2591,7 @@ s32 e1000_check_for_link(struct e1000_hw *hw)
  * @hw: Struct containing variables accessed by shared code
  * @speed: Speed of the connection
  * @duplex: Duplex setting of the connection
-
+ *
  * Detects the current speed and duplex settings of the hardware.
  */
 s32 e1000_get_speed_and_duplex(struct e1000_hw *hw, u16 *speed, u16 *duplex)
@@ -2959,7 +2959,7 @@ static s32 e1000_read_phy_reg_ex(struct e1000_hw *hw, u32 reg_addr,
  * @hw: Struct containing variables accessed by shared code
  * @reg_addr: address of the PHY register to write
  * @data: data to write to the PHY
-
+ *
  * Writes a value to a PHY register
  */
 s32 e1000_write_phy_reg(struct e1000_hw *hw, u32 reg_addr, u16 phy_data)
@@ -5253,6 +5253,78 @@ static s32 e1000_check_downshift(struct e1000_hw *hw)
 	return E1000_SUCCESS;
 }
 
+static const u16 dsp_reg_array[IGP01E1000_PHY_CHANNEL_NUM] = {
+	IGP01E1000_PHY_AGC_PARAM_A,
+	IGP01E1000_PHY_AGC_PARAM_B,
+	IGP01E1000_PHY_AGC_PARAM_C,
+	IGP01E1000_PHY_AGC_PARAM_D
+};
+
+static s32 e1000_1000Mb_check_cable_length(struct e1000_hw *hw)
+{
+	u16 min_length, max_length;
+	u16 phy_data, i;
+	s32 ret_val;
+
+	ret_val = e1000_get_cable_length(hw, &min_length, &max_length);
+	if (ret_val)
+		return ret_val;
+
+	if (hw->dsp_config_state != e1000_dsp_config_enabled)
+		return 0;
+
+	if (min_length >= e1000_igp_cable_length_50) {
+		for (i = 0; i < IGP01E1000_PHY_CHANNEL_NUM; i++) {
+			ret_val = e1000_read_phy_reg(hw, dsp_reg_array[i],
+						     &phy_data);
+			if (ret_val)
+				return ret_val;
+
+			phy_data &= ~IGP01E1000_PHY_EDAC_MU_INDEX;
+
+			ret_val = e1000_write_phy_reg(hw, dsp_reg_array[i],
+						      phy_data);
+			if (ret_val)
+				return ret_val;
+		}
+		hw->dsp_config_state = e1000_dsp_config_activated;
+	} else {
+		u16 ffe_idle_err_timeout = FFE_IDLE_ERR_COUNT_TIMEOUT_20;
+		u32 idle_errs = 0;
+
+		/* clear previous idle error counts */
+		ret_val = e1000_read_phy_reg(hw, PHY_1000T_STATUS, &phy_data);
+		if (ret_val)
+			return ret_val;
+
+		for (i = 0; i < ffe_idle_err_timeout; i++) {
+			udelay(1000);
+			ret_val = e1000_read_phy_reg(hw, PHY_1000T_STATUS,
+						     &phy_data);
+			if (ret_val)
+				return ret_val;
+
+			idle_errs += (phy_data & SR_1000T_IDLE_ERROR_CNT);
+			if (idle_errs > SR_1000T_PHY_EXCESSIVE_IDLE_ERR_COUNT) {
+				hw->ffe_config_state = e1000_ffe_config_active;
+
+				ret_val = e1000_write_phy_reg(hw,
+					      IGP01E1000_PHY_DSP_FFE,
+					      IGP01E1000_PHY_DSP_FFE_CM_CP);
+				if (ret_val)
+					return ret_val;
+				break;
+			}
+
+			if (idle_errs)
+				ffe_idle_err_timeout =
+					    FFE_IDLE_ERR_COUNT_TIMEOUT_100;
+		}
+	}
+
+	return 0;
+}
+
 /**
  * e1000_config_dsp_after_link_change
  * @hw: Struct containing variables accessed by shared code
@@ -5269,13 +5341,6 @@ static s32 e1000_config_dsp_after_link_change(struct e1000_hw *hw, bool link_up)
 {
 	s32 ret_val;
 	u16 phy_data, phy_saved_data, speed, duplex, i;
-	static const u16 dsp_reg_array[IGP01E1000_PHY_CHANNEL_NUM] = {
-	       IGP01E1000_PHY_AGC_PARAM_A,
-	       IGP01E1000_PHY_AGC_PARAM_B,
-	       IGP01E1000_PHY_AGC_PARAM_C,
-	       IGP01E1000_PHY_AGC_PARAM_D
-	};
-	u16 min_length, max_length;
 
 	e_dbg("e1000_config_dsp_after_link_change");
 
@@ -5290,84 +5355,9 @@ static s32 e1000_config_dsp_after_link_change(struct e1000_hw *hw, bool link_up)
 		}
 
 		if (speed == SPEED_1000) {
-
-			ret_val =
-			    e1000_get_cable_length(hw, &min_length,
-						   &max_length);
+			ret_val = e1000_1000Mb_check_cable_length(hw);
 			if (ret_val)
 				return ret_val;
-
-			if ((hw->dsp_config_state == e1000_dsp_config_enabled)
-			    && min_length >= e1000_igp_cable_length_50) {
-
-				for (i = 0; i < IGP01E1000_PHY_CHANNEL_NUM; i++) {
-					ret_val =
-					    e1000_read_phy_reg(hw,
-							       dsp_reg_array[i],
-							       &phy_data);
-					if (ret_val)
-						return ret_val;
-
-					phy_data &=
-					    ~IGP01E1000_PHY_EDAC_MU_INDEX;
-
-					ret_val =
-					    e1000_write_phy_reg(hw,
-								dsp_reg_array
-								[i], phy_data);
-					if (ret_val)
-						return ret_val;
-				}
-				hw->dsp_config_state =
-				    e1000_dsp_config_activated;
-			}
-
-			if ((hw->ffe_config_state == e1000_ffe_config_enabled)
-			    && (min_length < e1000_igp_cable_length_50)) {
-
-				u16 ffe_idle_err_timeout =
-				    FFE_IDLE_ERR_COUNT_TIMEOUT_20;
-				u32 idle_errs = 0;
-
-				/* clear previous idle error counts */
-				ret_val =
-				    e1000_read_phy_reg(hw, PHY_1000T_STATUS,
-						       &phy_data);
-				if (ret_val)
-					return ret_val;
-
-				for (i = 0; i < ffe_idle_err_timeout; i++) {
-					udelay(1000);
-					ret_val =
-					    e1000_read_phy_reg(hw,
-							       PHY_1000T_STATUS,
-							       &phy_data);
-					if (ret_val)
-						return ret_val;
-
-					idle_errs +=
-					    (phy_data &
-					     SR_1000T_IDLE_ERROR_CNT);
-					if (idle_errs >
-					    SR_1000T_PHY_EXCESSIVE_IDLE_ERR_COUNT)
-					{
-						hw->ffe_config_state =
-						    e1000_ffe_config_active;
-
-						ret_val =
-						    e1000_write_phy_reg(hw,
-									IGP01E1000_PHY_DSP_FFE,
-									IGP01E1000_PHY_DSP_FFE_CM_CP);
-						if (ret_val)
-							return ret_val;
-						break;
-					}
-
-					if (idle_errs)
-						ffe_idle_err_timeout =
-						    FFE_IDLE_ERR_COUNT_TIMEOUT_100;
-				}
-			}
 		}
 	} else {
 		if (hw->dsp_config_state == e1000_dsp_config_activated) {

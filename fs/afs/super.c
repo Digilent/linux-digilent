@@ -301,7 +301,6 @@ static int afs_fill_super(struct super_block *sb,
 {
 	struct afs_super_info *as = sb->s_fs_info;
 	struct afs_fid fid;
-	struct dentry *root = NULL;
 	struct inode *inode = NULL;
 	int ret;
 
@@ -327,18 +326,16 @@ static int afs_fill_super(struct super_block *sb,
 		set_bit(AFS_VNODE_AUTOCELL, &AFS_FS_I(inode)->flags);
 
 	ret = -ENOMEM;
-	root = d_alloc_root(inode);
-	if (!root)
+	sb->s_root = d_make_root(inode);
+	if (!sb->s_root)
 		goto error;
 
 	sb->s_d_op = &afs_fs_dentry_operations;
-	sb->s_root = root;
 
 	_leave(" = 0");
 	return 0;
 
 error:
-	iput(inode);
 	_leave(" = %d", ret);
 	return ret;
 }
@@ -398,7 +395,7 @@ static struct dentry *afs_mount(struct file_system_type *fs_type,
 	as->volume = vol;
 
 	/* allocate a deviceless superblock */
-	sb = sget(fs_type, afs_test_super, afs_set_super, as);
+	sb = sget(fs_type, afs_test_super, afs_set_super, flags, as);
 	if (IS_ERR(sb)) {
 		ret = PTR_ERR(sb);
 		afs_put_volume(vol);
@@ -409,7 +406,6 @@ static struct dentry *afs_mount(struct file_system_type *fs_type,
 	if (!sb->s_root) {
 		/* initial superblock/root creation */
 		_debug("create");
-		sb->s_flags = flags;
 		ret = afs_fill_super(sb, &params);
 		if (ret < 0) {
 			deactivate_locked_super(sb);

@@ -109,6 +109,9 @@ static int __devinit platform_pci_init(struct pci_dev *pdev,
 	long mmio_addr, mmio_len;
 	unsigned int max_nr_gframes;
 
+	if (!xen_domain())
+		return -ENODEV;
+
 	i = pci_enable_device(pdev);
 	if (i)
 		return i;
@@ -186,11 +189,6 @@ static struct pci_driver platform_driver = {
 
 static int __init platform_pci_module_init(void)
 {
-	/* no unplug has been done, IGNORE hasn't been specified: just
-	 * return now */
-	if (!xen_platform_pci_unplug)
-		return -ENODEV;
-
 	return pci_register_driver(&platform_driver);
 }
 

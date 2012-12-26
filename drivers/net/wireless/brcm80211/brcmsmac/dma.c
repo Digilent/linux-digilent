@@ -177,7 +177,7 @@
 #define BCMEXTRAHDROOM 172
 
 /* debug/trace */
-#ifdef BCMDBG
+#ifdef DEBUG
 #define	DMA_ERROR(fmt, ...)					\
 do {								\
 	if (*di->msg_level & 1)					\
@@ -193,7 +193,7 @@ do {								\
 	no_printk(fmt, ##__VA_ARGS__)
 #define	DMA_TRACE(fmt, ...)			\
 	no_printk(fmt, ##__VA_ARGS__)
-#endif				/* BCMDBG */
+#endif				/* DEBUG */
 
 #define	DMA_NONE(fmt, ...)			\
 	no_printk(fmt, ##__VA_ARGS__)
@@ -573,6 +573,7 @@ struct dma_pub *dma_attach(char *name, struct si_pub *sih,
 	struct dma_info *di;
 	u8 rev = core->id.rev;
 	uint size;
+	struct si_info *sii = container_of(sih, struct si_info, pub);
 
 	/* allocate private info structure */
 	di = kzalloc(sizeof(struct dma_info), GFP_ATOMIC);
@@ -633,16 +634,20 @@ struct dma_pub *dma_attach(char *name, struct si_pub *sih,
 	 */
 	di->ddoffsetlow = 0;
 	di->dataoffsetlow = 0;
-	/* add offset for pcie with DMA64 bus */
-	di->ddoffsetlow = 0;
-	di->ddoffsethigh = SI_PCIE_DMA_H32;
+	/* for pci bus, add offset */
+	if (sii->icbus->hosttype == BCMA_HOSTTYPE_PCI) {
+		/* add offset for pcie with DMA64 bus */
+		di->ddoffsetlow = 0;
+		di->ddoffsethigh = SI_PCIE_DMA_H32;
+	}
 	di->dataoffsetlow = di->ddoffsetlow;
 	di->dataoffsethigh = di->ddoffsethigh;
+
 	/* WAR64450 : DMACtl.Addr ext fields are not supported in SDIOD core. */
-	if ((core->id.id == SDIOD_CORE_ID)
+	if ((core->id.id == BCMA_CORE_SDIO_DEV)
 	    && ((rev > 0) && (rev <= 2)))
 		di->addrext = false;
-	else if ((core->id.id == I2S_CORE_ID) &&
+	else if ((core->id.id == BCMA_CORE_I2S) &&
 		 ((rev == 0) || (rev == 1)))
 		di->addrext = false;
 	else
@@ -968,7 +973,7 @@ int dma_rx(struct dma_pub *pub, struct sk_buff_head *skb_list)
 			pktcnt++;
 		}
 
-#ifdef BCMDBG
+#ifdef DEBUG
 		if (resid > 0) {
 			uint cur;
 			cur =
@@ -979,7 +984,7 @@ int dma_rx(struct dma_pub *pub, struct sk_buff_head *skb_list)
 			DMA_ERROR("rxin %d rxout %d, hw_curr %d\n",
 				   di->rxin, di->rxout, cur);
 		}
-#endif				/* BCMDBG */
+#endif				/* DEBUG */
 
 		if ((di->dma.dmactrlflags & DMA_CTRL_RXMULTI) == 0) {
 			DMA_ERROR("%s: bad frame length (%d)\n",
@@ -1433,7 +1438,7 @@ void dma_walk_packets(struct dma_pub *dmah, void (*callback_fnc)
 	struct ieee80211_tx_info *tx_info;
 
 	while (i != end) {
-		skb = (struct sk_buff *)di->txp[i];
+		skb = di->txp[i];
 		if (skb != NULL) {
 			tx_info = (struct ieee80211_tx_info *)skb->cb;
 			(callback_fnc)(tx_info, arg_a);

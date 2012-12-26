@@ -21,6 +21,7 @@
 #include <mach/board.h>
 #include <mach/at91rm9200.h>
 #include <mach/at91rm9200_mc.h>
+#include <mach/at91_ramc.h>
 
 #include "generic.h"
 
@@ -40,8 +41,8 @@ static struct resource usbh_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_UHP,
-		.end	= AT91RM9200_ID_UHP,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_UHP,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_UHP,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -93,8 +94,8 @@ static struct resource udc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_UDP,
-		.end	= AT91RM9200_ID_UDP,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_UDP,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_UDP,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -139,13 +140,13 @@ static struct macb_platform_data eth_data;
 
 static struct resource eth_resources[] = {
 	[0] = {
-		.start	= AT91_VA_BASE_EMAC,
-		.end	= AT91_VA_BASE_EMAC + SZ_16K - 1,
+		.start	= AT91RM9200_BASE_EMAC,
+		.end	= AT91RM9200_BASE_EMAC + SZ_16K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_EMAC,
-		.end	= AT91RM9200_ID_EMAC,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_EMAC,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_EMAC,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -241,15 +242,15 @@ void __init at91_add_device_cf(struct at91_cf_data *data)
 	data->chipselect = 4;		/* can only use EBI ChipSelect 4 */
 
 	/* CF takes over CS4, CS5, CS6 */
-	csa = at91_sys_read(AT91_EBI_CSA);
-	at91_sys_write(AT91_EBI_CSA, csa | AT91_EBI_CS4A_SMC_COMPACTFLASH);
+	csa = at91_ramc_read(0, AT91_EBI_CSA);
+	at91_ramc_write(0, AT91_EBI_CSA, csa | AT91_EBI_CS4A_SMC_COMPACTFLASH);
 
 	/*
 	 * Static memory controller timing adjustments.
 	 * REVISIT:  these timings are in terms of MCK cycles, so
 	 * when MCK changes (cpufreq etc) so must these values...
 	 */
-	at91_sys_write(AT91_SMC_CSR(4),
+	at91_ramc_write(0, AT91_SMC_CSR(4),
 				  AT91_SMC_ACSS_STD
 				| AT91_SMC_DBW_16
 				| AT91_SMC_BAT
@@ -304,8 +305,8 @@ static struct resource mmc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_MCI,
-		.end	= AT91RM9200_ID_MCI,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_MCI,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_MCI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -407,11 +408,11 @@ void __init at91_add_device_nand(struct atmel_nand_data *data)
 		return;
 
 	/* enable the address range of CS3 */
-	csa = at91_sys_read(AT91_EBI_CSA);
-	at91_sys_write(AT91_EBI_CSA, csa | AT91_EBI_CS3A_SMC_SMARTMEDIA);
+	csa = at91_ramc_read(0, AT91_EBI_CSA);
+	at91_ramc_write(0, AT91_EBI_CSA, csa | AT91_EBI_CS3A_SMC_SMARTMEDIA);
 
 	/* set the bus interface characteristics */
-	at91_sys_write(AT91_SMC_CSR(3), AT91_SMC_ACSS_STD | AT91_SMC_DBW_8 | AT91_SMC_WSEN
+	at91_ramc_write(0, AT91_SMC_CSR(3), AT91_SMC_ACSS_STD | AT91_SMC_DBW_8 | AT91_SMC_WSEN
 		| AT91_SMC_NWS_(5)
 		| AT91_SMC_TDF_(1)
 		| AT91_SMC_RWSETUP_(0)	/* tDS Data Set up Time 30 - ns */
@@ -487,8 +488,8 @@ static struct resource twi_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_TWI,
-		.end	= AT91RM9200_ID_TWI,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TWI,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TWI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -531,8 +532,8 @@ static struct resource spi_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_SPI,
-		.end	= AT91RM9200_ID_SPI,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_SPI,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_SPI,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -597,18 +598,18 @@ static struct resource tcb0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_TC0,
-		.end	= AT91RM9200_ID_TC0,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC0,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC0,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
-		.start	= AT91RM9200_ID_TC1,
-		.end	= AT91RM9200_ID_TC1,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC1,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC1,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
-		.start	= AT91RM9200_ID_TC2,
-		.end	= AT91RM9200_ID_TC2,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC2,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -627,18 +628,18 @@ static struct resource tcb1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_TC3,
-		.end	= AT91RM9200_ID_TC3,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC3,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC3,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[2] = {
-		.start	= AT91RM9200_ID_TC4,
-		.end	= AT91RM9200_ID_TC4,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC4,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC4,
 		.flags	= IORESOURCE_IRQ,
 	},
 	[3] = {
-		.start	= AT91RM9200_ID_TC5,
-		.end	= AT91RM9200_ID_TC5,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_TC5,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_TC5,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -672,8 +673,8 @@ static struct resource rtc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91_ID_SYS,
-		.end	= AT91_ID_SYS,
+		.start	= NR_IRQS_LEGACY + AT91_ID_SYS,
+		.end	= NR_IRQS_LEGACY + AT91_ID_SYS,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -728,8 +729,8 @@ static struct resource ssc0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_SSC0,
-		.end	= AT91RM9200_ID_SSC0,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC0,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -770,8 +771,8 @@ static struct resource ssc1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_SSC1,
-		.end	= AT91RM9200_ID_SSC1,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC1,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -812,8 +813,8 @@ static struct resource ssc2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_SSC2,
-		.end	= AT91RM9200_ID_SSC2,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC2,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_SSC2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -896,8 +897,8 @@ static struct resource dbgu_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91_ID_SYS,
-		.end	= AT91_ID_SYS,
+		.start	= NR_IRQS_LEGACY + AT91_ID_SYS,
+		.end	= NR_IRQS_LEGACY + AT91_ID_SYS,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -934,8 +935,8 @@ static struct resource uart0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_US0,
-		.end	= AT91RM9200_ID_US0,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_US0,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_US0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -983,8 +984,8 @@ static struct resource uart1_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_US1,
-		.end	= AT91RM9200_ID_US1,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_US1,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_US1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1034,8 +1035,8 @@ static struct resource uart2_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_US2,
-		.end	= AT91RM9200_ID_US2,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_US2,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_US2,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1077,8 +1078,8 @@ static struct resource uart3_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= AT91RM9200_ID_US3,
-		.end	= AT91RM9200_ID_US3,
+		.start	= NR_IRQS_LEGACY + AT91RM9200_ID_US3,
+		.end	= NR_IRQS_LEGACY + AT91RM9200_ID_US3,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -1114,7 +1115,6 @@ static inline void configure_usart3_pins(unsigned pins)
 }
 
 static struct platform_device *__initdata at91_uarts[ATMEL_MAX_UART];	/* the UARTs to use */
-struct platform_device *atmel_default_console_device;	/* the serial console device */
 
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins)
 {
@@ -1152,14 +1152,6 @@ void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins)
 		at91_uarts[portnr] = pdev;
 }
 
-void __init at91_set_serial_console(unsigned portnr)
-{
-	if (portnr < ATMEL_MAX_UART) {
-		atmel_default_console_device = at91_uarts[portnr];
-		at91rm9200_set_console_clock(at91_uarts[portnr]->id);
-	}
-}
-
 void __init at91_add_device_serial(void)
 {
 	int i;
@@ -1168,14 +1160,9 @@ void __init at91_add_device_serial(void)
 		if (at91_uarts[i])
 			platform_device_register(at91_uarts[i]);
 	}
-
-	if (!atmel_default_console_device)
-		printk(KERN_INFO "AT91: No default serial console defined.\n");
 }
 #else
-void __init __deprecated at91_init_serial(struct at91_uart_config *config) {}
 void __init at91_register_uart(unsigned id, unsigned portnr, unsigned pins) {}
-void __init at91_set_serial_console(unsigned portnr) {}
 void __init at91_add_device_serial(void) {}
 #endif
 

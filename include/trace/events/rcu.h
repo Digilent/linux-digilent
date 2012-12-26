@@ -289,9 +289,12 @@ TRACE_EVENT(rcu_dyntick,
  *	"In holdoff": Nothing to do, holding off after unsuccessful attempt.
  *	"Begin holdoff": Attempt failed, don't retry until next jiffy.
  *	"Dyntick with callbacks": Entering dyntick-idle despite callbacks.
+ *	"Dyntick with lazy callbacks": Entering dyntick-idle w/lazy callbacks.
  *	"More callbacks": Still more callbacks, try again to clear them out.
  *	"Callbacks drained": All callbacks processed, off to dyntick idle!
  *	"Timer": Timer fired to cause CPU to continue processing callbacks.
+ *	"Demigrate": Timer fired on wrong CPU, woke up correct CPU.
+ *	"Cleanup after idle": Idle exited, timer canceled.
  */
 TRACE_EVENT(rcu_prep_idle,
 
@@ -313,19 +316,22 @@ TRACE_EVENT(rcu_prep_idle,
 /*
  * Tracepoint for the registration of a single RCU callback function.
  * The first argument is the type of RCU, the second argument is
- * a pointer to the RCU callback itself, and the third element is the
- * new RCU callback queue length for the current CPU.
+ * a pointer to the RCU callback itself, the third element is the
+ * number of lazy callbacks queued, and the fourth element is the
+ * total number of callbacks queued.
  */
 TRACE_EVENT(rcu_callback,
 
-	TP_PROTO(char *rcuname, struct rcu_head *rhp, long qlen),
+	TP_PROTO(char *rcuname, struct rcu_head *rhp, long qlen_lazy,
+		 long qlen),
 
-	TP_ARGS(rcuname, rhp, qlen),
+	TP_ARGS(rcuname, rhp, qlen_lazy, qlen),
 
 	TP_STRUCT__entry(
 		__field(char *, rcuname)
 		__field(void *, rhp)
 		__field(void *, func)
+		__field(long, qlen_lazy)
 		__field(long, qlen)
 	),
 
@@ -333,11 +339,13 @@ TRACE_EVENT(rcu_callback,
 		__entry->rcuname = rcuname;
 		__entry->rhp = rhp;
 		__entry->func = rhp->func;
+		__entry->qlen_lazy = qlen_lazy;
 		__entry->qlen = qlen;
 	),
 
-	TP_printk("%s rhp=%p func=%pf %ld",
-		  __entry->rcuname, __entry->rhp, __entry->func, __entry->qlen)
+	TP_printk("%s rhp=%p func=%pf %ld/%ld",
+		  __entry->rcuname, __entry->rhp, __entry->func,
+		  __entry->qlen_lazy, __entry->qlen)
 );
 
 /*
@@ -345,20 +353,21 @@ TRACE_EVENT(rcu_callback,
  * kfree() form.  The first argument is the RCU type, the second argument
  * is a pointer to the RCU callback, the third argument is the offset
  * of the callback within the enclosing RCU-protected data structure,
- * and the fourth argument is the new RCU callback queue length for the
- * current CPU.
+ * the fourth argument is the number of lazy callbacks queued, and the
+ * fifth argument is the total number of callbacks queued.
  */
 TRACE_EVENT(rcu_kfree_callback,
 
 	TP_PROTO(char *rcuname, struct rcu_head *rhp, unsigned long offset,
-		 long qlen),
+		 long qlen_lazy, long qlen),
 
-	TP_ARGS(rcuname, rhp, offset, qlen),
+	TP_ARGS(rcuname, rhp, offset, qlen_lazy, qlen),
 
 	TP_STRUCT__entry(
 		__field(char *, rcuname)
 		__field(void *, rhp)
 		__field(unsigned long, offset)
+		__field(long, qlen_lazy)
 		__field(long, qlen)
 	),
 
@@ -366,41 +375,45 @@ TRACE_EVENT(rcu_kfree_callback,
 		__entry->rcuname = rcuname;
 		__entry->rhp = rhp;
 		__entry->offset = offset;
+		__entry->qlen_lazy = qlen_lazy;
 		__entry->qlen = qlen;
 	),
 
-	TP_printk("%s rhp=%p func=%ld %ld",
+	TP_printk("%s rhp=%p func=%ld %ld/%ld",
 		  __entry->rcuname, __entry->rhp, __entry->offset,
-		  __entry->qlen)
+		  __entry->qlen_lazy, __entry->qlen)
 );
 
 /*
  * Tracepoint for marking the beginning rcu_do_batch, performed to start
  * RCU callback invocation.  The first argument is the RCU flavor,
- * the second is the total number of callbacks (including those that
- * are not yet ready to be invoked), and the third argument is the
- * current RCU-callback batch limit.
+ * the second is the number of lazy callbacks queued, the third is
+ * the total number of callbacks queued, and the fourth argument is
+ * the current RCU-callback batch limit.
  */
 TRACE_EVENT(rcu_batch_start,
 
-	TP_PROTO(char *rcuname, long qlen, int blimit),
+	TP_PROTO(char *rcuname, long qlen_lazy, long qlen, int blimit),
 
-	TP_ARGS(rcuname, qlen, blimit),
+	TP_ARGS(rcuname, qlen_lazy, qlen, blimit),
 
 	TP_STRUCT__entry(
 		__field(char *, rcuname)
+		__field(long, qlen_lazy)
 		__field(long, qlen)
 		__field(int, blimit)
 	),
 
 	TP_fast_assign(
 		__entry->rcuname = rcuname;
+		__entry->qlen_lazy = qlen_lazy;
 		__entry->qlen = qlen;
 		__entry->blimit = blimit;
 	),
 
-	TP_printk("%s CBs=%ld bl=%d",
-		  __entry->rcuname, __entry->qlen, __entry->blimit)
+	TP_printk("%s CBs=%ld/%ld bl=%d",
+		  __entry->rcuname, __entry->qlen_lazy, __entry->qlen,
+		  __entry->blimit)
 );
 
 /*
@@ -528,24 +541,74 @@ TRACE_EVENT(rcu_torture_read,
 		  __entry->rcutorturename, __entry->rhp)
 );
 
+/*
+ * Tracepoint for _rcu_barrier() execution.  The string "s" describes
+ * the _rcu_barrier phase:
+ *	"Begin": rcu_barrier_callback() started.
+ *	"Check": rcu_barrier_callback() checking for piggybacking.
+ *	"EarlyExit": rcu_barrier_callback() piggybacked, thus early exit.
+ *	"Inc1": rcu_barrier_callback() piggyback check counter incremented.
+ *	"Offline": rcu_barrier_callback() found offline CPU
+ *	"OnlineQ": rcu_barrier_callback() found online CPU with callbacks.
+ *	"OnlineNQ": rcu_barrier_callback() found online CPU, no callbacks.
+ *	"IRQ": An rcu_barrier_callback() callback posted on remote CPU.
+ *	"CB": An rcu_barrier_callback() invoked a callback, not the last.
+ *	"LastCB": An rcu_barrier_callback() invoked the last callback.
+ *	"Inc2": rcu_barrier_callback() piggyback check counter incremented.
+ * The "cpu" argument is the CPU or -1 if meaningless, the "cnt" argument
+ * is the count of remaining callbacks, and "done" is the piggybacking count.
+ */
+TRACE_EVENT(rcu_barrier,
+
+	TP_PROTO(char *rcuname, char *s, int cpu, int cnt, unsigned long done),
+
+	TP_ARGS(rcuname, s, cpu, cnt, done),
+
+	TP_STRUCT__entry(
+		__field(char *, rcuname)
+		__field(char *, s)
+		__field(int, cpu)
+		__field(int, cnt)
+		__field(unsigned long, done)
+	),
+
+	TP_fast_assign(
+		__entry->rcuname = rcuname;
+		__entry->s = s;
+		__entry->cpu = cpu;
+		__entry->cnt = cnt;
+		__entry->done = done;
+	),
+
+	TP_printk("%s %s cpu %d remaining %d # %lu",
+		  __entry->rcuname, __entry->s, __entry->cpu, __entry->cnt,
+		  __entry->done)
+);
+
 #else /* #ifdef CONFIG_RCU_TRACE */
 
 #define trace_rcu_grace_period(rcuname, gpnum, gpevent) do { } while (0)
-#define trace_rcu_grace_period_init(rcuname, gpnum, level, grplo, grphi, qsmask) do { } while (0)
+#define trace_rcu_grace_period_init(rcuname, gpnum, level, grplo, grphi, \
+				    qsmask) do { } while (0)
 #define trace_rcu_preempt_task(rcuname, pid, gpnum) do { } while (0)
 #define trace_rcu_unlock_preempted_task(rcuname, gpnum, pid) do { } while (0)
-#define trace_rcu_quiescent_state_report(rcuname, gpnum, mask, qsmask, level, grplo, grphi, gp_tasks) do { } while (0)
+#define trace_rcu_quiescent_state_report(rcuname, gpnum, mask, qsmask, level, \
+					 grplo, grphi, gp_tasks) do { } \
+	while (0)
 #define trace_rcu_fqs(rcuname, gpnum, cpu, qsevent) do { } while (0)
 #define trace_rcu_dyntick(polarity, oldnesting, newnesting) do { } while (0)
 #define trace_rcu_prep_idle(reason) do { } while (0)
-#define trace_rcu_callback(rcuname, rhp, qlen) do { } while (0)
-#define trace_rcu_kfree_callback(rcuname, rhp, offset, qlen) do { } while (0)
-#define trace_rcu_batch_start(rcuname, qlen, blimit) do { } while (0)
+#define trace_rcu_callback(rcuname, rhp, qlen_lazy, qlen) do { } while (0)
+#define trace_rcu_kfree_callback(rcuname, rhp, offset, qlen_lazy, qlen) \
+	do { } while (0)
+#define trace_rcu_batch_start(rcuname, qlen_lazy, qlen, blimit) \
+	do { } while (0)
 #define trace_rcu_invoke_callback(rcuname, rhp) do { } while (0)
 #define trace_rcu_invoke_kfree_callback(rcuname, rhp, offset) do { } while (0)
 #define trace_rcu_batch_end(rcuname, callbacks_invoked, cb, nr, iit, risk) \
 	do { } while (0)
 #define trace_rcu_torture_read(rcutorturename, rhp) do { } while (0)
+#define trace_rcu_barrier(name, s, cpu, cnt, done) do { } while (0)
 
 #endif /* #else #ifdef CONFIG_RCU_TRACE */
 

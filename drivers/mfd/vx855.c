@@ -102,7 +102,7 @@ static __devinit int vx855_probe(struct pci_dev *pdev,
 	vx855_gpio_resources[1].end = vx855_gpio_resources[1].start + 3;
 
 	ret = mfd_add_devices(&pdev->dev, -1, vx855_cells, ARRAY_SIZE(vx855_cells),
-			NULL, 0);
+			NULL, 0, NULL);
 
 	/* we always return -ENODEV here in order to enable other
 	 * drivers like old, not-yet-platform_device ported i2c-viapro */
@@ -131,17 +131,7 @@ static struct pci_driver vx855_pci_driver = {
 	.remove		= __devexit_p(vx855_remove),
 };
 
-static int vx855_init(void)
-{
-	return pci_register_driver(&vx855_pci_driver);
-}
-module_init(vx855_init);
-
-static void vx855_exit(void)
-{
-	pci_unregister_driver(&vx855_pci_driver);
-}
-module_exit(vx855_exit);
+module_pci_driver(vx855_pci_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harald Welte <HaraldWelte@viatech.com>");

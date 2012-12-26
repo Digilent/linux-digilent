@@ -12,6 +12,7 @@
 /* Select x86 specific features in <linux/kvm.h> */
 #define __KVM_HAVE_PIT
 #define __KVM_HAVE_IOAPIC
+#define __KVM_HAVE_IRQ_LINE
 #define __KVM_HAVE_DEVICE_ASSIGNMENT
 #define __KVM_HAVE_MSI
 #define __KVM_HAVE_USER_NMI
@@ -319,6 +320,10 @@ struct kvm_xcrs {
 	__u32 flags;
 	struct kvm_xcr xcrs[KVM_MAX_XCRS];
 	__u64 padding[16];
+};
+
+/* definition of registers in kvm_run */
+struct kvm_sync_regs {
 };
 
 #endif /* _ASM_X86_KVM_H */

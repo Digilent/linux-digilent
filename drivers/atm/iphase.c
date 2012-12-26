@@ -56,7 +56,6 @@
 #include <linux/interrupt.h>
 #include <linux/wait.h>
 #include <linux/slab.h>
-#include <asm/system.h>  
 #include <asm/io.h>  
 #include <linux/atomic.h>
 #include <asm/uaccess.h>  
@@ -2363,7 +2362,7 @@ static int __devinit ia_init(struct atm_dev *dev)
 	{  
 		printk(DEV_LABEL " (itf %d): can't set up page mapping\n",  
 			    dev->number);  
-		return error;  
+		return -ENOMEM;
 	}  
 	IF_INIT(printk(DEV_LABEL " (itf %d): rev.%d,base=%p,irq=%d\n",  
 			dev->number, iadev->pci->revision, base, iadev->irq);)

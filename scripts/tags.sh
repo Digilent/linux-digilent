@@ -116,7 +116,7 @@ docscope()
 
 dogtags()
 {
-	all_sources | gtags -f -
+	all_sources | gtags -i -f -
 }
 
 exuberant()
@@ -153,7 +153,8 @@ exuberant()
 	--regex-c++='/CLEARPAGEFLAG_NOOP\(([^,)]*).*/ClearPage\1/'	\
 	--regex-c++='/__CLEARPAGEFLAG_NOOP\(([^,)]*).*/__ClearPage\1/'	\
 	--regex-c++='/TESTCLEARFLAG_FALSE\(([^,)]*).*/TestClearPage\1/' \
-	--regex-c++='/__TESTCLEARFLAG_FALSE\(([^,)]*).*/__TestClearPage\1/'
+	--regex-c++='/__TESTCLEARFLAG_FALSE\(([^,)]*).*/__TestClearPage\1/' \
+	--regex-c++='/_PE\(([^,)]*).*/PEVENT_ERRNO__\1/'
 
 	all_kconfigs | xargs $1 -a                              \
 	--langdef=kconfig --language-force=kconfig              \
@@ -166,9 +167,6 @@ exuberant()
 	all_defconfigs | xargs -r $1 -a                         \
 	--langdef=dotconfig --language-force=dotconfig          \
 	--regex-dotconfig='/^#?[[:blank:]]*(CONFIG_[[:alnum:]_]+)/\1/'
-
-	# Remove structure forward declarations.
-	LANG=C sed -i -e '/^\([a-zA-Z_][a-zA-Z0-9_]*\)\t.*\t\/\^struct \1;.*\$\/;"\tx$/d' tags
 }
 
 emacs()
@@ -198,7 +196,8 @@ emacs()
 	--regex='/CLEARPAGEFLAG_NOOP\(([^,)]*).*/ClearPage\1/'	\
 	--regex='/__CLEARPAGEFLAG_NOOP\(([^,)]*).*/__ClearPage\1/' \
 	--regex='/TESTCLEARFLAG_FALSE\(([^,)]*).*/TestClearPage\1/' \
-	--regex='/__TESTCLEARFLAG_FALSE\(([^,)]*).*/__TestClearPage\1/'
+	--regex='/__TESTCLEARFLAG_FALSE\(([^,)]*).*/__TestClearPage\1/' \
+	--regex='/_PE\(([^,)]*).*/PEVENT_ERRNO__\1/'
 
 	all_kconfigs | xargs $1 -a                              \
 	--regex='/^[ \t]*\(\(menu\)*config\)[ \t]+\([a-zA-Z0-9_]+\)/\3/'
@@ -233,6 +232,7 @@ if [ "${ARCH}" = "um" ]; then
 	fi
 fi
 
+remove_structs=
 case "$1" in
 	"cscope")
 		docscope
@@ -245,10 +245,17 @@ case "$1" in
 	"tags")
 		rm -f tags
 		xtags ctags
+		remove_structs=y
 		;;
 
 	"TAGS")
 		rm -f TAGS
 		xtags etags
+		remove_structs=y
 		;;
 esac
+
+# Remove structure forward declarations.
+if [ -n "$remove_structs" ]; then
+    LANG=C sed -i -e '/^\([a-zA-Z_][a-zA-Z0-9_]*\)\t.*\t\/\^struct \1;.*\$\/;"\tx$/d' $1
+fi

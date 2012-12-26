@@ -33,7 +33,7 @@
  * The xattrs themselves are protected by the xattr_sem.
  */
 
-#include <linux/reiserfs_fs.h>
+#include "reiserfs.h"
 #include <linux/capability.h>
 #include <linux/dcache.h>
 #include <linux/namei.h>
@@ -43,8 +43,8 @@
 #include <linux/file.h>
 #include <linux/pagemap.h>
 #include <linux/xattr.h>
-#include <linux/reiserfs_xattr.h>
-#include <linux/reiserfs_acl.h>
+#include "xattr.h"
+#include "acl.h"
 #include <asm/uaccess.h>
 #include <net/checksum.h>
 #include <linux/stat.h>
@@ -62,7 +62,7 @@
 static int xattr_create(struct inode *dir, struct dentry *dentry, int mode)
 {
 	BUG_ON(!mutex_is_locked(&dir->i_mutex));
-	return dir->i_op->create(dir, dentry, mode, NULL);
+	return dir->i_op->create(dir, dentry, mode, true);
 }
 #endif
 
@@ -942,7 +942,7 @@ int reiserfs_permission(struct inode *inode, int mask)
 	return generic_permission(inode, mask);
 }
 
-static int xattr_hide_revalidate(struct dentry *dentry, struct nameidata *nd)
+static int xattr_hide_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	return -EPERM;
 }

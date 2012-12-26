@@ -68,12 +68,14 @@ acpi-y +=		\
 
 acpi-y +=		\
 	hwacpi.o	\
+	hwesleep.o	\
 	hwgpe.o		\
 	hwpci.o		\
 	hwregs.o	\
 	hwsleep.o	\
 	hwvalid.o	\
-	hwxface.o
+	hwxface.o	\
+	hwxfsleep.o
 
 acpi-$(ACPI_FUTURE_USAGE) += hwtimer.o
 
@@ -132,12 +134,14 @@ acpi-y +=		\
 	tbinstal.o	\
 	tbutils.o	\
 	tbxface.o	\
+	tbxfload.o	\
 	tbxfroot.o
 
 acpi-y +=		\
 	utaddress.o	\
 	utalloc.o	\
 	utcopy.o	\
+	utexcep.o	\
 	utdebug.o	\
 	utdecode.o	\
 	utdelete.o	\

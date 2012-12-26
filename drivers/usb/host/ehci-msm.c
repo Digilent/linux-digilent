@@ -32,7 +32,7 @@
 
 #define MSM_USB_BASE (hcd->regs)
 
-static struct otg_transceiver *otg;
+static struct usb_phy *phy;
 
 static int ehci_msm_reset(struct usb_hcd *hcd)
 {
@@ -145,14 +145,14 @@ static int ehci_msm_probe(struct platform_device *pdev)
 	 * powering up VBUS, mapping of registers address space and power
 	 * management.
 	 */
-	otg = otg_get_transceiver();
-	if (!otg) {
+	phy = usb_get_phy(USB_PHY_TYPE_USB2);
+	if (IS_ERR_OR_NULL(phy)) {
 		dev_err(&pdev->dev, "unable to find transceiver\n");
 		ret = -ENODEV;
 		goto unmap;
 	}
 
-	ret = otg_set_host(otg, &hcd->self);
+	ret = otg_set_host(phy->otg, &hcd->self);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "unable to register with transceiver\n");
 		goto put_transceiver;
@@ -169,7 +169,7 @@ static int ehci_msm_probe(struct platform_device *pdev)
 	return 0;
 
 put_transceiver:
-	otg_put_transceiver(otg);
+	usb_put_phy(phy);
 unmap:
 	iounmap(hcd->regs);
 put_hcd:
@@ -186,8 +186,8 @@ static int __devexit ehci_msm_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 
-	otg_set_host(otg, NULL);
-	otg_put_transceiver(otg);
+	otg_set_host(phy->otg, NULL);
+	usb_put_phy(phy);
 
 	usb_put_hcd(hcd);
 
@@ -198,24 +198,11 @@ static int __devexit ehci_msm_remove(struct platform_device *pdev)
 static int ehci_msm_pm_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	bool wakeup = device_may_wakeup(dev);
+	bool do_wakeup = device_may_wakeup(dev);
 
 	dev_dbg(dev, "ehci-msm PM suspend\n");
 
-	/*
-	 * EHCI helper function has also the same check before manipulating
-	 * port wakeup flags.  We do check here the same condition before
-	 * calling the same helper function to avoid bringing hardware
-	 * from Low power mode when there is no need for adjusting port
-	 * wakeup flags.
-	 */
-	if (hcd->self.root_hub->do_remote_wakeup && !wakeup) {
-		pm_runtime_resume(dev);
-		ehci_prepare_ports_for_controller_suspend(hcd_to_ehci(hcd),
-				wakeup);
-	}
-
-	return 0;
+	return ehci_suspend(hcd, do_wakeup);
 }
 
 static int ehci_msm_pm_resume(struct device *dev)
@@ -223,7 +210,7 @@ static int ehci_msm_pm_resume(struct device *dev)
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 
 	dev_dbg(dev, "ehci-msm PM resume\n");
-	ehci_prepare_ports_for_controller_resume(hcd_to_ehci(hcd));
+	ehci_resume(hcd, false);
 
 	return 0;
 }

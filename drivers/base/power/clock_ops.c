@@ -8,6 +8,7 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/pm.h>
 #include <linux/pm_clock.h>
@@ -168,8 +169,7 @@ void pm_clk_init(struct device *dev)
  */
 int pm_clk_create(struct device *dev)
 {
-	int ret = dev_pm_get_subsys_data(dev);
-	return ret < 0 ? ret : 0;
+	return dev_pm_get_subsys_data(dev);
 }
 
 /**

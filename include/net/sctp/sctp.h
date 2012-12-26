@@ -162,6 +162,8 @@ struct sock *sctp_err_lookup(int family, struct sk_buff *,
 void sctp_err_finish(struct sock *, struct sctp_association *);
 void sctp_icmp_frag_needed(struct sock *, struct sctp_association *,
 			   struct sctp_transport *t, __u32 pmtu);
+void sctp_icmp_redirect(struct sock *, struct sctp_transport *,
+			struct sk_buff *);
 void sctp_icmp_proto_unreachable(struct sock *sk,
 				 struct sctp_association *asoc,
 				 struct sctp_transport *t);
@@ -413,6 +415,7 @@ static inline sctp_assoc_t sctp_assoc2id(const struct sctp_association *asoc)
 /* Look up the association by its id.  */
 struct sctp_association *sctp_id2assoc(struct sock *sk, sctp_assoc_t id);
 
+int sctp_do_peeloff(struct sock *sk, sctp_assoc_t id, struct socket **sockp);
 
 /* A macro to walk a list of skbs.  */
 #define sctp_skb_for_each(pos, head, tmp) \
@@ -516,10 +519,10 @@ static inline int sctp_frag_point(const struct sctp_association *asoc, int pmtu)
 	return frag;
 }
 
-static inline void sctp_assoc_pending_pmtu(struct sctp_association *asoc)
+static inline void sctp_assoc_pending_pmtu(struct sock *sk, struct sctp_association *asoc)
 {
 
-	sctp_assoc_sync_pmtu(asoc);
+	sctp_assoc_sync_pmtu(sk, asoc);
 	asoc->pmtu_pending = 0;
 }
 
@@ -701,6 +704,19 @@ static inline void sctp_v4_map_v6(union sctp_addr *addr)
 	addr->v6.sin6_addr.s6_addr32[0] = 0;
 	addr->v6.sin6_addr.s6_addr32[1] = 0;
 	addr->v6.sin6_addr.s6_addr32[2] = htonl(0x0000ffff);
+}
+
+/* The cookie is always 0 since this is how it's used in the
+ * pmtu code.
+ */
+static inline struct dst_entry *sctp_transport_dst_check(struct sctp_transport *t)
+{
+	if (t->dst && !dst_check(t->dst, 0)) {
+		dst_release(t->dst);
+		t->dst = NULL;
+	}
+
+	return t->dst;
 }
 
 #endif /* __net_sctp_h__ */

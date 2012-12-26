@@ -2842,7 +2842,6 @@ static int stv090x_optimize_track(struct stv090x_state *state)
 {
 	struct dvb_frontend *fe = &state->frontend;
 
-	enum stv090x_rolloff rolloff;
 	enum stv090x_modcod modcod;
 
 	s32 srate, pilots, aclc, f_1, f_0, i = 0, blind_tune = 0;
@@ -2966,7 +2965,6 @@ static int stv090x_optimize_track(struct stv090x_state *state)
 	f_1 = STV090x_READ_DEMOD(state, CFR2);
 	f_0 = STV090x_READ_DEMOD(state, CFR1);
 	reg = STV090x_READ_DEMOD(state, TMGOBS);
-	rolloff = STV090x_GETFIELD_Px(reg, ROLLOFF_STATUS_FIELD);
 
 	if (state->algo == STV090x_BLIND_SEARCH) {
 		STV090x_WRITE_DEMOD(state, SFRSTEP, 0x00);
@@ -3174,7 +3172,7 @@ static enum stv090x_signal_state stv090x_algo(struct stv090x_state *state)
 	enum stv090x_signal_state signal_state = STV090x_NOCARRIER;
 	u32 reg;
 	s32 agc1_power, power_iq = 0, i;
-	int lock = 0, low_sr = 0, no_signal = 0;
+	int lock = 0, low_sr = 0;
 
 	reg = STV090x_READ_DEMOD(state, TSCFGH);
 	STV090x_SETFIELD_Px(reg, RST_HWARE_FIELD, 1); /* Stop path 1 stream merger */
@@ -3415,7 +3413,7 @@ static enum stv090x_signal_state stv090x_algo(struct stv090x_state *state)
 				goto err;
 		} else {
 			signal_state = STV090x_NODATA;
-			no_signal = stv090x_chk_signal(state);
+			stv090x_chk_signal(state);
 		}
 	}
 	return signal_state;

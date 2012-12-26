@@ -178,13 +178,13 @@ static struct clk init_clocks_off[] = {
 		.ctrlbit	= S3C_CLKCON_PCLK_KEYPAD,
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s3c6410-spi.0",
 		.parent		= &clk_p,
 		.enable		= s3c64xx_pclk_ctrl,
 		.ctrlbit	= S3C_CLKCON_PCLK_SPI0,
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s3c6410-spi.1",
 		.parent		= &clk_p,
 		.enable		= s3c64xx_pclk_ctrl,
 		.ctrlbit	= S3C_CLKCON_PCLK_SPI1,
@@ -207,6 +207,15 @@ static struct clk init_clocks_off[] = {
 		.enable		= s3c64xx_sclk_ctrl,
 		.ctrlbit	= S3C_CLKCON_SCLK_MMC2_48,
 	}, {
+		.name		= "ac97",
+		.parent		= &clk_p,
+		.ctrlbit	= S3C_CLKCON_PCLK_AC97,
+	}, {
+		.name		= "cfcon",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_IHOST,
+	}, {
 		.name		= "dma0",
 		.parent		= &clk_h,
 		.enable		= s3c64xx_hclk_ctrl,
@@ -216,12 +225,113 @@ static struct clk init_clocks_off[] = {
 		.parent		= &clk_h,
 		.enable		= s3c64xx_hclk_ctrl,
 		.ctrlbit	= S3C_CLKCON_HCLK_DMA1,
+	}, {
+		.name		= "3dse",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_3DSE,
+	}, {
+		.name		= "hclk_secur",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_SECUR,
+	}, {
+		.name		= "sdma1",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_SDMA1,
+	}, {
+		.name		= "sdma0",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_SDMA0,
+	}, {
+		.name		= "hclk_jpeg",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_JPEG,
+	}, {
+		.name		= "camif",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_CAMIF,
+	}, {
+		.name		= "hclk_scaler",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_SCALER,
+	}, {
+		.name		= "2d",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_2D,
+	}, {
+		.name		= "tv",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_TV,
+	}, {
+		.name		= "post0",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_POST0,
+	}, {
+		.name		= "rot",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_ROT,
+	}, {
+		.name		= "hclk_mfc",
+		.parent		= &clk_h,
+		.enable		= s3c64xx_hclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_HCLK_MFC,
+	}, {
+		.name		= "pclk_mfc",
+		.parent		= &clk_p,
+		.enable		= s3c64xx_pclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_PCLK_MFC,
+	}, {
+		.name		= "dac27",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_DAC27,
+	}, {
+		.name		= "tv27",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_TV27,
+	}, {
+		.name		= "scaler27",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_SCALER27,
+	}, {
+		.name		= "sclk_scaler",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_SCALER,
+	}, {
+		.name		= "post0_27",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_POST0_27,
+	}, {
+		.name		= "secur",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_SECUR,
+	}, {
+		.name		= "sclk_mfc",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_MFC,
+	}, {
+		.name		= "cam",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_CAM,
+	}, {
+		.name		= "sclk_jpeg",
+		.enable		= s3c64xx_sclk_ctrl,
+		.ctrlbit	= S3C_CLKCON_SCLK_JPEG,
 	},
 };
 
 static struct clk clk_48m_spi0 = {
 	.name		= "spi_48m",
-	.devname	= "s3c64xx-spi.0",
+	.devname	= "s3c6410-spi.0",
 	.parent		= &clk_48m,
 	.enable		= s3c64xx_sclk_ctrl,
 	.ctrlbit	= S3C_CLKCON_SCLK_SPI0_48,
@@ -229,7 +339,7 @@ static struct clk clk_48m_spi0 = {
 
 static struct clk clk_48m_spi1 = {
 	.name		= "spi_48m",
-	.devname	= "s3c64xx-spi.1",
+	.devname	= "s3c6410-spi.1",
 	.parent		= &clk_48m,
 	.enable		= s3c64xx_sclk_ctrl,
 	.ctrlbit	= S3C_CLKCON_SCLK_SPI1_48,
@@ -289,16 +399,7 @@ static struct clk init_clocks[] = {
 		.name		= "watchdog",
 		.parent		= &clk_p,
 		.ctrlbit	= S3C_CLKCON_PCLK_WDT,
-	}, {
-		.name		= "ac97",
-		.parent		= &clk_p,
-		.ctrlbit	= S3C_CLKCON_PCLK_AC97,
-	}, {
-		.name		= "cfcon",
-		.parent		= &clk_h,
-		.enable		= s3c64xx_hclk_ctrl,
-		.ctrlbit	= S3C_CLKCON_HCLK_IHOST,
-	}
+	},
 };
 
 static struct clk clk_hsmmc0 = {
@@ -701,7 +802,7 @@ static struct clksrc_clk clk_sclk_mmc2 = {
 static struct clksrc_clk clk_sclk_spi0 = {
 	.clk	= {
 		.name		= "spi-bus",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s3c6410-spi.0",
 		.ctrlbit	= S3C_CLKCON_SCLK_SPI0,
 		.enable		= s3c64xx_sclk_ctrl,
 	},
@@ -713,7 +814,7 @@ static struct clksrc_clk clk_sclk_spi0 = {
 static struct clksrc_clk clk_sclk_spi1 = {
 	.clk	= {
 		.name		= "spi-bus",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s3c6410-spi.1",
 		.ctrlbit	= S3C_CLKCON_SCLK_SPI1,
 		.enable		= s3c64xx_sclk_ctrl,
 	},
@@ -757,10 +858,10 @@ static struct clk_lookup s3c64xx_clk_lookup[] = {
 	CLKDEV_INIT("s3c-sdhci.1", "mmc_busclk.2", &clk_sclk_mmc1.clk),
 	CLKDEV_INIT("s3c-sdhci.2", "mmc_busclk.2", &clk_sclk_mmc2.clk),
 	CLKDEV_INIT(NULL, "spi_busclk0", &clk_p),
-	CLKDEV_INIT("s3c64xx-spi.0", "spi_busclk1", &clk_sclk_spi0.clk),
-	CLKDEV_INIT("s3c64xx-spi.0", "spi_busclk2", &clk_48m_spi0),
-	CLKDEV_INIT("s3c64xx-spi.1", "spi_busclk1", &clk_sclk_spi1.clk),
-	CLKDEV_INIT("s3c64xx-spi.1", "spi_busclk2", &clk_48m_spi1),
+	CLKDEV_INIT("s3c6410-spi.0", "spi_busclk1", &clk_sclk_spi0.clk),
+	CLKDEV_INIT("s3c6410-spi.0", "spi_busclk2", &clk_48m_spi0),
+	CLKDEV_INIT("s3c6410-spi.1", "spi_busclk1", &clk_sclk_spi1.clk),
+	CLKDEV_INIT("s3c6410-spi.1", "spi_busclk2", &clk_48m_spi1),
 };
 
 #define GET_DIV(clk, field) ((((clk) & field##_MASK) >> field##_SHIFT) + 1)

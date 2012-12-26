@@ -26,6 +26,7 @@
 
 /* Select x86 specific features in <linux/kvm.h> */
 #define __KVM_HAVE_IOAPIC
+#define __KVM_HAVE_IRQ_LINE
 #define __KVM_HAVE_DEVICE_ASSIGNMENT
 
 /* Architectural interrupt line count. */
@@ -259,6 +260,10 @@ struct kvm_debug_exit_arch {
 
 /* for KVM_SET_GUEST_DEBUG */
 struct kvm_guest_debug_arch {
+};
+
+/* definition of registers in kvm_run */
+struct kvm_sync_regs {
 };
 
 #endif

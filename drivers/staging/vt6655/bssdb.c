@@ -58,7 +58,6 @@
 #include "wpa2.h"
 #include "iowpa.h"
 
-//#define	PLICE_DEBUG
 /*---------------------  Static Definitions -------------------------*/
 
 
@@ -142,9 +141,8 @@ BSSpSearchBSSList(
     unsigned int ii = 0;
 
     if (pbyDesireBSSID != NULL) {
-        DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO"BSSpSearchBSSList BSSID[%02X %02X %02X-%02X %02X %02X]\n",
-                            *pbyDesireBSSID,*(pbyDesireBSSID+1),*(pbyDesireBSSID+2),
-                            *(pbyDesireBSSID+3),*(pbyDesireBSSID+4),*(pbyDesireBSSID+5));
+		DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO
+			"BSSpSearchBSSList BSSID[%pM]\n", pbyDesireBSSID);
         if ((!is_broadcast_ether_addr(pbyDesireBSSID)) &&
 	     (memcmp(pbyDesireBSSID, ZeroBSSID, 6)!= 0)){
             pbyBSSID = pbyDesireBSSID;
@@ -1327,13 +1325,13 @@ start:
     }
 
     if (pMgmt->eCurrMode == WMAC_MODE_IBSS_STA) {
-        // if adhoc started which essid is NULL string, rescaning.
+        // if adhoc started which essid is NULL string, rescanning.
         if ((pMgmt->eCurrState == WMAC_STATE_STARTED) && (pCurrSSID->len == 0)) {
             if (pDevice->uAutoReConnectTime < 10) {
                 pDevice->uAutoReConnectTime++;
             }
             else {
-                DBG_PRT(MSG_LEVEL_NOTICE, KERN_INFO "Adhoc re-scaning ...\n");
+                DBG_PRT(MSG_LEVEL_NOTICE, KERN_INFO "Adhoc re-scanning ...\n");
 	      pMgmt->eScanType = WMAC_SCAN_ACTIVE;
                 bScheduleCommand((void *) pDevice, WLAN_CMD_BSSID_SCAN, NULL);
                 bScheduleCommand((void *) pDevice, WLAN_CMD_SSID, NULL);

@@ -18,7 +18,6 @@
 #include <linux/interrupt.h>
 #include <linux/memblock.h>
 
-#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
@@ -36,8 +35,8 @@
 void __init corenet_ds_pic_init(void)
 {
 	struct mpic *mpic;
-	unsigned int flags = MPIC_BIG_ENDIAN |
-				MPIC_BROKEN_FRR_NIRQS | MPIC_SINGLE_DEST_CPU;
+	unsigned int flags = MPIC_BIG_ENDIAN | MPIC_SINGLE_DEST_CPU |
+		MPIC_NO_RESET;
 
 	if (ppc_md.get_irq == mpic_get_coreint_irq)
 		flags |= MPIC_ENABLE_COREINT;
@@ -78,7 +77,7 @@ void __init corenet_ds_setup_arch(void)
 #endif
 
 #ifdef CONFIG_SWIOTLB
-	if (memblock_end_of_DRAM() > max) {
+	if ((memblock_end_of_DRAM() - 1) > max) {
 		ppc_swiotlb_enable = 1;
 		set_pci_dma_ops(&swiotlb_dma_ops);
 		ppc_md.pci_dma_dev_setup = pci_dma_dev_setup_swiotlb;

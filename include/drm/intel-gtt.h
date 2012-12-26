@@ -15,7 +15,19 @@ const struct intel_gtt {
 	unsigned int needs_dmar : 1;
 	/* Whether we idle the gpu before mapping/unmapping */
 	unsigned int do_idle_maps : 1;
+	/* Share the scratch page dma with ppgtts. */
+	dma_addr_t scratch_page_dma;
+	/* for ppgtt PDE access */
+	u32 __iomem *gtt;
+	/* needed for ioremap in drm/i915 */
+	phys_addr_t gma_bus_addr;
 } *intel_gtt_get(void);
+
+int intel_gmch_probe(struct pci_dev *bridge_pdev, struct pci_dev *gpu_pdev,
+		     struct agp_bridge_data *bridge);
+void intel_gmch_remove(void);
+
+bool intel_enable_gtt(void);
 
 void intel_gtt_chipset_flush(void);
 void intel_gtt_unmap_memory(struct scatterlist *sg_list, int num_sg);
@@ -39,5 +51,9 @@ void intel_gtt_insert_pages(unsigned int first_entry, unsigned int num_entries,
 
 /* flag for GFDT type */
 #define AGP_USER_CACHED_MEMORY_GFDT (1 << 3)
+
+#ifdef CONFIG_INTEL_IOMMU
+extern int intel_iommu_gfx_mapped;
+#endif
 
 #endif

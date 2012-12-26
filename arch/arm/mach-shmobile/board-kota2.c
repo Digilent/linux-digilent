@@ -27,6 +27,8 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/smsc911x.h>
 #include <linux/gpio.h>
 #include <linux/input.h>
@@ -39,15 +41,21 @@
 #include <linux/mfd/tmio.h>
 #include <linux/mmc/sh_mobile_sdhi.h>
 #include <mach/hardware.h>
+#include <mach/irqs.h>
 #include <mach/sh73a0.h>
 #include <mach/common.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
 #include <asm/mach/time.h>
 #include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/traps.h>
+
+/* Dummy supplies, where voltage doesn't matter */
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+};
 
 /* SMSC 9220 */
 static struct resource smsc9220_resources[] = {
@@ -288,6 +296,13 @@ static struct platform_device leds_tpu30_device = {
 	.resource	= tpu30_resources,
 };
 
+/* Fixed 1.8V regulator to be used by MMCIF */
+static struct regulator_consumer_supply fixed1v8_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mmcif.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mmcif.0"),
+};
+
 /* MMCIF */
 static struct resource mmcif_resources[] = {
 	[0] = {
@@ -319,6 +334,15 @@ static struct platform_device mmcif_device = {
 	},
 	.num_resources  = ARRAY_SIZE(mmcif_resources),
 	.resource       = mmcif_resources,
+};
+
+/* Fixed 3.3V regulator to be used by SDHI0 and SDHI1 */
+static struct regulator_consumer_supply fixed3v3_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.1"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.1"),
 };
 
 /* SDHI0 */
@@ -409,29 +433,14 @@ static struct platform_device *kota2_devices[] __initdata = {
 	&sdhi1_device,
 };
 
-static struct map_desc kota2_io_desc[] __initdata = {
-	/* create a 1:1 entity map for 0xe6xxxxxx
-	 * used by CPGA, INTC and PFC.
-	 */
-	{
-		.virtual	= 0xe6000000,
-		.pfn		= __phys_to_pfn(0xe6000000),
-		.length		= 256 << 20,
-		.type		= MT_DEVICE_NONSHARED
-	},
-};
-
-static void __init kota2_map_io(void)
-{
-	iotable_init(kota2_io_desc, ARRAY_SIZE(kota2_io_desc));
-
-	/* setup early devices and console here as well */
-	sh73a0_add_early_devices();
-	shmobile_setup_console();
-}
-
 static void __init kota2_init(void)
 {
+	regulator_register_always_on(0, "fixed-1.8V", fixed1v8_power_consumers,
+				     ARRAY_SIZE(fixed1v8_power_consumers), 1800000);
+	regulator_register_always_on(1, "fixed-3.3V", fixed3v3_power_consumers,
+				     ARRAY_SIZE(fixed3v3_power_consumers), 3300000);
+	regulator_register_fixed(2, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
 	sh73a0_pinmux_init();
 
 	/* SCIFA2 (UART2) */
@@ -529,28 +538,19 @@ static void __init kota2_init(void)
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Early BRESP enable, Shared attribute override enable, 64K*8way */
-	l2x0_init(__io(0xf0100000), 0x40460000, 0x82000fff);
+	l2x0_init(IOMEM(0xf0100000), 0x40460000, 0x82000fff);
 #endif
 	sh73a0_add_standard_devices();
 	platform_add_devices(kota2_devices, ARRAY_SIZE(kota2_devices));
 }
 
-static void __init kota2_timer_init(void)
-{
-	sh73a0_clock_init();
-	shmobile_timer.init();
-	return;
-}
-
-struct sys_timer kota2_timer = {
-	.init	= kota2_timer_init,
-};
-
 MACHINE_START(KOTA2, "kota2")
-	.map_io		= kota2_map_io,
+	.map_io		= sh73a0_map_io,
+	.init_early	= sh73a0_add_early_devices,
 	.nr_irqs	= NR_IRQS_LEGACY,
 	.init_irq	= sh73a0_init_irq,
 	.handle_irq	= gic_handle_irq,
 	.init_machine	= kota2_init,
-	.timer		= &kota2_timer,
+	.init_late	= shmobile_init_late,
+	.timer		= &shmobile_timer,
 MACHINE_END

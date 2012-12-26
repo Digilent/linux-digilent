@@ -1,8 +1,5 @@
-#ifndef __ARCH_S390_ATOMIC__
-#define __ARCH_S390_ATOMIC__
-
 /*
- * Copyright 1999,2009 IBM Corp.
+ * Copyright IBM Corp. 1999, 2009
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>,
  *	      Denis Joseph Barrow,
  *	      Arnd Bergmann <arndb@de.ibm.com>,
@@ -13,9 +10,12 @@
  *
  */
 
+#ifndef __ARCH_S390_ATOMIC__
+#define __ARCH_S390_ATOMIC__
+
 #include <linux/compiler.h>
 #include <linux/types.h>
-#include <asm/system.h>
+#include <asm/cmpxchg.h>
 
 #define ATOMIC_INIT(i)  { (i) }
 

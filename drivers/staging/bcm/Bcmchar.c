@@ -15,11 +15,11 @@
 
 static int bcm_char_open(struct inode *inode, struct file * filp)
 {
-	PMINI_ADAPTER       Adapter = NULL;
-	PPER_TARANG_DATA    pTarang = NULL;
+	struct bcm_mini_adapter *Adapter = NULL;
+	struct bcm_tarang_data *pTarang = NULL;
 
 	Adapter = GET_BCM_ADAPTER(gblpnetdev);
-	pTarang = kzalloc(sizeof(PER_TARANG_DATA), GFP_KERNEL);
+	pTarang = kzalloc(sizeof(struct bcm_tarang_data), GFP_KERNEL);
 	if (!pTarang)
 		return -ENOMEM;
 
@@ -43,11 +43,11 @@ static int bcm_char_open(struct inode *inode, struct file * filp)
 
 static int bcm_char_release(struct inode *inode, struct file *filp)
 {
-	PPER_TARANG_DATA pTarang, tmp, ptmp;
-	PMINI_ADAPTER Adapter = NULL;
+	struct bcm_tarang_data *pTarang, *tmp, *ptmp;
+	struct bcm_mini_adapter *Adapter = NULL;
 	struct sk_buff *pkt, *npkt;
 
-	pTarang = (PPER_TARANG_DATA)filp->private_data;
+	pTarang = (struct bcm_tarang_data *)filp->private_data;
 
 	if (pTarang == NULL) {
 		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_PRINTK, 0, 0,
@@ -97,8 +97,8 @@ static int bcm_char_release(struct inode *inode, struct file *filp)
 static ssize_t bcm_char_read(struct file *filp, char __user *buf, size_t size,
 			     loff_t *f_pos)
 {
-	PPER_TARANG_DATA pTarang = filp->private_data;
-	PMINI_ADAPTER	Adapter = pTarang->Adapter;
+	struct bcm_tarang_data *pTarang = filp->private_data;
+	struct bcm_mini_adapter *Adapter = pTarang->Adapter;
 	struct sk_buff *Packet = NULL;
 	ssize_t PktLen = 0;
 	int wait_ret_val = 0;
@@ -155,9 +155,9 @@ static ssize_t bcm_char_read(struct file *filp, char __user *buf, size_t size,
 
 static long bcm_char_ioctl(struct file *filp, UINT cmd, ULONG arg)
 {
-	PPER_TARANG_DATA  pTarang = filp->private_data;
+	struct bcm_tarang_data *pTarang = filp->private_data;
 	void __user *argp = (void __user *)arg;
-	PMINI_ADAPTER Adapter = pTarang->Adapter;
+	struct bcm_mini_adapter *Adapter = pTarang->Adapter;
 	INT Status = STATUS_FAILURE;
 	int timeout = 0;
 	IOCTL_BUFFER IoBuffer;
@@ -722,20 +722,16 @@ static long bcm_char_ioctl(struct file *filp, UINT cmd, ULONG arg)
 		if (copy_from_user(&IoBuffer, argp, sizeof(IOCTL_BUFFER)))
 			return -EFAULT;
 
-		if (IoBuffer.InputLength < sizeof(struct link_request))
+		if (IoBuffer.InputLength < sizeof(struct bcm_link_request))
 			return -EINVAL;
 
 		if (IoBuffer.InputLength > MAX_CNTL_PKT_SIZE)
 			return -EINVAL;
 
-		pvBuffer = kmalloc(IoBuffer.InputLength, GFP_KERNEL);
-		if (!pvBuffer)
-			return -ENOMEM;
-
-		if (copy_from_user(pvBuffer, IoBuffer.InputBuffer, IoBuffer.InputLength)) {
-			kfree(pvBuffer);
-			return -EFAULT;
-		}
+		pvBuffer = memdup_user(IoBuffer.InputBuffer,
+				       IoBuffer.InputLength);
+		if (IS_ERR(pvBuffer))
+			return PTR_ERR(pvBuffer);
 
 		down(&Adapter->LowPowerModeSync);
 		Status = wait_event_interruptible_timeout(Adapter->lowpower_mode_wait_queue,
@@ -791,7 +787,7 @@ cntrlEnd:
 	}
 
 	case IOCTL_BCM_BUFFER_DOWNLOAD: {
-		FIRMWARE_INFO *psFwInfo = NULL;
+		struct bcm_firmware_info *psFwInfo = NULL;
 		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_PRINTK, 0, 0, "Starting the firmware download PID =0x%x!!!!\n", current->pid);
 
 		if (!down_trylock(&Adapter->fw_download_sema)) {
@@ -811,7 +807,7 @@ cntrlEnd:
 		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_PRINTK, 0, 0,
 				"Length for FW DLD is : %lx\n", IoBuffer.InputLength);
 
-		if (IoBuffer.InputLength > sizeof(FIRMWARE_INFO)) {
+		if (IoBuffer.InputLength > sizeof(struct bcm_firmware_info)) {
 			up(&Adapter->fw_download_sema);
 			return -EINVAL;
 		}
@@ -975,7 +971,7 @@ cntrlEnd:
 		break;
 
 	case IOCTL_GET_PACK_INFO:
-		if (copy_to_user(argp, &Adapter->PackInfo, sizeof(PacketInfo)*NO_OF_QUEUES))
+		if (copy_to_user(argp, &Adapter->PackInfo, sizeof(struct bcm_packet_info)*NO_OF_QUEUES))
 			return -EFAULT;
 		Status = STATUS_SUCCESS;
 		break;
@@ -1140,15 +1136,10 @@ cntrlEnd:
 		if (IoBuffer.InputLength < sizeof(ULONG) * 2)
 			return -EINVAL;
 
-		pvBuffer = kmalloc(IoBuffer.InputLength, GFP_KERNEL);
-		if (!pvBuffer)
-			return -ENOMEM;
-
-		/* Get WrmBuffer structure */
-		if (copy_from_user(pvBuffer, IoBuffer.InputBuffer, IoBuffer.InputLength)) {
-			kfree(pvBuffer);
-			return -EFAULT;
-		}
+		pvBuffer = memdup_user(IoBuffer.InputBuffer,
+				       IoBuffer.InputLength);
+		if (IS_ERR(pvBuffer))
+			return PTR_ERR(pvBuffer);
 
 		pBulkBuffer = (PBULKWRM_BUFFER)pvBuffer;
 
@@ -1302,20 +1293,18 @@ cntrlEnd:
 		/*
 		 * Deny the access if the offset crosses the cal area limit.
 		 */
+		if (stNVMReadWrite.uiNumBytes > Adapter->uiNVMDSDSize)
+			return STATUS_FAILURE;
 
-		if ((stNVMReadWrite.uiOffset + stNVMReadWrite.uiNumBytes) > Adapter->uiNVMDSDSize) {
+		if (stNVMReadWrite.uiOffset > Adapter->uiNVMDSDSize - stNVMReadWrite.uiNumBytes) {
 			/* BCM_DEBUG_PRINT(Adapter,DBG_TYPE_PRINTK, 0, 0,"Can't allow access beyond NVM Size: 0x%x 0x%x\n", stNVMReadWrite.uiOffset, stNVMReadWrite.uiNumBytes); */
 			return STATUS_FAILURE;
 		}
 
-		pReadData = kzalloc(stNVMReadWrite.uiNumBytes, GFP_KERNEL);
-		if (!pReadData)
-			return -ENOMEM;
-
-		if (copy_from_user(pReadData, stNVMReadWrite.pBuffer, stNVMReadWrite.uiNumBytes)) {
-			kfree(pReadData);
-			return -EFAULT;
-		}
+		pReadData = memdup_user(stNVMReadWrite.pBuffer,
+					stNVMReadWrite.uiNumBytes);
+		if (IS_ERR(pReadData))
+			return PTR_ERR(pReadData);
 
 		do_gettimeofday(&tv0);
 		if (IOCTL_BCM_NVM_READ == cmd) {
@@ -2025,7 +2014,7 @@ static const struct file_operations bcm_fops = {
 	.llseek = no_llseek,
 };
 
-int register_control_device_interface(PMINI_ADAPTER Adapter)
+int register_control_device_interface(struct bcm_mini_adapter *Adapter)
 {
 
 	if (Adapter->major > 0)
@@ -2050,7 +2039,7 @@ int register_control_device_interface(PMINI_ADAPTER Adapter)
 	return 0;
 }
 
-void unregister_control_device_interface(PMINI_ADAPTER Adapter)
+void unregister_control_device_interface(struct bcm_mini_adapter *Adapter)
 {
 	if (Adapter->major > 0) {
 		device_destroy(bcm_class, MKDEV(Adapter->major, 0));

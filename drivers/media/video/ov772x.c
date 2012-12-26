@@ -880,15 +880,11 @@ static int ov772x_cropcap(struct v4l2_subdev *sd, struct v4l2_cropcap *a)
 static int ov772x_g_fmt(struct v4l2_subdev *sd,
 			struct v4l2_mbus_framefmt *mf)
 {
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct ov772x_priv *priv = container_of(sd, struct ov772x_priv, subdev);
 
 	if (!priv->win || !priv->cfmt) {
-		u32 width = VGA_WIDTH, height = VGA_HEIGHT;
-		int ret = ov772x_set_params(client, &width, &height,
-					    V4L2_MBUS_FMT_YUYV8_2X8);
-		if (ret < 0)
-			return ret;
+		priv->cfmt = &ov772x_cfmts[0];
+		priv->win = ov772x_select_win(VGA_WIDTH, VGA_HEIGHT);
 	}
 
 	mf->width	= priv->win->width;
@@ -1123,22 +1119,7 @@ static struct i2c_driver ov772x_i2c_driver = {
 	.id_table = ov772x_id,
 };
 
-/*
- * module function
- */
-
-static int __init ov772x_module_init(void)
-{
-	return i2c_add_driver(&ov772x_i2c_driver);
-}
-
-static void __exit ov772x_module_exit(void)
-{
-	i2c_del_driver(&ov772x_i2c_driver);
-}
-
-module_init(ov772x_module_init);
-module_exit(ov772x_module_exit);
+module_i2c_driver(ov772x_i2c_driver);
 
 MODULE_DESCRIPTION("SoC Camera driver for ov772x");
 MODULE_AUTHOR("Kuninori Morimoto");

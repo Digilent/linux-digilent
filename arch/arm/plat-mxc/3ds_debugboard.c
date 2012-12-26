@@ -12,10 +12,14 @@
 
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/irqdomain.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
+#include <linux/module.h>
 #include <linux/smsc911x.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 
 #include <mach/hardware.h>
 
@@ -46,27 +50,22 @@
 /* CPU ID and Personality ID */
 #define MCU_BOARD_ID_REG	0x68
 
-#define MXC_IRQ_TO_EXPIO(irq)   ((irq) - MXC_BOARD_IRQ_START)
-#define MXC_IRQ_TO_GPIO(irq)	((irq) - MXC_INTERNAL_IRQS)
-
-#define MXC_EXP_IO_BASE		(MXC_BOARD_IRQ_START)
 #define MXC_MAX_EXP_IO_LINES	16
 
 /* interrupts like external uart , external ethernet etc*/
-#define EXPIO_INT_ENET		(MXC_BOARD_IRQ_START + 0)
-#define EXPIO_INT_XUART_A	(MXC_BOARD_IRQ_START + 1)
-#define EXPIO_INT_XUART_B	(MXC_BOARD_IRQ_START + 2)
-#define EXPIO_INT_BUTTON_A	(MXC_BOARD_IRQ_START + 3)
-#define EXPIO_INT_BUTTON_B	(MXC_BOARD_IRQ_START + 4)
+#define EXPIO_INT_ENET		0
+#define EXPIO_INT_XUART_A	1
+#define EXPIO_INT_XUART_B	2
+#define EXPIO_INT_BUTTON_A	3
+#define EXPIO_INT_BUTTON_B	4
 
 static void __iomem *brd_io;
+static struct irq_domain *domain;
 
 static struct resource smsc911x_resources[] = {
 	{
 		.flags = IORESOURCE_MEM,
 	} , {
-		.start = EXPIO_INT_ENET,
-		.end = EXPIO_INT_ENET,
 		.flags = IORESOURCE_IRQ,
 	},
 };
@@ -78,7 +77,7 @@ static struct smsc911x_platform_config smsc911x_config = {
 
 static struct platform_device smsc_lan9217_device = {
 	.name = "smsc911x",
-	.id = 0,
+	.id = -1,
 	.dev = {
 		.platform_data = &smsc911x_config,
 	},
@@ -98,11 +97,11 @@ static void mxc_expio_irq_handler(u32 irq, struct irq_desc *desc)
 	imr_val = __raw_readw(brd_io + INTR_MASK_REG);
 	int_valid = __raw_readw(brd_io + INTR_STATUS_REG) & ~imr_val;
 
-	expio_irq = MXC_BOARD_IRQ_START;
+	expio_irq = 0;
 	for (; int_valid != 0; int_valid >>= 1, expio_irq++) {
 		if ((int_valid & 1) == 0)
 			continue;
-		generic_handle_irq(expio_irq);
+		generic_handle_irq(irq_find_mapping(domain, expio_irq));
 	}
 
 	desc->irq_data.chip->irq_ack(&desc->irq_data);
@@ -116,7 +115,7 @@ static void mxc_expio_irq_handler(u32 irq, struct irq_desc *desc)
 static void expio_mask_irq(struct irq_data *d)
 {
 	u16 reg;
-	u32 expio = MXC_IRQ_TO_EXPIO(d->irq);
+	u32 expio = d->hwirq;
 
 	reg = __raw_readw(brd_io + INTR_MASK_REG);
 	reg |= (1 << expio);
@@ -125,7 +124,7 @@ static void expio_mask_irq(struct irq_data *d)
 
 static void expio_ack_irq(struct irq_data *d)
 {
-	u32 expio = MXC_IRQ_TO_EXPIO(d->irq);
+	u32 expio = d->hwirq;
 
 	__raw_writew(1 << expio, brd_io + INTR_RESET_REG);
 	__raw_writew(0, brd_io + INTR_RESET_REG);
@@ -135,7 +134,7 @@ static void expio_ack_irq(struct irq_data *d)
 static void expio_unmask_irq(struct irq_data *d)
 {
 	u16 reg;
-	u32 expio = MXC_IRQ_TO_EXPIO(d->irq);
+	u32 expio = d->hwirq;
 
 	reg = __raw_readw(brd_io + INTR_MASK_REG);
 	reg &= ~(1 << expio);
@@ -148,8 +147,15 @@ static struct irq_chip expio_irq_chip = {
 	.irq_unmask = expio_unmask_irq,
 };
 
-int __init mxc_expio_init(u32 base, u32 p_irq)
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+};
+
+int __init mxc_expio_init(u32 base, u32 intr_gpio)
 {
+	u32 p_irq = gpio_to_irq(intr_gpio);
+	int irq_base;
 	int i;
 
 	brd_io = ioremap(BOARD_IO_ADDR(base), SZ_4K);
@@ -171,16 +177,23 @@ int __init mxc_expio_init(u32 base, u32 p_irq)
 	/*
 	 * Configure INT line as GPIO input
 	 */
-	gpio_request(MXC_IRQ_TO_GPIO(p_irq), "expio_pirq");
-	gpio_direction_input(MXC_IRQ_TO_GPIO(p_irq));
+	gpio_request(intr_gpio, "expio_pirq");
+	gpio_direction_input(intr_gpio);
 
 	/* disable the interrupt and clear the status */
 	__raw_writew(0, brd_io + INTR_MASK_REG);
 	__raw_writew(0xFFFF, brd_io + INTR_RESET_REG);
 	__raw_writew(0, brd_io + INTR_RESET_REG);
 	__raw_writew(0x1F, brd_io + INTR_MASK_REG);
-	for (i = MXC_EXP_IO_BASE;
-	     i < (MXC_EXP_IO_BASE + MXC_MAX_EXP_IO_LINES); i++) {
+
+	irq_base = irq_alloc_descs(-1, 0, MXC_MAX_EXP_IO_LINES, numa_node_id());
+	WARN_ON(irq_base < 0);
+
+	domain = irq_domain_add_legacy(NULL, MXC_MAX_EXP_IO_LINES, irq_base, 0,
+				       &irq_domain_simple_ops, NULL);
+	WARN_ON(!domain);
+
+	for (i = irq_base; i < irq_base + MXC_MAX_EXP_IO_LINES; i++) {
 		irq_set_chip_and_handler(i, &expio_irq_chip, handle_level_irq);
 		set_irq_flags(i, IRQF_VALID);
 	}
@@ -188,8 +201,12 @@ int __init mxc_expio_init(u32 base, u32 p_irq)
 	irq_set_chained_handler(p_irq, mxc_expio_irq_handler);
 
 	/* Register Lan device on the debugboard */
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
 	smsc911x_resources[0].start = LAN9217_BASE_ADDR(base);
 	smsc911x_resources[0].end = LAN9217_BASE_ADDR(base) + 0x100 - 1;
+	smsc911x_resources[1].start = irq_find_mapping(domain, EXPIO_INT_ENET);
+	smsc911x_resources[1].end = irq_find_mapping(domain, EXPIO_INT_ENET);
 	platform_device_register(&smsc_lan9217_device);
 
 	return 0;

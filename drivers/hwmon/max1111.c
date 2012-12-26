@@ -106,7 +106,8 @@ static ssize_t show_adc(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	/* assume the reference voltage to be 2.048V, with an 8-bit sample,
+	/*
+	 * assume the reference voltage to be 2.048V, with an 8-bit sample,
 	 * the LSB weight is 8mV
 	 */
 	return sprintf(buf, "%d\n", ret * 8);
@@ -167,7 +168,7 @@ static int __devinit max1111_probe(struct spi_device *spi)
 	if (err < 0)
 		return err;
 
-	data = kzalloc(sizeof(struct max1111_data), GFP_KERNEL);
+	data = devm_kzalloc(&spi->dev, sizeof(struct max1111_data), GFP_KERNEL);
 	if (data == NULL) {
 		dev_err(&spi->dev, "failed to allocate memory\n");
 		return -ENOMEM;
@@ -175,7 +176,7 @@ static int __devinit max1111_probe(struct spi_device *spi)
 
 	err = setup_transfer(data);
 	if (err)
-		goto err_free_data;
+		return err;
 
 	mutex_init(&data->drvdata_lock);
 
@@ -185,7 +186,7 @@ static int __devinit max1111_probe(struct spi_device *spi)
 	err = sysfs_create_group(&spi->dev.kobj, &max1111_attr_group);
 	if (err) {
 		dev_err(&spi->dev, "failed to create attribute group\n");
-		goto err_free_data;
+		return err;
 	}
 
 	data->hwmon_dev = hwmon_device_register(&spi->dev);
@@ -202,8 +203,6 @@ static int __devinit max1111_probe(struct spi_device *spi)
 
 err_remove:
 	sysfs_remove_group(&spi->dev.kobj, &max1111_attr_group);
-err_free_data:
-	kfree(data);
 	return err;
 }
 
@@ -214,7 +213,6 @@ static int __devexit max1111_remove(struct spi_device *spi)
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&spi->dev.kobj, &max1111_attr_group);
 	mutex_destroy(&data->drvdata_lock);
-	kfree(data);
 	return 0;
 }
 
@@ -227,17 +225,7 @@ static struct spi_driver max1111_driver = {
 	.remove		= __devexit_p(max1111_remove),
 };
 
-static int __init max1111_init(void)
-{
-	return spi_register_driver(&max1111_driver);
-}
-module_init(max1111_init);
-
-static void __exit max1111_exit(void)
-{
-	spi_unregister_driver(&max1111_driver);
-}
-module_exit(max1111_exit);
+module_spi_driver(max1111_driver);
 
 MODULE_AUTHOR("Eric Miao <eric.miao@marvell.com>");
 MODULE_DESCRIPTION("MAX1111 ADC Driver");

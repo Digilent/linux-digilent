@@ -1017,7 +1017,7 @@ static void ali_ircc_fir_change_speed(struct ali_ircc_cb *priv, __u32 baud)
 {
 		
 	int iobase; 
-	struct ali_ircc_cb *self = (struct ali_ircc_cb *) priv;
+	struct ali_ircc_cb *self = priv;
 	struct net_device *dev;
 
 	IRDA_DEBUG(1, "%s(), ---------------- Start ----------------\n", __func__ );
@@ -1052,7 +1052,7 @@ static void ali_ircc_fir_change_speed(struct ali_ircc_cb *priv, __u32 baud)
  */
 static void ali_ircc_sir_change_speed(struct ali_ircc_cb *priv, __u32 speed)
 {
-	struct ali_ircc_cb *self = (struct ali_ircc_cb *) priv;
+	struct ali_ircc_cb *self = priv;
 	unsigned long flags;
 	int iobase; 
 	int fcr;    /* FIFO control reg */
@@ -1121,7 +1121,7 @@ static void ali_ircc_sir_change_speed(struct ali_ircc_cb *priv, __u32 speed)
 static void ali_ircc_change_dongle_speed(struct ali_ircc_cb *priv, int speed)
 {
 	
-	struct ali_ircc_cb *self = (struct ali_ircc_cb *) priv;
+	struct ali_ircc_cb *self = priv;
 	int iobase,dongle_id;
 	int tmp = 0;
 			
@@ -1368,7 +1368,7 @@ static int ali_ircc_net_open(struct net_device *dev)
 		IRDA_WARNING("%s, unable to allocate dma=%d\n",
 			     ALI_IRCC_DRIVER_NAME,
 			     self->io.dma);
-		free_irq(self->io.irq, self);
+		free_irq(self->io.irq, dev);
 		return -EAGAIN;
 	}
 	

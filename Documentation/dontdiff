@@ -150,7 +150,6 @@ keywords.c
 ksym.c*
 ksym.h*
 kxgettext
-lkc_defs.h
 lex.c
 lex.*.c
 linux
@@ -158,7 +157,6 @@ logo_*.c
 logo_*_clut224.c
 logo_*_mono.c
 lxdialog
-mach
 mach-types
 mach-types.h
 machtypes.h

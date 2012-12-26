@@ -401,6 +401,10 @@ static int omap_pcm_new(struct snd_soc_pcm_runtime *rtd)
 	}
 
 out:
+	/* free preallocated buffers in case of error */
+	if (ret)
+		omap_pcm_free_dma_buffers(pcm);
+
 	return ret;
 }
 
@@ -437,3 +441,4 @@ module_platform_driver(omap_pcm_driver);
 MODULE_AUTHOR("Jarkko Nikula <jarkko.nikula@bitmer.com>");
 MODULE_DESCRIPTION("OMAP PCM DMA module");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:omap-pcm-audio");

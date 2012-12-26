@@ -589,7 +589,7 @@ static int __devinit pnv_ioda_configure_pe(struct pnv_phb *phb,
 		dcomp = OPAL_IGNORE_RID_DEVICE_NUMBER;
 		fcomp = OPAL_IGNORE_RID_FUNCTION_NUMBER;
 		parent = pe->pbus->self;
-		count = pe->pbus->subordinate - pe->pbus->secondary + 1;
+		count = pe->pbus->busn_res.end - pe->pbus->busn_res.start + 1;
 		switch(count) {
 		case  1: bcomp = OpalPciBusAll;		break;
 		case  2: bcomp = OpalPciBus7Bits;	break;
@@ -816,11 +816,11 @@ static void __devinit pnv_ioda_setup_bus_PE(struct pci_dev *dev,
 	pe->pdev = NULL;
 	pe->tce32_seg = -1;
 	pe->mve_number = -1;
-	pe->rid = bus->secondary << 8;
+	pe->rid = bus->busn_res.start << 8;
 	pe->dma_weight = 0;
 
-	pe_info(pe, "Secondary busses %d..%d associated with PE\n",
-		bus->secondary, bus->subordinate);
+	pe_info(pe, "Secondary busses %pR associated with PE\n",
+		&bus->busn_res);
 
 	if (pnv_ioda_configure_pe(phb, pe)) {
 		/* XXX What do we do here ? */
@@ -1299,15 +1299,14 @@ void __init pnv_pci_init_ioda1_phb(struct device_node *np)
 	/* Setup MSI support */
 	pnv_pci_init_ioda_msis(phb);
 
-	/* We set both probe_only and PCI_REASSIGN_ALL_RSRC. This is an
+	/* We set both PCI_PROBE_ONLY and PCI_REASSIGN_ALL_RSRC. This is an
 	 * odd combination which essentially means that we skip all resource
 	 * fixups and assignments in the generic code, and do it all
 	 * ourselves here
 	 */
-	pci_probe_only = 1;
 	ppc_md.pcibios_fixup_phb = pnv_pci_ioda_fixup_phb;
 	ppc_md.pcibios_enable_device_hook = pnv_pci_enable_device_hook;
-	pci_add_flags(PCI_REASSIGN_ALL_RSRC);
+	pci_add_flags(PCI_PROBE_ONLY | PCI_REASSIGN_ALL_RSRC);
 
 	/* Reset IODA tables to a clean state */
 	rc = opal_pci_reset(phb_id, OPAL_PCI_IODA_TABLE_RESET, OPAL_ASSERT_RESET);

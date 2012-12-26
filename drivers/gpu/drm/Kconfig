@@ -6,9 +6,10 @@
 #
 menuconfig DRM
 	tristate "Direct Rendering Manager (XFree86 4.1.0 and higher DRI support)"
-	depends on (AGP || AGP=n) && !EMULATED_CMPXCHG
+	depends on (AGP || AGP=n) && !EMULATED_CMPXCHG && MMU
 	select I2C
 	select I2C_ALGOBIT
+	select DMA_SHARED_BUFFER
 	help
 	  Kernel-level support for the Direct Rendering Infrastructure (DRI)
 	  introduced in XFree86 4.0. If you say Y here, you need to select
@@ -17,6 +18,12 @@ menuconfig DRM
 	  DMA transfers. Please see <http://dri.sourceforge.net/> for more
 	  details.  You should also select and configure AGP
 	  (/dev/agpgart) support if it is available for your platform.
+
+config DRM_USB
+	tristate
+	depends on DRM
+	depends on USB_ARCH_HAS_HCD
+	select USB
 
 config DRM_KMS_HELPER
 	tristate
@@ -27,6 +34,18 @@ config DRM_KMS_HELPER
 	help
 	  FB and CRTC helpers for KMS drivers.
 
+config DRM_LOAD_EDID_FIRMWARE
+	bool "Allow to specify an EDID data set instead of probing for it"
+	depends on DRM_KMS_HELPER
+	help
+	  Say Y here, if you want to use EDID data to be loaded from the
+	  /lib/firmware directory or one of the provided built-in
+	  data sets. This may be necessary, if the graphics adapter or
+	  monitor are unable to provide appropriate EDID data. Since this
+	  feature is provided as a workaround for broken hardware, the
+	  default case is N. Details and instructions how to build your own
+	  EDID data are given in Documentation/EDID/HOWTO.txt.
+
 config DRM_TTM
 	tristate
 	depends on DRM
@@ -34,6 +53,22 @@ config DRM_TTM
 	  GPU memory management subsystem for devices with multiple
 	  GPU memory types. Will be enabled automatically if a device driver
 	  uses it.
+
+config DRM_GEM_CMA_HELPER
+	bool	
+	depends on DRM
+	help
+	  Choose this if you need the GEM CMA helper functions
+
+config DRM_KMS_CMA_HELPER
+	tristate
+	select DRM_GEM_CMA_HELPER
+	select DRM_KMS_HELPER
+	select FB_SYS_FILLRECT
+	select FB_SYS_COPYAREA
+	select FB_SYS_IMAGEBLIT
+	help
+	  Choose this if you need the KMS cma helper functions
 
 config DRM_TDFX
 	tristate "3dfx Banshee/Voodoo3+"
@@ -70,6 +105,8 @@ config DRM_RADEON
 	  If M is selected, the module will be called radeon.
 
 source "drivers/gpu/drm/radeon/Kconfig"
+
+source "drivers/gpu/drm/nouveau/Kconfig"
 
 config DRM_I810
 	tristate "Intel I810"
@@ -161,12 +198,10 @@ config DRM_SAVAGE
 
 config DRM_ENCODER_ADV7511
 	tristate "AV7511 encoder"
-	depends on DRM
+	depends on I2C && DRM
 	select REGMAP_I2C
-	select DRM_KMS_HELPER
-	select FB_SYS_FILLRECT
-	select FB_SYS_COPYAREA
-	select FB_SYS_IMAGEBLIT
+
+source "drivers/gpu/drm/analog/Kconfig"
 
 source "drivers/gpu/drm/exynos/Kconfig"
 
@@ -174,3 +209,10 @@ source "drivers/gpu/drm/vmwgfx/Kconfig"
 
 source "drivers/gpu/drm/gma500/Kconfig"
 
+source "drivers/gpu/drm/udl/Kconfig"
+
+source "drivers/gpu/drm/ast/Kconfig"
+
+source "drivers/gpu/drm/mgag200/Kconfig"
+
+source "drivers/gpu/drm/cirrus/Kconfig"

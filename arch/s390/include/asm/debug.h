@@ -1,9 +1,7 @@
 /*
- *  include/asm-s390/debug.h
  *   S/390 debug facility
  *
- *    Copyright (C) 1999, 2000 IBM Deutschland Entwicklung GmbH,
- *                             IBM Corporation
+ *    Copyright IBM Corp. 1999, 2000
  */
 
 #ifndef DEBUG_H
@@ -131,6 +129,7 @@ void debug_unregister(debug_info_t* id);
 
 void debug_set_level(debug_info_t* id, int new_level);
 
+void debug_set_critical(void);
 void debug_stop_all(void);
 
 static inline debug_entry_t*

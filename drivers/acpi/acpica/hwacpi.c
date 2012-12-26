@@ -48,11 +48,12 @@
 #define _COMPONENT          ACPI_HARDWARE
 ACPI_MODULE_NAME("hwacpi")
 
+#if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
 /******************************************************************************
  *
  * FUNCTION:    acpi_hw_set_mode
  *
- * PARAMETERS:  Mode            - SYS_MODE_ACPI or SYS_MODE_LEGACY
+ * PARAMETERS:  mode            - SYS_MODE_ACPI or SYS_MODE_LEGACY
  *
  * RETURN:      Status
  *
@@ -166,3 +167,5 @@ u32 acpi_hw_get_mode(void)
 		return_UINT32(ACPI_SYS_MODE_LEGACY);
 	}
 }
+
+#endif				/* !ACPI_REDUCED_HARDWARE */

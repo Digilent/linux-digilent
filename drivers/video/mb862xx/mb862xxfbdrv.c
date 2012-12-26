@@ -328,6 +328,8 @@ static int mb862xxfb_ioctl(struct fb_info *fbi, unsigned int cmd,
 	case MB862XX_L1_SET_CFG:
 		if (copy_from_user(l1_cfg, argp, sizeof(*l1_cfg)))
 			return -EFAULT;
+		if (l1_cfg->dh == 0 || l1_cfg->dw == 0)
+			return -EINVAL;
 		if ((l1_cfg->sw >= l1_cfg->dw) && (l1_cfg->sh >= l1_cfg->dh)) {
 			/* downscaling */
 			outreg(cap, GC_CAP_CSC,
@@ -579,7 +581,7 @@ static ssize_t mb862xxfb_show_dispregs(struct device *dev,
 
 static DEVICE_ATTR(dispregs, 0444, mb862xxfb_show_dispregs, NULL);
 
-irqreturn_t mb862xx_intr(int irq, void *dev_id)
+static irqreturn_t mb862xx_intr(int irq, void *dev_id)
 {
 	struct mb862xxfb_par *par = (struct mb862xxfb_par *) dev_id;
 	unsigned long reg_ist, mask;

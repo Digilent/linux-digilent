@@ -264,7 +264,7 @@ struct snd_pcm_hw_constraint_ratdens {
 
 struct snd_pcm_hw_constraint_list {
 	unsigned int count;
-	unsigned int *list;
+	const unsigned int *list;
 	unsigned int mask;
 };
 
@@ -454,6 +454,7 @@ struct snd_pcm {
 	void *private_data;
 	void (*private_free) (struct snd_pcm *pcm);
 	struct device *dev; /* actual hw device this belongs to */
+	bool internal; /* pcm is for internal use only */
 #if defined(CONFIG_SND_PCM_OSS) || defined(CONFIG_SND_PCM_OSS_MODULE)
 	struct snd_pcm_oss oss;
 #endif
@@ -473,6 +474,9 @@ struct snd_pcm_notify {
 extern const struct file_operations snd_pcm_f_ops[2];
 
 int snd_pcm_new(struct snd_card *card, const char *id, int device,
+		int playback_count, int capture_count,
+		struct snd_pcm **rpcm);
+int snd_pcm_new_internal(struct snd_card *card, const char *id, int device,
 		int playback_count, int capture_count,
 		struct snd_pcm **rpcm);
 int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count);
@@ -781,7 +785,8 @@ void snd_interval_muldivk(const struct snd_interval *a, const struct snd_interva
 			  unsigned int k, struct snd_interval *c);
 void snd_interval_mulkdiv(const struct snd_interval *a, unsigned int k,
 			  const struct snd_interval *b, struct snd_interval *c);
-int snd_interval_list(struct snd_interval *i, unsigned int count, unsigned int *list, unsigned int mask);
+int snd_interval_list(struct snd_interval *i, unsigned int count,
+		      const unsigned int *list, unsigned int mask);
 int snd_interval_ratnum(struct snd_interval *i,
 			unsigned int rats_count, struct snd_ratnum *rats,
 			unsigned int *nump, unsigned int *denp);
@@ -805,7 +810,7 @@ int snd_pcm_hw_constraint_integer(struct snd_pcm_runtime *runtime, snd_pcm_hw_pa
 int snd_pcm_hw_constraint_list(struct snd_pcm_runtime *runtime, 
 			       unsigned int cond,
 			       snd_pcm_hw_param_t var,
-			       struct snd_pcm_hw_constraint_list *l);
+			       const struct snd_pcm_hw_constraint_list *l);
 int snd_pcm_hw_constraint_ratnums(struct snd_pcm_runtime *runtime, 
 				  unsigned int cond,
 				  snd_pcm_hw_param_t var,
@@ -888,6 +893,7 @@ extern const struct snd_pcm_hw_constraint_list snd_pcm_known_rates;
 
 int snd_pcm_limit_hw_rates(struct snd_pcm_runtime *runtime);
 unsigned int snd_pcm_rate_to_rate_bit(unsigned int rate);
+unsigned int snd_pcm_rate_bit_to_rate(unsigned int rate_bit);
 
 static inline void snd_pcm_set_runtime_buffer(struct snd_pcm_substream *substream,
 					      struct snd_dma_buffer *bufp)
@@ -1067,5 +1073,17 @@ static inline void snd_pcm_limit_isa_dma_size(int dma, size_t *max)
 #define PCM_RUNTIME_CHECK(sub) snd_BUG_ON(!(sub) || !(sub)->runtime)
 
 const char *snd_pcm_format_name(snd_pcm_format_t format);
+
+/**
+ * snd_pcm_stream_str - Get a string naming the direction of a stream
+ * @substream: the pcm substream instance
+ */
+static inline const char *snd_pcm_stream_str(struct snd_pcm_substream *substream)
+{
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		return "Playback";
+	else
+		return "Capture";
+}
 
 #endif /* __SOUND_PCM_H */

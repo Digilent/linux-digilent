@@ -12,6 +12,7 @@
 #include <asm/ptrace.h>
 #include <asm/thread_info.h>
 #include <asm/asm-offsets.h>
+#include <asm/sigp.h>
 
 /*
  * Save register context in absolute 0 lowcore and call swsusp_save() to
@@ -42,7 +43,7 @@ ENTRY(swsusp_arch_suspend)
 	lghi	%r1,0x1000
 
 	/* Save CPU address */
-	stap	__LC_CPU_ADDRESS(%r0)
+	stap	__LC_EXT_CPU_ADDR(%r0)
 
 	/* Store registers */
 	mvc	0x318(4,%r1),__SF_EMPTY(%r15)	/* move prefix to lowcore */
@@ -163,7 +164,7 @@ ENTRY(swsusp_arch_resume)
 	diag	%r0,%r0,0x308
 restart_entry:
 	lhi	%r1,1
-	sigp	%r1,%r0,0x12
+	sigp	%r1,%r0,SIGP_SET_ARCHITECTURE
 	sam64
 	larl	%r1,.Lnew_pgm_check_psw
 	lpswe	0(%r1)
@@ -173,15 +174,15 @@ pgm_check_entry:
 	larl	%r1,.Lresume_cpu		/* Resume CPU address: r2 */
 	stap	0(%r1)
 	llgh	%r2,0(%r1)
-	llgh	%r1,__LC_CPU_ADDRESS(%r0)	/* Suspend CPU address: r1 */
+	llgh	%r1,__LC_EXT_CPU_ADDR(%r0)	/* Suspend CPU address: r1 */
 	cgr	%r1,%r2
 	je	restore_registers		/* r1 = r2 -> nothing to do */
 	larl	%r4,.Lrestart_suspend_psw	/* Set new restart PSW */
 	mvc	__LC_RST_NEW_PSW(16,%r0),0(%r4)
 3:
-	sigp	%r9,%r1,__SIGP_INITIAL_CPU_RESET
-	brc	8,4f	/* accepted */
-	brc	2,3b	/* busy, try again */
+	sigp	%r9,%r1,SIGP_INITIAL_CPU_RESET	/* sigp initial cpu reset */
+	brc	8,4f				/* accepted */
+	brc	2,3b				/* busy, try again */
 
 	/* Suspend CPU not available -> panic */
 	larl	%r15,init_thread_union
@@ -190,16 +191,16 @@ pgm_check_entry:
 	larl	%r3,_sclp_print_early
 	lghi	%r1,0
 	sam31
-	sigp	%r1,%r0,0x12
+	sigp	%r1,%r0,SIGP_SET_ARCHITECTURE
 	basr	%r14,%r3
 	larl	%r3,.Ldisabled_wait_31
 	lpsw	0(%r3)
 4:
 	/* Switch to suspend CPU */
-	sigp	%r9,%r1,__SIGP_RESTART	/* start suspend CPU */
+	sigp	%r9,%r1,SIGP_RESTART	/* sigp restart to suspend CPU */
 	brc	2,4b			/* busy, try again */
 5:
-	sigp	%r9,%r2,__SIGP_STOP	/* stop resume (current) CPU */
+	sigp	%r9,%r2,SIGP_STOP	/* sigp stop to current resume CPU */
 	brc	2,5b			/* busy, try again */
 6:	j	6b
 
@@ -207,7 +208,7 @@ restart_suspend:
 	larl	%r1,.Lresume_cpu
 	llgh	%r2,0(%r1)
 7:
-	sigp	%r9,%r2,__SIGP_SENSE	/* Wait for resume CPU */
+	sigp	%r9,%r2,SIGP_SENSE	/* sigp sense, wait for resume CPU */
 	brc	8,7b			/* accepted, status 0, still running */
 	brc	2,7b			/* busy, try again */
 	tmll	%r9,0x40		/* Test if resume CPU is stopped */
@@ -256,6 +257,9 @@ restore_registers:
 	/* Make all free pages unstable */
 	lghi	%r2,0
 	brasl	%r14,arch_set_page_states
+
+	/* Log potential guest relocation */
+	brasl	%r14,lgr_info_log
 
 	/* Reinitialize the channel subsystem */
 	brasl	%r14,channel_subsystem_reinit

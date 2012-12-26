@@ -62,6 +62,7 @@ static inline void btrfs_init_delayed_node(
 	INIT_LIST_HEAD(&delayed_node->n_list);
 	INIT_LIST_HEAD(&delayed_node->p_list);
 	delayed_node->bytes_reserved = 0;
+	memset(&delayed_node->inode_item, 0, sizeof(delayed_node->inode_item));
 }
 
 static inline int btrfs_is_continuous_delayed_item(
@@ -115,6 +116,7 @@ static struct btrfs_delayed_node *btrfs_get_delayed_node(struct inode *inode)
 	return NULL;
 }
 
+/* Will return either the node or PTR_ERR(-ENOMEM) */
 static struct btrfs_delayed_node *btrfs_get_or_create_delayed_node(
 							struct inode *inode)
 {
@@ -510,8 +512,8 @@ static void __btrfs_remove_delayed_item(struct btrfs_delayed_item *delayed_item)
 
 	rb_erase(&delayed_item->rb_node, root);
 	delayed_item->delayed_node->count--;
-	atomic_dec(&delayed_root->items);
-	if (atomic_read(&delayed_root->items) < BTRFS_DELAYED_BACKGROUND &&
+	if (atomic_dec_return(&delayed_root->items) <
+	    BTRFS_DELAYED_BACKGROUND &&
 	    waitqueue_active(&delayed_root->wait))
 		wake_up(&delayed_root->wait);
 }
@@ -668,8 +670,8 @@ static int btrfs_delayed_inode_reserve_metadata(
 		return ret;
 	} else if (src_rsv == &root->fs_info->delalloc_block_rsv) {
 		spin_lock(&BTRFS_I(inode)->lock);
-		if (BTRFS_I(inode)->delalloc_meta_reserved) {
-			BTRFS_I(inode)->delalloc_meta_reserved = 0;
+		if (test_and_clear_bit(BTRFS_INODE_DELALLOC_META_RESERVED,
+				       &BTRFS_I(inode)->runtime_flags)) {
 			spin_unlock(&BTRFS_I(inode)->lock);
 			release = true;
 			goto migrate;
@@ -836,10 +838,8 @@ static int btrfs_batch_insert_items(struct btrfs_trans_handle *trans,
 	btrfs_clear_path_blocking(path, NULL, 0);
 
 	/* insert the keys of the items */
-	ret = setup_items_for_insert(trans, root, path, keys, data_size,
-				     total_data_size, total_size, nitems);
-	if (ret)
-		goto error;
+	setup_items_for_insert(trans, root, path, keys, data_size,
+			       total_data_size, total_size, nitems);
 
 	/* insert the dir index items */
 	slot = path->slots[0];
@@ -1028,9 +1028,10 @@ do_again:
 		btrfs_release_delayed_item(prev);
 		ret = 0;
 		btrfs_release_path(path);
-		if (curr)
+		if (curr) {
+			mutex_unlock(&node->mutex);
 			goto do_again;
-		else
+		} else
 			goto delete_fail;
 	}
 
@@ -1055,8 +1056,7 @@ static void btrfs_release_delayed_inode(struct btrfs_delayed_node *delayed_node)
 		delayed_node->count--;
 
 		delayed_root = delayed_node->root->fs_info->delayed_root;
-		atomic_dec(&delayed_root->items);
-		if (atomic_read(&delayed_root->items) <
+		if (atomic_dec_return(&delayed_root->items) <
 		    BTRFS_DELAYED_BACKGROUND &&
 		    waitqueue_active(&delayed_root->wait))
 			wake_up(&delayed_root->wait);
@@ -1108,15 +1108,25 @@ static int btrfs_update_delayed_inode(struct btrfs_trans_handle *trans,
 	return 0;
 }
 
-/* Called when committing the transaction. */
-int btrfs_run_delayed_items(struct btrfs_trans_handle *trans,
-			    struct btrfs_root *root)
+/*
+ * Called when committing the transaction.
+ * Returns 0 on success.
+ * Returns < 0 on error and returns with an aborted transaction with any
+ * outstanding delayed items cleaned up.
+ */
+static int __btrfs_run_delayed_items(struct btrfs_trans_handle *trans,
+				     struct btrfs_root *root, int nr)
 {
+	struct btrfs_root *curr_root = root;
 	struct btrfs_delayed_root *delayed_root;
 	struct btrfs_delayed_node *curr_node, *prev_node;
 	struct btrfs_path *path;
 	struct btrfs_block_rsv *block_rsv;
 	int ret = 0;
+	bool count = (nr > 0);
+
+	if (trans->aborted)
+		return -EIO;
 
 	path = btrfs_alloc_path();
 	if (!path)
@@ -1129,18 +1139,20 @@ int btrfs_run_delayed_items(struct btrfs_trans_handle *trans,
 	delayed_root = btrfs_get_delayed_root(root);
 
 	curr_node = btrfs_first_delayed_node(delayed_root);
-	while (curr_node) {
-		root = curr_node->root;
-		ret = btrfs_insert_delayed_items(trans, path, root,
+	while (curr_node && (!count || (count && nr--))) {
+		curr_root = curr_node->root;
+		ret = btrfs_insert_delayed_items(trans, path, curr_root,
 						 curr_node);
 		if (!ret)
-			ret = btrfs_delete_delayed_items(trans, path, root,
-							 curr_node);
+			ret = btrfs_delete_delayed_items(trans, path,
+						curr_root, curr_node);
 		if (!ret)
-			ret = btrfs_update_delayed_inode(trans, root, path,
-							 curr_node);
+			ret = btrfs_update_delayed_inode(trans, curr_root,
+						path, curr_node);
 		if (ret) {
 			btrfs_release_delayed_node(curr_node);
+			curr_node = NULL;
+			btrfs_abort_transaction(trans, root, ret);
 			break;
 		}
 
@@ -1149,9 +1161,24 @@ int btrfs_run_delayed_items(struct btrfs_trans_handle *trans,
 		btrfs_release_delayed_node(prev_node);
 	}
 
+	if (curr_node)
+		btrfs_release_delayed_node(curr_node);
 	btrfs_free_path(path);
 	trans->block_rsv = block_rsv;
+
 	return ret;
+}
+
+int btrfs_run_delayed_items(struct btrfs_trans_handle *trans,
+			    struct btrfs_root *root)
+{
+	return __btrfs_run_delayed_items(trans, root, -1);
+}
+
+int btrfs_run_delayed_items_nr(struct btrfs_trans_handle *trans,
+			       struct btrfs_root *root, int nr)
+{
+	return __btrfs_run_delayed_items(trans, root, nr);
 }
 
 static int __btrfs_commit_inode_delayed_items(struct btrfs_trans_handle *trans,
@@ -1371,6 +1398,7 @@ void btrfs_balance_delayed_items(struct btrfs_root *root)
 	btrfs_wq_run_delayed_node(delayed_root, root, 0);
 }
 
+/* Will return 0 or -ENOMEM */
 int btrfs_insert_delayed_dir_index(struct btrfs_trans_handle *trans,
 				   struct btrfs_root *root, const char *name,
 				   int name_len, struct inode *dir,
@@ -1695,7 +1723,7 @@ static void fill_stack_inode_item(struct btrfs_trans_handle *trans,
 	btrfs_set_stack_inode_nbytes(inode_item, inode_get_bytes(inode));
 	btrfs_set_stack_inode_generation(inode_item,
 					 BTRFS_I(inode)->generation);
-	btrfs_set_stack_inode_sequence(inode_item, BTRFS_I(inode)->sequence);
+	btrfs_set_stack_inode_sequence(inode_item, inode->i_version);
 	btrfs_set_stack_inode_transid(inode_item, trans->transid);
 	btrfs_set_stack_inode_rdev(inode_item, inode->i_rdev);
 	btrfs_set_stack_inode_flags(inode_item, BTRFS_I(inode)->flags);
@@ -1743,7 +1771,7 @@ int btrfs_fill_inode(struct inode *inode, u32 *rdev)
 	set_nlink(inode, btrfs_stack_inode_nlink(inode_item));
 	inode_set_bytes(inode, btrfs_stack_inode_nbytes(inode_item));
 	BTRFS_I(inode)->generation = btrfs_stack_inode_generation(inode_item);
-	BTRFS_I(inode)->sequence = btrfs_stack_inode_sequence(inode_item);
+	inode->i_version = btrfs_stack_inode_sequence(inode_item);
 	inode->i_rdev = 0;
 	*rdev = btrfs_stack_inode_rdev(inode_item);
 	BTRFS_I(inode)->flags = btrfs_stack_inode_flags(inode_item);
@@ -1868,3 +1896,21 @@ void btrfs_kill_all_delayed_nodes(struct btrfs_root *root)
 		}
 	}
 }
+
+void btrfs_destroy_delayed_inodes(struct btrfs_root *root)
+{
+	struct btrfs_delayed_root *delayed_root;
+	struct btrfs_delayed_node *curr_node, *prev_node;
+
+	delayed_root = btrfs_get_delayed_root(root);
+
+	curr_node = btrfs_first_delayed_node(delayed_root);
+	while (curr_node) {
+		__btrfs_kill_delayed_node(curr_node);
+
+		prev_node = curr_node;
+		curr_node = btrfs_next_delayed_node(curr_node);
+		btrfs_release_delayed_node(prev_node);
+	}
+}
+

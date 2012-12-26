@@ -200,7 +200,7 @@ s_vProcessRxMACHeader (
     } else if (!compare_ether_addr(pbyRxBuffer, &pDevice->abySNAP_RFC1042[0])) {
         cbHeaderSize += 6;
         pwType = (PWORD) (pbyRxBufferAddr + cbHeaderSize);
-	if ((*pwType == cpu_to_le16(ETH_P_IPX)) ||
+	if ((*pwType == cpu_to_be16(ETH_P_IPX)) ||
 	    (*pwType == cpu_to_le16(0xF380))) {
 		cbHeaderSize -= 8;
             pwType = (PWORD) (pbyRxBufferAddr + cbHeaderSize);
@@ -452,7 +452,7 @@ RXbBulkInProcessData (
        }
     }
 
-    if (!is_multicast_ether_addr(pMACHeader->abyAddr1) && !is_broadcast_ether_addr(pMACHeader->abyAddr1)) {
+    if (!is_multicast_ether_addr(pMACHeader->abyAddr1)) {
         if ( WCTLbIsDuplicate(&(pDevice->sDupRxCache), (PS802_11Header) pbyFrame) ) {
             pDevice->s802_11Counter.FrameDuplicateCount++;
             return FALSE;

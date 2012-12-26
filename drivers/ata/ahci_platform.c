@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/gfp.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
@@ -26,6 +27,7 @@
 enum ahci_type {
 	AHCI,		/* standard platform ahci */
 	IMX53_AHCI,	/* ahci on i.mx53 */
+	STRICT_AHCI,	/* delayed DMA engine start */
 };
 
 static struct platform_device_id ahci_devtype[] = {
@@ -35,6 +37,9 @@ static struct platform_device_id ahci_devtype[] = {
 	}, {
 		.name = "imx53-ahci",
 		.driver_data = IMX53_AHCI,
+	}, {
+		.name = "strict-ahci",
+		.driver_data = STRICT_AHCI,
 	}, {
 		/* sentinel */
 	}
@@ -55,6 +60,13 @@ static const struct ata_port_info ahci_port_info[] = {
 		.pio_mask	= ATA_PIO4,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &ahci_pmp_retry_srst_ops,
+	},
+	[STRICT_AHCI] = {
+		AHCI_HFLAGS	(AHCI_HFLAG_DELAY_ENGINE),
+		.flags		= AHCI_FLAG_COMMON,
+		.pio_mask	= ATA_PIO4,
+		.udma_mask	= ATA_UDMA6,
+		.port_ops	= &ahci_ops,
 	},
 };
 
@@ -260,15 +272,13 @@ static int ahci_resume(struct device *dev)
 
 	return 0;
 }
-
-static struct dev_pm_ops ahci_pm_ops = {
-	.suspend		= &ahci_suspend,
-	.resume			= &ahci_resume,
-};
 #endif
+
+SIMPLE_DEV_PM_OPS(ahci_pm_ops, ahci_suspend, ahci_resume);
 
 static const struct of_device_id ahci_of_match[] = {
 	{ .compatible = "calxeda,hb-ahci", },
+	{ .compatible = "snps,spear-ahci", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ahci_of_match);
@@ -279,9 +289,7 @@ static struct platform_driver ahci_driver = {
 		.name = "ahci",
 		.owner = THIS_MODULE,
 		.of_match_table = ahci_of_match,
-#ifdef CONFIG_PM
 		.pm = &ahci_pm_ops,
-#endif
 	},
 	.id_table	= ahci_devtype,
 };

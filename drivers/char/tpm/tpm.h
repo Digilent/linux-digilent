@@ -99,6 +99,8 @@ struct tpm_vendor_specific {
 	wait_queue_head_t int_queue;
 };
 
+#define TPM_VID_INTEL    0x8086
+
 struct tpm_chip {
 	struct device *dev;	/* Device stuff */
 
@@ -297,7 +299,7 @@ extern ssize_t tpm_write(struct file *, const char __user *, size_t,
 			 loff_t *);
 extern ssize_t tpm_read(struct file *, char __user *, size_t, loff_t *);
 extern void tpm_remove_hardware(struct device *);
-extern int tpm_pm_suspend(struct device *, pm_message_t);
+extern int tpm_pm_suspend(struct device *);
 extern int tpm_pm_resume(struct device *);
 extern int wait_for_tpm_stat(struct tpm_chip *, u8, unsigned long,
 			     wait_queue_head_t *);

@@ -72,9 +72,7 @@ int pci_add_dynid(struct pci_driver *drv,
 	list_add_tail(&dynid->node, &drv->dynids.list);
 	spin_unlock(&drv->dynids.lock);
 
-	get_driver(&drv->driver);
 	retval = driver_attach(&drv->driver);
-	put_driver(&drv->driver);
 
 	return retval;
 }
@@ -190,43 +188,34 @@ store_remove_id(struct device_driver *driver, const char *buf, size_t count)
 static DRIVER_ATTR(remove_id, S_IWUSR, NULL, store_remove_id);
 
 static int
-pci_create_newid_file(struct pci_driver *drv)
+pci_create_newid_files(struct pci_driver *drv)
 {
 	int error = 0;
-	if (drv->probe != NULL)
+
+	if (drv->probe != NULL) {
 		error = driver_create_file(&drv->driver, &driver_attr_new_id);
+		if (error == 0) {
+			error = driver_create_file(&drv->driver,
+					&driver_attr_remove_id);
+			if (error)
+				driver_remove_file(&drv->driver,
+						&driver_attr_new_id);
+		}
+	}
 	return error;
 }
 
-static void pci_remove_newid_file(struct pci_driver *drv)
-{
-	driver_remove_file(&drv->driver, &driver_attr_new_id);
-}
-
-static int
-pci_create_removeid_file(struct pci_driver *drv)
-{
-	int error = 0;
-	if (drv->probe != NULL)
-		error = driver_create_file(&drv->driver,&driver_attr_remove_id);
-	return error;
-}
-
-static void pci_remove_removeid_file(struct pci_driver *drv)
+static void pci_remove_newid_files(struct pci_driver *drv)
 {
 	driver_remove_file(&drv->driver, &driver_attr_remove_id);
+	driver_remove_file(&drv->driver, &driver_attr_new_id);
 }
 #else /* !CONFIG_HOTPLUG */
-static inline int pci_create_newid_file(struct pci_driver *drv)
+static inline int pci_create_newid_files(struct pci_driver *drv)
 {
 	return 0;
 }
-static inline void pci_remove_newid_file(struct pci_driver *drv) {}
-static inline int pci_create_removeid_file(struct pci_driver *drv)
-{
-	return 0;
-}
-static inline void pci_remove_removeid_file(struct pci_driver *drv) {}
+static inline void pci_remove_newid_files(struct pci_driver *drv) {}
 #endif
 
 /**
@@ -291,8 +280,12 @@ static long local_pci_probe(void *_ddi)
 {
 	struct drv_dev_and_id *ddi = _ddi;
 	struct device *dev = &ddi->dev->dev;
+	struct device *parent = dev->parent;
 	int rc;
 
+	/* The parent bridge must be in active state when probing */
+	if (parent)
+		pm_runtime_get_sync(parent);
 	/* Unbound PCI devices are always set to disabled and suspended.
 	 * During probe, the device is set to enabled and active and the
 	 * usage count is incremented.  If the driver supports runtime PM,
@@ -309,6 +302,8 @@ static long local_pci_probe(void *_ddi)
 		pm_runtime_set_suspended(dev);
 		pm_runtime_put_noidle(dev);
 	}
+	if (parent)
+		pm_runtime_put(parent);
 	return rc;
 }
 
@@ -430,6 +425,22 @@ static void pci_device_shutdown(struct device *dev)
 		drv->shutdown(pci_dev);
 	pci_msi_shutdown(pci_dev);
 	pci_msix_shutdown(pci_dev);
+
+	/*
+	 * Turn off Bus Master bit on the device to tell it to not
+	 * continue to do DMA
+	 */
+	pci_disable_device(pci_dev);
+
+	/*
+	 * Devices may be enabled to wake up by runtime PM, but they need not
+	 * be supposed to wake up the system from its "power off" state (e.g.
+	 * ACPI S5).  Therefore disable wakeup for all devices that aren't
+	 * supposed to wake up the system at this point.  The state argument
+	 * will be ignored by pci_enable_wake().
+	 */
+	if (!device_may_wakeup(dev))
+		pci_enable_wake(pci_dev, PCI_UNKNOWN, false);
 }
 
 #ifdef CONFIG_PM
@@ -454,15 +465,16 @@ static int pci_restore_standard_config(struct pci_dev *pci_dev)
 	return 0;
 }
 
-static void pci_pm_default_resume_early(struct pci_dev *pci_dev)
-{
-	pci_restore_standard_config(pci_dev);
-	pci_fixup_device(pci_fixup_resume_early, pci_dev);
-}
-
 #endif
 
 #ifdef CONFIG_PM_SLEEP
+
+static void pci_pm_default_resume_early(struct pci_dev *pci_dev)
+{
+	pci_power_up(pci_dev);
+	pci_restore_state(pci_dev);
+	pci_fixup_device(pci_fixup_resume_early, pci_dev);
+}
 
 /*
  * Default "suspend" method for devices that have no driver provided suspend,
@@ -743,6 +755,18 @@ static int pci_pm_suspend_noirq(struct device *dev)
 
 	pci_pm_set_unknown_state(pci_dev);
 
+	/*
+	 * Some BIOSes from ASUS have a bug: If a USB EHCI host controller's
+	 * PCI COMMAND register isn't 0, the BIOS assumes that the controller
+	 * hasn't been quiesced and tries to turn it off.  If the controller
+	 * is already in D3, this can hang or cause memory corruption.
+	 *
+	 * Since the value of the COMMAND register doesn't matter once the
+	 * device has been suspended, we can safely set it to 0 here.
+	 */
+	if (pci_dev->class == PCI_CLASS_SERIAL_USB_EHCI)
+		pci_write_config_word(pci_dev, PCI_COMMAND, 0);
+
 	return 0;
 }
 
@@ -941,6 +965,13 @@ static int pci_pm_poweroff_noirq(struct device *dev)
 	if (!pci_dev->state_saved && !pci_is_bridge(pci_dev))
 		pci_prepare_to_sleep(pci_dev);
 
+	/*
+	 * The reason for doing this here is the same as for the analogous code
+	 * in pci_pm_suspend_noirq().
+	 */
+	if (pci_dev->class == PCI_CLASS_SERIAL_USB_EHCI)
+		pci_write_config_word(pci_dev, PCI_COMMAND, 0);
+
 	return 0;
 }
 
@@ -1014,10 +1045,13 @@ static int pci_pm_runtime_suspend(struct device *dev)
 	if (!pm || !pm->runtime_suspend)
 		return -ENOSYS;
 
+	pci_dev->no_d3cold = false;
 	error = pm->runtime_suspend(dev);
 	suspend_report_result(pm->runtime_suspend, error);
 	if (error)
 		return error;
+	if (!pci_dev->d3cold_allowed)
+		pci_dev->no_d3cold = true;
 
 	pci_fixup_device(pci_fixup_suspend, pci_dev);
 
@@ -1039,17 +1073,23 @@ static int pci_pm_runtime_suspend(struct device *dev)
 
 static int pci_pm_runtime_resume(struct device *dev)
 {
+	int rc;
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 
 	if (!pm || !pm->runtime_resume)
 		return -ENOSYS;
 
-	pci_pm_default_resume_early(pci_dev);
+	pci_restore_standard_config(pci_dev);
+	pci_fixup_device(pci_fixup_resume_early, pci_dev);
 	__pci_enable_wake(pci_dev, PCI_D0, true, false);
 	pci_fixup_device(pci_fixup_resume, pci_dev);
 
-	return pm->runtime_resume(dev);
+	rc = pm->runtime_resume(dev);
+
+	pci_dev->runtime_d3cold = false;
+
+	return rc;
 }
 
 static int pci_pm_runtime_idle(struct device *dev)
@@ -1138,18 +1178,12 @@ int __pci_register_driver(struct pci_driver *drv, struct module *owner,
 	if (error)
 		goto out;
 
-	error = pci_create_newid_file(drv);
+	error = pci_create_newid_files(drv);
 	if (error)
 		goto out_newid;
-
-	error = pci_create_removeid_file(drv);
-	if (error)
-		goto out_removeid;
 out:
 	return error;
 
-out_removeid:
-	pci_remove_newid_file(drv);
 out_newid:
 	driver_unregister(&drv->driver);
 	goto out;
@@ -1168,8 +1202,7 @@ out_newid:
 void
 pci_unregister_driver(struct pci_driver *drv)
 {
-	pci_remove_removeid_file(drv);
-	pci_remove_newid_file(drv);
+	pci_remove_newid_files(drv);
 	driver_unregister(&drv->driver);
 	pci_free_dynids(drv);
 }

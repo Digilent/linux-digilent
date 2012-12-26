@@ -42,6 +42,7 @@
 #include <sound/initval.h>
 #include <sound/control.h>
 #include <sound/tlv.h>
+#include <sound/ac97_codec.h>
 #include <media/v4l2-common.h>
 #include "em28xx.h"
 
@@ -343,7 +344,6 @@ static int snd_em28xx_pcm_close(struct snd_pcm_substream *substream)
 static int snd_em28xx_hw_capture_params(struct snd_pcm_substream *substream,
 					struct snd_pcm_hw_params *hw_params)
 {
-	unsigned int channels, rate, format;
 	int ret;
 
 	dprintk("Setting capture parameters\n");
@@ -352,13 +352,17 @@ static int snd_em28xx_hw_capture_params(struct snd_pcm_substream *substream,
 				params_buffer_bytes(hw_params));
 	if (ret < 0)
 		return ret;
-	format = params_format(hw_params);
-	rate = params_rate(hw_params);
-	channels = params_channels(hw_params);
-
+#if 0
 	/* TODO: set up em28xx audio chip to deliver the correct audio format,
 	   current default is 48000hz multiplexed => 96000hz mono
 	   which shouldn't matter since analogue TV only supports mono */
+	unsigned int channels, rate, format;
+
+	format = params_format(hw_params);
+	rate = params_rate(hw_params);
+	channels = params_channels(hw_params);
+#endif
+
 	return 0;
 }
 
@@ -676,19 +680,19 @@ static int em28xx_audio_init(struct em28xx *dev)
 	INIT_WORK(&dev->wq_trigger, audio_trigger);
 
 	if (dev->audio_mode.ac97 != EM28XX_NO_AC97) {
-		em28xx_cvol_new(card, dev, "Video", AC97_VIDEO_VOL);
-		em28xx_cvol_new(card, dev, "Line In", AC97_LINEIN_VOL);
-		em28xx_cvol_new(card, dev, "Phone", AC97_PHONE_VOL);
-		em28xx_cvol_new(card, dev, "Microphone", AC97_PHONE_VOL);
-		em28xx_cvol_new(card, dev, "CD", AC97_CD_VOL);
-		em28xx_cvol_new(card, dev, "AUX", AC97_AUX_VOL);
-		em28xx_cvol_new(card, dev, "PCM", AC97_PCM_OUT_VOL);
+		em28xx_cvol_new(card, dev, "Video", AC97_VIDEO);
+		em28xx_cvol_new(card, dev, "Line In", AC97_LINE);
+		em28xx_cvol_new(card, dev, "Phone", AC97_PHONE);
+		em28xx_cvol_new(card, dev, "Microphone", AC97_MIC);
+		em28xx_cvol_new(card, dev, "CD", AC97_CD);
+		em28xx_cvol_new(card, dev, "AUX", AC97_AUX);
+		em28xx_cvol_new(card, dev, "PCM", AC97_PCM);
 
-		em28xx_cvol_new(card, dev, "Master", AC97_MASTER_VOL);
-		em28xx_cvol_new(card, dev, "Line", AC97_LINE_LEVEL_VOL);
-		em28xx_cvol_new(card, dev, "Mono", AC97_MASTER_MONO_VOL);
-		em28xx_cvol_new(card, dev, "LFE", AC97_LFE_MASTER_VOL);
-		em28xx_cvol_new(card, dev, "Surround", AC97_SURR_MASTER_VOL);
+		em28xx_cvol_new(card, dev, "Master", AC97_MASTER);
+		em28xx_cvol_new(card, dev, "Line", AC97_HEADPHONE);
+		em28xx_cvol_new(card, dev, "Mono", AC97_MASTER_MONO);
+		em28xx_cvol_new(card, dev, "LFE", AC97_CENTER_LFE_MASTER);
+		em28xx_cvol_new(card, dev, "Surround", AC97_SURROUND_MASTER);
 	}
 
 	err = snd_card_register(card);

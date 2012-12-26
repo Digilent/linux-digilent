@@ -25,6 +25,7 @@
  * ----------------------------------------------------------------------------
  *
  */
+#include <linux/export.h>
 #include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/err.h>
@@ -164,9 +165,15 @@ static char *abort_sources[] = {
 
 u32 dw_readl(struct dw_i2c_dev *dev, int offset)
 {
-	u32 value = readl(dev->base + offset);
+	u32 value;
 
-	if (dev->swab)
+	if (dev->accessor_flags & ACCESS_16BIT)
+		value = readw(dev->base + offset) |
+			(readw(dev->base + offset + 2) << 16);
+	else
+		value = readl(dev->base + offset);
+
+	if (dev->accessor_flags & ACCESS_SWAP)
 		return swab32(value);
 	else
 		return value;
@@ -174,10 +181,15 @@ u32 dw_readl(struct dw_i2c_dev *dev, int offset)
 
 void dw_writel(struct dw_i2c_dev *dev, u32 b, int offset)
 {
-	if (dev->swab)
+	if (dev->accessor_flags & ACCESS_SWAP)
 		b = swab32(b);
 
-	writel(b, dev->base + offset);
+	if (dev->accessor_flags & ACCESS_16BIT) {
+		writew((u16)b, dev->base + offset);
+		writew((u16)(b >> 16), dev->base + offset + 2);
+	} else {
+		writel(b, dev->base + offset);
+	}
 }
 
 static u32
@@ -251,14 +263,14 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 
 	input_clock_khz = dev->get_clk_rate_khz(dev);
 
-	/* Configure register endianess access */
 	reg = dw_readl(dev, DW_IC_COMP_TYPE);
 	if (reg == ___constant_swab32(DW_IC_COMP_TYPE_VALUE)) {
-		dev->swab = 1;
-		reg = DW_IC_COMP_TYPE_VALUE;
-	}
-
-	if (reg != DW_IC_COMP_TYPE_VALUE) {
+		/* Configure register endianess access */
+		dev->accessor_flags |= ACCESS_SWAP;
+	} else if (reg == (DW_IC_COMP_TYPE_VALUE & 0x0000ffff)) {
+		/* Configure register access mode 16bit */
+		dev->accessor_flags |= ACCESS_16BIT;
+	} else if (reg != DW_IC_COMP_TYPE_VALUE) {
 		dev_err(dev->dev, "Unknown Synopsys component type: "
 			"0x%08x\n", reg);
 		return -ENODEV;
@@ -305,6 +317,7 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 	dw_writel(dev, dev->master_cfg , DW_IC_CON);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_init);
 
 /*
  * Waiting for bus not busy
@@ -557,12 +570,14 @@ done:
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_xfer);
 
 u32 i2c_dw_func(struct i2c_adapter *adap)
 {
 	struct dw_i2c_dev *dev = i2c_get_adapdata(adap);
 	return dev->functionality;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_func);
 
 static u32 i2c_dw_read_clear_intrbits(struct dw_i2c_dev *dev)
 {
@@ -667,17 +682,20 @@ tx_aborted:
 
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_isr);
 
 void i2c_dw_enable(struct dw_i2c_dev *dev)
 {
        /* Enable the adapter */
 	dw_writel(dev, 1, DW_IC_ENABLE);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_enable);
 
 u32 i2c_dw_is_enabled(struct dw_i2c_dev *dev)
 {
 	return dw_readl(dev, DW_IC_ENABLE);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_is_enabled);
 
 void i2c_dw_disable(struct dw_i2c_dev *dev)
 {
@@ -688,18 +706,22 @@ void i2c_dw_disable(struct dw_i2c_dev *dev)
 	dw_writel(dev, 0, DW_IC_INTR_MASK);
 	dw_readl(dev, DW_IC_CLR_INTR);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_disable);
 
 void i2c_dw_clear_int(struct dw_i2c_dev *dev)
 {
 	dw_readl(dev, DW_IC_CLR_INTR);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_clear_int);
 
 void i2c_dw_disable_int(struct dw_i2c_dev *dev)
 {
 	dw_writel(dev, 0, DW_IC_INTR_MASK);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_disable_int);
 
 u32 i2c_dw_read_comp_param(struct dw_i2c_dev *dev)
 {
 	return dw_readl(dev, DW_IC_COMP_PARAM_1);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_read_comp_param);

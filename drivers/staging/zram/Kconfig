@@ -1,11 +1,6 @@
-config XVMALLOC
-	bool
-	default n
-
 config ZRAM
 	tristate "Compressed RAM block device support"
-	depends on BLOCK && SYSFS
-	select XVMALLOC
+	depends on BLOCK && SYSFS && ZSMALLOC
 	select LZO_COMPRESS
 	select LZO_DECOMPRESS
 	default n

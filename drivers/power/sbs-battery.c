@@ -89,7 +89,7 @@ static const struct chip_data {
 	[REG_CURRENT] =
 		SBS_DATA(POWER_SUPPLY_PROP_CURRENT_NOW, 0x0A, -32768, 32767),
 	[REG_CAPACITY] =
-		SBS_DATA(POWER_SUPPLY_PROP_CAPACITY, 0x0E, 0, 100),
+		SBS_DATA(POWER_SUPPLY_PROP_CAPACITY, 0x0D, 0, 100),
 	[REG_REMAINING_CAPACITY] =
 		SBS_DATA(POWER_SUPPLY_PROP_ENERGY_NOW, 0x0F, 0, 65535),
 	[REG_REMAINING_CAPACITY_CHARGE] =
@@ -469,7 +469,7 @@ static int sbs_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
 		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
-		break;
+		goto done; /* don't trigger power_supply_changed()! */
 
 	case POWER_SUPPLY_PROP_ENERGY_NOW:
 	case POWER_SUPPLY_PROP_ENERGY_FULL:
@@ -852,18 +852,7 @@ static struct i2c_driver sbs_battery_driver = {
 		.of_match_table = sbs_dt_ids,
 	},
 };
-
-static int __init sbs_battery_init(void)
-{
-	return i2c_add_driver(&sbs_battery_driver);
-}
-module_init(sbs_battery_init);
-
-static void __exit sbs_battery_exit(void)
-{
-	i2c_del_driver(&sbs_battery_driver);
-}
-module_exit(sbs_battery_exit);
+module_i2c_driver(sbs_battery_driver);
 
 MODULE_DESCRIPTION("SBS battery monitor driver");
 MODULE_LICENSE("GPL");

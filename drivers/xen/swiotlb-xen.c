@@ -204,7 +204,8 @@ error:
 
 void *
 xen_swiotlb_alloc_coherent(struct device *hwdev, size_t size,
-			   dma_addr_t *dma_handle, gfp_t flags)
+			   dma_addr_t *dma_handle, gfp_t flags,
+			   struct dma_attrs *attrs)
 {
 	void *ret;
 	int order = get_order(size);
@@ -231,7 +232,7 @@ xen_swiotlb_alloc_coherent(struct device *hwdev, size_t size,
 		return ret;
 
 	if (hwdev && hwdev->coherent_dma_mask)
-		dma_mask = hwdev->coherent_dma_mask;
+		dma_mask = dma_alloc_coherent_mask(hwdev, flags);
 
 	phys = virt_to_phys(ret);
 	dev_addr = xen_phys_to_bus(phys);
@@ -253,7 +254,7 @@ EXPORT_SYMBOL_GPL(xen_swiotlb_alloc_coherent);
 
 void
 xen_swiotlb_free_coherent(struct device *hwdev, size_t size, void *vaddr,
-			  dma_addr_t dev_addr)
+			  dma_addr_t dev_addr, struct dma_attrs *attrs)
 {
 	int order = get_order(size);
 	phys_addr_t phys;

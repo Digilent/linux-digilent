@@ -33,6 +33,7 @@
 #include <linux/sort.h>
 
 #include <asm/unified.h>
+#include <asm/cp15.h>
 #include <asm/cpu.h>
 #include <asm/cputype.h>
 #include <asm/elf.h>
@@ -44,12 +45,13 @@
 #include <asm/cacheflush.h>
 #include <asm/cachetype.h>
 #include <asm/tlbflush.h>
-#include <asm/system.h>
 
 #include <asm/prom.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
+#include <asm/system_info.h>
+#include <asm/system_misc.h>
 #include <asm/traps.h>
 #include <asm/unwind.h>
 #include <asm/memblock.h>
@@ -79,6 +81,7 @@ __setup("fpe=", fpe_setup);
 extern void paging_init(struct machine_desc *desc);
 extern void sanity_check_meminfo(void);
 extern void reboot_setup(char *str);
+extern void setup_dma_zone(struct machine_desc *desc);
 
 unsigned int processor_id;
 EXPORT_SYMBOL(processor_id);
@@ -505,7 +508,7 @@ void __init dump_machine_table(void)
 		/* can't use cpu_relax() here as it may require MMU setup */;
 }
 
-int __init arm_add_memory(phys_addr_t start, unsigned long size)
+int __init arm_add_memory(phys_addr_t start, phys_addr_t size)
 {
 	struct membank *bank = &meminfo.bank[meminfo.nr_banks];
 
@@ -521,7 +524,21 @@ int __init arm_add_memory(phys_addr_t start, unsigned long size)
 	 */
 	size -= start & ~PAGE_MASK;
 	bank->start = PAGE_ALIGN(start);
-	bank->size  = size & PAGE_MASK;
+
+#ifndef CONFIG_LPAE
+	if (bank->start + size < bank->start) {
+		printk(KERN_CRIT "Truncating memory at 0x%08llx to fit in "
+			"32-bit physical address space\n", (long long)start);
+		/*
+		 * To ensure bank->start + bank->size is representable in
+		 * 32 bits, we use ULONG_MAX as the upper limit rather than 4GB.
+		 * This means we lose a page after masking.
+		 */
+		size = ULONG_MAX - bank->start;
+	}
+#endif
+
+	bank->size = size & ~(phys_addr_t)(PAGE_SIZE - 1);
 
 	/*
 	 * Check whether this memory region has non-zero size or
@@ -541,7 +558,7 @@ int __init arm_add_memory(phys_addr_t start, unsigned long size)
 static int __init early_mem(char *p)
 {
 	static int usermem __initdata = 0;
-	unsigned long size;
+	phys_addr_t size;
 	phys_addr_t start;
 	char *endp;
 
@@ -784,6 +801,14 @@ static int __init customize_machine(void)
 }
 arch_initcall(customize_machine);
 
+static int __init init_machine_late(void)
+{
+	if (machine_desc->init_late)
+		machine_desc->init_late();
+	return 0;
+}
+late_initcall(init_machine_late);
+
 #ifdef CONFIG_KEXEC
 static inline unsigned long long get_total_mem(void)
 {
@@ -915,6 +940,11 @@ static int __init meminfo_cmp(const void *_a, const void *_b)
 void __init setup_arch(char **cmdline_p)
 {
 	struct machine_desc *mdesc;
+#ifdef CONFIG_ARCH_ZYNQ
+	extern u32 _fdt_start[];
+	 if (!__atags_pointer)
+		__atags_pointer = virt_to_phys(_fdt_start);
+#endif
 
 	setup_processor();
 	mdesc = setup_machine_fdt(__atags_pointer);
@@ -923,12 +953,8 @@ void __init setup_arch(char **cmdline_p)
 	machine_desc = mdesc;
 	machine_name = mdesc->name;
 
-#ifdef CONFIG_ZONE_DMA
-	if (mdesc->dma_zone_size) {
-		extern unsigned long arm_dma_zone_size;
-		arm_dma_zone_size = mdesc->dma_zone_size;
-	}
-#endif
+	setup_dma_zone(mdesc);
+
 	if (mdesc->restart_mode)
 		reboot_setup(&mdesc->restart_mode);
 
@@ -974,7 +1000,6 @@ void __init setup_arch(char **cmdline_p)
 	conswitchp = &dummy_con;
 #endif
 #endif
-	early_trap_init();
 
 	if (mdesc->init_early)
 		mdesc->init_early();

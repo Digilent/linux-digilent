@@ -34,6 +34,8 @@
 #include <linux/mfd/mc13783.h>
 #include <linux/usb/otg.h>
 #include <linux/usb/ulpi.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -63,8 +65,7 @@ static struct resource smsc91x_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.start	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_0),
-		.end	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_0),
+		/* irq number is run-time assigned */
 		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_FALLING,
 	}
 };
@@ -231,7 +232,7 @@ static struct spi_board_info mc13783_dev __initdata = {
 	.bus_num	= 1,
 	.chip_select	= 0,
 	.platform_data	= &mc13783_pdata,
-	.irq		= IOMUX_TO_IRQ(MX31_PIN_GPIO1_3),
+	/* irq number is run-time assigned */
 };
 
 static struct platform_device *devices[] __initdata = {
@@ -241,6 +242,11 @@ static struct platform_device *devices[] __initdata = {
 
 static int mx31lilly_baseboard;
 core_param(mx31lilly_baseboard, mx31lilly_baseboard, int, 0444);
+
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+};
 
 static void __init mx31lilly_board_init(void)
 {
@@ -278,8 +284,15 @@ static void __init mx31lilly_board_init(void)
 
 	imx31_add_spi_imx0(&spi0_pdata);
 	imx31_add_spi_imx1(&spi1_pdata);
+	mc13783_dev.irq = gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_3));
 	spi_register_board_info(&mc13783_dev, 1);
 
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
+	smsc91x_resources[1].start =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_0));
+	smsc91x_resources[1].end =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_0));
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	/* USB */

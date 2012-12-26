@@ -5,7 +5,7 @@
  *
  * For more information please refer to Documentation/s390/zfcpdump.txt
  *
- * Copyright IBM Corp. 2003,2008
+ * Copyright IBM Corp. 2003, 2008
  * Author(s): Michael Holzheu
  */
 
@@ -21,7 +21,6 @@
 #include <asm/ipl.h>
 #include <asm/sclp.h>
 #include <asm/setup.h>
-#include <asm/sigp.h>
 #include <asm/uaccess.h>
 #include <asm/debug.h>
 #include <asm/processor.h>

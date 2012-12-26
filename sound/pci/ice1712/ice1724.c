@@ -1013,6 +1013,25 @@ static int set_rate_constraints(struct snd_ice1712 *ice,
 					  ice->hw_rates);
 }
 
+/* if the card has the internal rate locked (is_pro_locked), limit runtime
+   hw rates to the current internal rate only.
+*/
+static void constrain_rate_if_locked(struct snd_pcm_substream *substream)
+{
+	struct snd_ice1712 *ice = snd_pcm_substream_chip(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int rate;
+	if (is_pro_rate_locked(ice)) {
+		rate = ice->get_rate(ice);
+		if (rate >= runtime->hw.rate_min
+		    && rate <= runtime->hw.rate_max) {
+			runtime->hw.rate_min = rate;
+			runtime->hw.rate_max = rate;
+		}
+	}
+}
+
+
 /* multi-channel playback needs alignment 8x32bit regardless of the channels
  * actually used
  */
@@ -1046,6 +1065,7 @@ static int snd_vt1724_playback_pro_open(struct snd_pcm_substream *substream)
 				   VT1724_BUFFER_ALIGN);
 	snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 				   VT1724_BUFFER_ALIGN);
+	constrain_rate_if_locked(substream);
 	if (ice->pro_open)
 		ice->pro_open(ice, substream);
 	return 0;
@@ -1066,6 +1086,7 @@ static int snd_vt1724_capture_pro_open(struct snd_pcm_substream *substream)
 				   VT1724_BUFFER_ALIGN);
 	snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 				   VT1724_BUFFER_ALIGN);
+	constrain_rate_if_locked(substream);
 	if (ice->pro_open)
 		ice->pro_open(ice, substream);
 	return 0;
@@ -1215,6 +1236,7 @@ static int snd_vt1724_playback_spdif_open(struct snd_pcm_substream *substream)
 				   VT1724_BUFFER_ALIGN);
 	snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 				   VT1724_BUFFER_ALIGN);
+	constrain_rate_if_locked(substream);
 	if (ice->spdif.ops.open)
 		ice->spdif.ops.open(ice, substream);
 	return 0;
@@ -1251,6 +1273,7 @@ static int snd_vt1724_capture_spdif_open(struct snd_pcm_substream *substream)
 				   VT1724_BUFFER_ALIGN);
 	snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 				   VT1724_BUFFER_ALIGN);
+	constrain_rate_if_locked(substream);
 	if (ice->spdif.ops.open)
 		ice->spdif.ops.open(ice, substream);
 	return 0;
@@ -2770,9 +2793,10 @@ static void __devexit snd_vt1724_remove(struct pci_dev *pci)
 }
 
 #ifdef CONFIG_PM
-static int snd_vt1724_suspend(struct pci_dev *pci, pm_message_t state)
+static int snd_vt1724_suspend(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ice1712 *ice = card->private_data;
 
 	if (!ice->pm_suspend_enabled)
@@ -2797,13 +2821,14 @@ static int snd_vt1724_suspend(struct pci_dev *pci, pm_message_t state)
 
 	pci_disable_device(pci);
 	pci_save_state(pci);
-	pci_set_power_state(pci, pci_choose_state(pci, state));
+	pci_set_power_state(pci, PCI_D3hot);
 	return 0;
 }
 
-static int snd_vt1724_resume(struct pci_dev *pci)
+static int snd_vt1724_resume(struct device *dev)
 {
-	struct snd_card *card = pci_get_drvdata(pci);
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ice1712 *ice = card->private_data;
 
 	if (!ice->pm_suspend_enabled)
@@ -2848,28 +2873,21 @@ static int snd_vt1724_resume(struct pci_dev *pci)
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
-#endif
 
-static struct pci_driver driver = {
+static SIMPLE_DEV_PM_OPS(snd_vt1724_pm, snd_vt1724_suspend, snd_vt1724_resume);
+#define SND_VT1724_PM_OPS	&snd_vt1724_pm
+#else
+#define SND_VT1724_PM_OPS	NULL
+#endif /* CONFIG_PM */
+
+static struct pci_driver vt1724_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_vt1724_ids,
 	.probe = snd_vt1724_probe,
 	.remove = __devexit_p(snd_vt1724_remove),
-#ifdef CONFIG_PM
-	.suspend = snd_vt1724_suspend,
-	.resume = snd_vt1724_resume,
-#endif
+	.driver = {
+		.pm = SND_VT1724_PM_OPS,
+	},
 };
 
-static int __init alsa_card_ice1724_init(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit alsa_card_ice1724_exit(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(alsa_card_ice1724_init)
-module_exit(alsa_card_ice1724_exit)
+module_pci_driver(vt1724_driver);

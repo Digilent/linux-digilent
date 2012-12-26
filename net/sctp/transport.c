@@ -68,6 +68,8 @@ static struct sctp_transport *sctp_transport_init(struct sctp_transport *peer,
 	peer->af_specific = sctp_get_af_specific(addr->sa.sa_family);
 	memset(&peer->saddr, 0, sizeof(union sctp_addr));
 
+	peer->sack_generation = 0;
+
 	/* From 6.3.1 RTO Calculation:
 	 *
 	 * C1) Until an RTT measurement has been made for a packet sent to the
@@ -85,6 +87,7 @@ static struct sctp_transport *sctp_transport_init(struct sctp_transport *peer,
 
 	/* Initialize the default path max_retrans.  */
 	peer->pathmaxrxt  = sctp_max_retrans_path;
+	peer->pf_retrans  = sctp_pf_retrans;
 
 	INIT_LIST_HEAD(&peer->transmitted);
 	INIT_LIST_HEAD(&peer->send_ready);
@@ -214,7 +217,7 @@ void sctp_transport_set_owner(struct sctp_transport *transport,
 void sctp_transport_pmtu(struct sctp_transport *transport, struct sock *sk)
 {
 	/* If we don't have a fresh route, look one up */
-	if (!transport->dst || transport->dst->obsolete > 1) {
+	if (!transport->dst || transport->dst->obsolete) {
 		dst_release(transport->dst);
 		transport->af_specific->get_dst(transport, &transport->saddr,
 						&transport->fl, sk);
@@ -226,24 +229,7 @@ void sctp_transport_pmtu(struct sctp_transport *transport, struct sock *sk)
 		transport->pathmtu = SCTP_DEFAULT_MAXSEGMENT;
 }
 
-/* this is a complete rip-off from __sk_dst_check
- * the cookie is always 0 since this is how it's used in the
- * pmtu code
- */
-static struct dst_entry *sctp_transport_dst_check(struct sctp_transport *t)
-{
-	struct dst_entry *dst = t->dst;
-
-	if (dst && dst->obsolete && dst->ops->check(dst, 0) == NULL) {
-		dst_release(t->dst);
-		t->dst = NULL;
-		return NULL;
-	}
-
-	return dst;
-}
-
-void sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
+void sctp_transport_update_pmtu(struct sock *sk, struct sctp_transport *t, u32 pmtu)
 {
 	struct dst_entry *dst;
 
@@ -260,8 +246,16 @@ void sctp_transport_update_pmtu(struct sctp_transport *t, u32 pmtu)
 	}
 
 	dst = sctp_transport_dst_check(t);
-	if (dst)
-		dst->ops->update_pmtu(dst, pmtu);
+	if (!dst)
+		t->af_specific->get_dst(t, &t->saddr, &t->fl, sk);
+
+	if (dst) {
+		dst->ops->update_pmtu(dst, sk, NULL, pmtu);
+
+		dst = sctp_transport_dst_check(t);
+		if (!dst)
+			t->af_specific->get_dst(t, &t->saddr, &t->fl, sk);
+	}
 }
 
 /* Caches the dst entry and source address for a transport's destination
@@ -602,7 +596,8 @@ unsigned long sctp_transport_timeout(struct sctp_transport *t)
 {
 	unsigned long timeout;
 	timeout = t->rto + sctp_jitter(t->rto);
-	if (t->state != SCTP_UNCONFIRMED)
+	if ((t->state != SCTP_UNCONFIRMED) &&
+	    (t->state != SCTP_PF))
 		timeout += t->hbinterval;
 	timeout += jiffies;
 	return timeout;

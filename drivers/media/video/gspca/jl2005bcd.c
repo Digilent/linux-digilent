@@ -335,7 +335,11 @@ static void jl2005c_dostream(struct work_struct *work)
 		goto quit_stream;
 	}
 
-	while (gspca_dev->present && gspca_dev->streaming) {
+	while (gspca_dev->dev && gspca_dev->streaming) {
+#ifdef CONFIG_PM
+		if (gspca_dev->frozen)
+			break;
+#endif
 		/* Check if this is a new frame. If so, start the frame first */
 		if (!header_read) {
 			mutex_lock(&gspca_dev->usb_lock);
@@ -367,7 +371,7 @@ static void jl2005c_dostream(struct work_struct *work)
 					buffer, act_len);
 			header_read = 1;
 		}
-		while (bytes_left > 0 && gspca_dev->present) {
+		while (bytes_left > 0 && gspca_dev->dev) {
 			data_len = bytes_left > JL2005C_MAX_TRANSFER ?
 				JL2005C_MAX_TRANSFER : bytes_left;
 			ret = usb_bulk_msg(gspca_dev->dev,
@@ -390,7 +394,7 @@ static void jl2005c_dostream(struct work_struct *work)
 		}
 	}
 quit_stream:
-	if (gspca_dev->present) {
+	if (gspca_dev->dev) {
 		mutex_lock(&gspca_dev->usb_lock);
 		jl2005c_stop(gspca_dev);
 		mutex_unlock(&gspca_dev->usb_lock);
@@ -501,8 +505,6 @@ static void sd_stop0(struct gspca_dev *gspca_dev)
 /* sub-driver description */
 static const struct sd_desc sd_desc = {
 	.name = MODULE_NAME,
-	/* .ctrls = none have been detected */
-	/* .nctrls = ARRAY_SIZE(sd_ctrls),  */
 	.config = sd_config,
 	.init = sd_init,
 	.start = sd_start,
@@ -510,7 +512,7 @@ static const struct sd_desc sd_desc = {
 };
 
 /* -- module initialisation -- */
-static const __devinitdata struct usb_device_id device_table[] = {
+static const struct usb_device_id device_table[] = {
 	{USB_DEVICE(0x0979, 0x0227)},
 	{}
 };
@@ -532,6 +534,7 @@ static struct usb_driver sd_driver = {
 #ifdef CONFIG_PM
 	.suspend = gspca_suspend,
 	.resume = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 

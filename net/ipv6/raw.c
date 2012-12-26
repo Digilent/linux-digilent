@@ -72,7 +72,7 @@ static struct sock *__raw_v6_lookup(struct net *net, struct sock *sk,
 		const struct in6_addr *rmt_addr, int dif)
 {
 	struct hlist_node *node;
-	int is_multicast = ipv6_addr_is_multicast(loc_addr);
+	bool is_multicast = ipv6_addr_is_multicast(loc_addr);
 
 	sk_for_each_from(sk, node)
 		if (inet_sk(sk)->inet_num == num) {
@@ -107,21 +107,20 @@ found:
  *	0 - deliver
  *	1 - block
  */
-static __inline__ int icmpv6_filter(struct sock *sk, struct sk_buff *skb)
+static int icmpv6_filter(const struct sock *sk, const struct sk_buff *skb)
 {
-	struct icmp6hdr *icmph;
-	struct raw6_sock *rp = raw6_sk(sk);
+	struct icmp6hdr *_hdr;
+	const struct icmp6hdr *hdr;
 
-	if (pskb_may_pull(skb, sizeof(struct icmp6hdr))) {
-		__u32 *data = &rp->filter.data[0];
-		int bit_nr;
+	hdr = skb_header_pointer(skb, skb_transport_offset(skb),
+				 sizeof(_hdr), &_hdr);
+	if (hdr) {
+		const __u32 *data = &raw6_sk(sk)->filter.data[0];
+		unsigned int type = hdr->icmp6_type;
 
-		icmph = (struct icmp6hdr *) skb->data;
-		bit_nr = icmph->icmp6_type;
-
-		return (data[bit_nr >> 5] & (1 << (bit_nr & 31))) != 0;
+		return (data[type >> 5] & (1U << (type & 31))) != 0;
 	}
-	return 0;
+	return 1;
 }
 
 #if defined(CONFIG_IPV6_MIP6) || defined(CONFIG_IPV6_MIP6_MODULE)
@@ -153,19 +152,19 @@ EXPORT_SYMBOL(rawv6_mh_filter_unregister);
  *
  *	Caller owns SKB so we must make clones.
  */
-static int ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
+static bool ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 {
 	const struct in6_addr *saddr;
 	const struct in6_addr *daddr;
 	struct sock *sk;
-	int delivered = 0;
+	bool delivered = false;
 	__u8 hash;
 	struct net *net;
 
 	saddr = &ipv6_hdr(skb)->saddr;
 	daddr = saddr + 1;
 
-	hash = nexthdr & (MAX_INET_PROTOS - 1);
+	hash = nexthdr & (RAW_HTABLE_SIZE - 1);
 
 	read_lock(&raw_v6_hashinfo.lock);
 	sk = sk_head(&raw_v6_hashinfo.ht[hash]);
@@ -179,7 +178,7 @@ static int ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 	while (sk) {
 		int filtered;
 
-		delivered = 1;
+		delivered = true;
 		switch (nexthdr) {
 		case IPPROTO_ICMPV6:
 			filtered = icmpv6_filter(sk, skb);
@@ -225,11 +224,11 @@ out:
 	return delivered;
 }
 
-int raw6_local_deliver(struct sk_buff *skb, int nexthdr)
+bool raw6_local_deliver(struct sk_buff *skb, int nexthdr)
 {
 	struct sock *raw_sk;
 
-	raw_sk = sk_head(&raw_v6_hashinfo.ht[nexthdr & (MAX_INET_PROTOS - 1)]);
+	raw_sk = sk_head(&raw_v6_hashinfo.ht[nexthdr & (RAW_HTABLE_SIZE - 1)]);
 	if (raw_sk && !ipv6_raw_deliver(skb, nexthdr))
 		raw_sk = NULL;
 
@@ -328,9 +327,12 @@ static void rawv6_err(struct sock *sk, struct sk_buff *skb,
 		return;
 
 	harderr = icmpv6_err_convert(type, code, &err);
-	if (type == ICMPV6_PKT_TOOBIG)
+	if (type == ICMPV6_PKT_TOOBIG) {
+		ip6_sk_update_pmtu(skb, sk, info);
 		harderr = (np->pmtudisc == IPV6_PMTUDISC_DO);
-
+	}
+	if (type == NDISC_REDIRECT)
+		ip6_sk_redirect(skb, sk);
 	if (np->recverr) {
 		u8 *payload = skb->data;
 		if (!inet->hdrincl)
@@ -856,6 +858,8 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 
 	if (!fl6.flowi6_oif && ipv6_addr_is_multicast(&fl6.daddr))
 		fl6.flowi6_oif = np->mcast_oif;
+	else if (!fl6.flowi6_oif)
+		fl6.flowi6_oif = np->ucast_oif;
 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p, true);

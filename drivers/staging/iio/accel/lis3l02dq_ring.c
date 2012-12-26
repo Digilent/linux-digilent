@@ -6,11 +6,11 @@
 #include <linux/slab.h>
 #include <linux/export.h>
 
-#include "../iio.h"
+#include <linux/iio/iio.h>
 #include "../ring_sw.h"
-#include "../kfifo_buf.h"
-#include "../trigger.h"
-#include "../trigger_consumer.h"
+#include <linux/iio/kfifo_buf.h>
+#include <linux/iio/trigger.h>
+#include <linux/iio/trigger_consumer.h>
 #include "lis3l02dq.h"
 
 /**
@@ -121,8 +121,10 @@ static int lis3l02dq_get_buffer_element(struct iio_dev *indio_dev,
 	if (rx_array == NULL)
 		return -ENOMEM;
 	ret = lis3l02dq_read_all(indio_dev, rx_array);
-	if (ret < 0)
+	if (ret < 0) {
+		kfree(rx_array);
 		return ret;
+	}
 	for (i = 0; i < scan_count; i++)
 		data[i] = combine_8_to_16(rx_array[i*4+1],
 					rx_array[i*4+3]);
@@ -137,38 +139,37 @@ static irqreturn_t lis3l02dq_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct iio_buffer *buffer = indio_dev->buffer;
 	int len = 0;
-	size_t datasize = buffer->access->get_bytes_per_datum(buffer);
-	char *data = kmalloc(datasize, GFP_KERNEL);
+	char *data;
 
+	data = kmalloc(indio_dev->scan_bytes, GFP_KERNEL);
 	if (data == NULL) {
 		dev_err(indio_dev->dev.parent,
 			"memory alloc failed in buffer bh");
-		return -ENOMEM;
+		goto done;
 	}
 
 	if (!bitmap_empty(indio_dev->active_scan_mask, indio_dev->masklength))
 		len = lis3l02dq_get_buffer_element(indio_dev, data);
 
 	  /* Guaranteed to be aligned with 8 byte boundary */
-	if (buffer->scan_timestamp)
-		*(s64 *)(((phys_addr_t)data + len
-				+ sizeof(s64) - 1) & ~(sizeof(s64) - 1))
+	if (indio_dev->scan_timestamp)
+		*(s64 *)((u8 *)data + ALIGN(len, sizeof(s64)))
 			= pf->timestamp;
 	buffer->access->store_to(buffer, (u8 *)data, pf->timestamp);
 
-	iio_trigger_notify_done(indio_dev->trig);
 	kfree(data);
+done:
+	iio_trigger_notify_done(indio_dev->trig);
 	return IRQ_HANDLED;
 }
 
 /* Caller responsible for locking as necessary. */
 static int
-__lis3l02dq_write_data_ready_config(struct device *dev, bool state)
+__lis3l02dq_write_data_ready_config(struct iio_dev *indio_dev, bool state)
 {
 	int ret;
 	u8 valold;
 	bool currentlyset;
-	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct lis3l02dq_state *st = iio_priv(indio_dev);
 
 /* Get the current event mask register */
@@ -236,10 +237,10 @@ static int lis3l02dq_data_rdy_trigger_set_state(struct iio_trigger *trig,
 	int ret = 0;
 	u8 t;
 
-	__lis3l02dq_write_data_ready_config(&indio_dev->dev, state);
+	__lis3l02dq_write_data_ready_config(indio_dev, state);
 	if (state == false) {
 		/*
-		 * A possible quirk with teh handler is currently worked around
+		 * A possible quirk with the handler is currently worked around
 		 *  by ensuring outstanding read events are cleared.
 		 */
 		ret = lis3l02dq_read_all(indio_dev, NULL);
@@ -286,7 +287,7 @@ int lis3l02dq_probe_trigger(struct iio_dev *indio_dev)
 	int ret;
 	struct lis3l02dq_state *st = iio_priv(indio_dev);
 
-	st->trig = iio_allocate_trigger("lis3l02dq-dev%d", indio_dev->id);
+	st->trig = iio_trigger_alloc("lis3l02dq-dev%d", indio_dev->id);
 	if (!st->trig) {
 		ret = -ENOMEM;
 		goto error_ret;
@@ -302,7 +303,7 @@ int lis3l02dq_probe_trigger(struct iio_dev *indio_dev)
 	return 0;
 
 error_free_trig:
-	iio_free_trigger(st->trig);
+	iio_trigger_free(st->trig);
 error_ret:
 	return ret;
 }
@@ -312,7 +313,7 @@ void lis3l02dq_remove_trigger(struct iio_dev *indio_dev)
 	struct lis3l02dq_state *st = iio_priv(indio_dev);
 
 	iio_trigger_unregister(st->trig);
-	iio_free_trigger(st->trig);
+	iio_trigger_free(st->trig);
 }
 
 void lis3l02dq_unconfigure_buffer(struct iio_dev *indio_dev)
@@ -406,8 +407,6 @@ int lis3l02dq_configure_buffer(struct iio_dev *indio_dev)
 		return -ENOMEM;
 
 	indio_dev->buffer = buffer;
-	/* Effectively select the buffer implementation */
-	indio_dev->buffer->access = &lis3l02dq_access_funcs;
 
 	buffer->scan_timestamp = true;
 	indio_dev->setup_ops = &lis3l02dq_buffer_setup_ops;

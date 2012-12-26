@@ -11,6 +11,7 @@
 #include <linux/sysfs.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
+#include <linux/capability.h>
 
 #include "cpuidle.h"
 
@@ -216,17 +217,40 @@ struct cpuidle_state_attr {
 	struct attribute attr;
 	ssize_t (*show)(struct cpuidle_state *, \
 					struct cpuidle_state_usage *, char *);
-	ssize_t (*store)(struct cpuidle_state *, const char *, size_t);
+	ssize_t (*store)(struct cpuidle_state *, \
+			struct cpuidle_state_usage *, const char *, size_t);
 };
 
 #define define_one_state_ro(_name, show) \
 static struct cpuidle_state_attr attr_##_name = __ATTR(_name, 0444, show, NULL)
+
+#define define_one_state_rw(_name, show, store) \
+static struct cpuidle_state_attr attr_##_name = __ATTR(_name, 0644, show, store)
 
 #define define_show_state_function(_name) \
 static ssize_t show_state_##_name(struct cpuidle_state *state, \
 			 struct cpuidle_state_usage *state_usage, char *buf) \
 { \
 	return sprintf(buf, "%u\n", state->_name);\
+}
+
+#define define_store_state_ull_function(_name) \
+static ssize_t store_state_##_name(struct cpuidle_state *state, \
+		struct cpuidle_state_usage *state_usage, \
+		const char *buf, size_t size) \
+{ \
+	unsigned long long value; \
+	int err; \
+	if (!capable(CAP_SYS_ADMIN)) \
+		return -EPERM; \
+	err = kstrtoull(buf, 0, &value); \
+	if (err) \
+		return err; \
+	if (value) \
+		state_usage->_name = 1; \
+	else \
+		state_usage->_name = 0; \
+	return size; \
 }
 
 #define define_show_state_ull_function(_name) \
@@ -251,6 +275,8 @@ define_show_state_ull_function(usage)
 define_show_state_ull_function(time)
 define_show_state_str_function(name)
 define_show_state_str_function(desc)
+define_show_state_ull_function(disable)
+define_store_state_ull_function(disable)
 
 define_one_state_ro(name, show_state_name);
 define_one_state_ro(desc, show_state_desc);
@@ -258,6 +284,7 @@ define_one_state_ro(latency, show_state_exit_latency);
 define_one_state_ro(power, show_state_power_usage);
 define_one_state_ro(usage, show_state_usage);
 define_one_state_ro(time, show_state_time);
+define_one_state_rw(disable, show_state_disable, store_state_disable);
 
 static struct attribute *cpuidle_state_default_attrs[] = {
 	&attr_name.attr,
@@ -266,6 +293,7 @@ static struct attribute *cpuidle_state_default_attrs[] = {
 	&attr_power.attr,
 	&attr_usage.attr,
 	&attr_time.attr,
+	&attr_disable.attr,
 	NULL
 };
 
@@ -287,8 +315,23 @@ static ssize_t cpuidle_state_show(struct kobject * kobj,
 	return ret;
 }
 
+static ssize_t cpuidle_state_store(struct kobject *kobj,
+	struct attribute *attr, const char *buf, size_t size)
+{
+	int ret = -EIO;
+	struct cpuidle_state *state = kobj_to_state(kobj);
+	struct cpuidle_state_usage *state_usage = kobj_to_state_usage(kobj);
+	struct cpuidle_state_attr *cattr = attr_to_stateattr(attr);
+
+	if (cattr->store)
+		ret = cattr->store(state, state_usage, buf, size);
+
+	return ret;
+}
+
 static const struct sysfs_ops cpuidle_state_sysfs_ops = {
 	.show = cpuidle_state_show,
+	.store = cpuidle_state_store,
 };
 
 static void cpuidle_state_sysfs_release(struct kobject *kobj)

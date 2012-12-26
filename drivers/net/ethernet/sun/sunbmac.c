@@ -35,7 +35,6 @@
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/pgtable.h>
-#include <asm/system.h>
 
 #include "sunbmac.h"
 
@@ -234,7 +233,6 @@ static void bigmac_init_rings(struct bigmac *bp, int from_irq)
 			continue;
 
 		bp->rx_skbs[i] = skb;
-		skb->dev = dev;
 
 		/* Because we reserve afterwards. */
 		skb_put(skb, ETH_FRAME_LEN);
@@ -839,7 +837,6 @@ static void bigmac_rx(struct bigmac *bp)
 					 RX_BUF_ALLOC_SIZE - 34,
 					 DMA_FROM_DEVICE);
 			bp->rx_skbs[elem] = new_skb;
-			new_skb->dev = bp->dev;
 			skb_put(new_skb, ETH_FRAME_LEN);
 			skb_reserve(new_skb, 34);
 			this->rx_addr =
@@ -853,7 +850,7 @@ static void bigmac_rx(struct bigmac *bp)
 			/* Trim the original skb for the netif. */
 			skb_trim(skb, len);
 		} else {
-			struct sk_buff *copy_skb = dev_alloc_skb(len + 2);
+			struct sk_buff *copy_skb = netdev_alloc_skb(bp->dev, len + 2);
 
 			if (copy_skb == NULL) {
 				drops++;

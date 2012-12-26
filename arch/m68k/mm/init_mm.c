@@ -23,7 +23,6 @@
 #include <asm/uaccess.h>
 #include <asm/page.h>
 #include <asm/pgalloc.h>
-#include <asm/system.h>
 #include <asm/traps.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
@@ -105,7 +104,7 @@ void __init print_memmap(void)
 		MLK_ROUNDUP(__init_begin, __init_end),
 		MLK_ROUNDUP(_stext, _etext),
 		MLK_ROUNDUP(_sdata, _edata),
-		MLK_ROUNDUP(_sbss, _ebss));
+		MLK_ROUNDUP(__bss_start, __bss_stop));
 }
 
 void __init mem_init(void)

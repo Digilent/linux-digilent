@@ -27,6 +27,8 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/serial_sci.h>
 #include <linux/smsc911x.h>
 #include <linux/gpio.h>
@@ -43,15 +45,20 @@
 #include <video/sh_mipi_dsi.h>
 #include <sound/sh_fsi.h>
 #include <mach/hardware.h>
+#include <mach/irqs.h>
 #include <mach/sh73a0.h>
 #include <mach/common.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
-#include <asm/mach/time.h>
 #include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/traps.h>
+
+/* Dummy supplies, where voltage doesn't matter */
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+};
 
 static struct resource smsc9220_resources[] = {
 	[0] = {
@@ -143,6 +150,13 @@ static struct platform_device fsi_device = {
 	.resource	= fsi_resources,
 };
 
+/* Fixed 1.8V regulator to be used by MMCIF */
+static struct regulator_consumer_supply fixed1v8_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mmcif.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mmcif.0"),
+};
+
 static struct resource sh_mmcif_resources[] = {
 	[0] = {
 		.name	= "MMCIF",
@@ -230,16 +244,6 @@ static void lcd_backlight_reset(void)
 	gpio_set_value(GPIO_PORT235, 1);
 }
 
-static void lcd_on(void *board_data, struct fb_info *info)
-{
-	lcd_backlight_on();
-}
-
-static void lcd_off(void *board_data)
-{
-	lcd_backlight_reset();
-}
-
 /* LCDC0 */
 static const struct fb_videomode lcdc0_modes[] = {
 	{
@@ -263,14 +267,14 @@ static struct sh_mobile_lcdc_info lcdc0_info = {
 		.interface_type = RGB24,
 		.clock_divider = 1,
 		.flags = LCDC_FLAGS_DWPOL,
-		.lcd_size_cfg.width = 44,
-		.lcd_size_cfg.height = 79,
 		.fourcc = V4L2_PIX_FMT_RGB565,
-		.lcd_cfg = lcdc0_modes,
-		.num_cfg = ARRAY_SIZE(lcdc0_modes),
-		.board_cfg = {
-			.display_on = lcd_on,
-			.display_off = lcd_off,
+		.lcd_modes = lcdc0_modes,
+		.num_modes = ARRAY_SIZE(lcdc0_modes),
+		.panel_cfg = {
+			.width = 44,
+			.height = 79,
+			.display_on = lcd_backlight_on,
+			.display_off = lcd_backlight_reset,
 		},
 	}
 };
@@ -375,24 +379,21 @@ static struct platform_device mipidsi0_device = {
 	},
 };
 
-/* SDHI0 */
-static irqreturn_t ag5evm_sdhi0_gpio_cd(int irq, void *arg)
+/* Fixed 2.8V regulators to be used by SDHI0 */
+static struct regulator_consumer_supply fixed2v8_power_consumers[] =
 {
-	struct device *dev = arg;
-	struct sh_mobile_sdhi_info *info = dev->platform_data;
-	struct tmio_mmc_data *pdata = info->pdata;
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+};
 
-	tmio_mmc_cd_wakeup(pdata);
-
-	return IRQ_HANDLED;
-}
-
+/* SDHI0 */
 static struct sh_mobile_sdhi_info sdhi0_info = {
 	.dma_slave_tx	= SHDMA_SLAVE_SDHI0_TX,
 	.dma_slave_rx	= SHDMA_SLAVE_SDHI0_RX,
-	.tmio_flags	= TMIO_MMC_HAS_IDLE_WAIT,
+	.tmio_flags	= TMIO_MMC_HAS_IDLE_WAIT | TMIO_MMC_USE_GPIO_CD,
 	.tmio_caps	= MMC_CAP_SD_HIGHSPEED,
 	.tmio_ocr_mask	= MMC_VDD_27_28 | MMC_VDD_28_29,
+	.cd_gpio	= GPIO_PORT251,
 };
 
 static struct resource sdhi0_resources[] = {
@@ -429,8 +430,57 @@ static struct platform_device sdhi0_device = {
 	},
 };
 
-void ag5evm_sdhi1_set_pwr(struct platform_device *pdev, int state)
+/* Fixed 3.3V regulator to be used by SDHI1 */
+static struct regulator_consumer_supply cn4_power_consumers[] =
 {
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.1"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.1"),
+};
+
+static struct regulator_init_data cn4_power_init_data = {
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+	.num_consumer_supplies  = ARRAY_SIZE(cn4_power_consumers),
+	.consumer_supplies      = cn4_power_consumers,
+};
+
+static struct fixed_voltage_config cn4_power_info = {
+	.supply_name = "CN4 SD/MMC Vdd",
+	.microvolts = 3300000,
+	.gpio = GPIO_PORT114,
+	.enable_high = 1,
+	.init_data = &cn4_power_init_data,
+};
+
+static struct platform_device cn4_power = {
+	.name = "reg-fixed-voltage",
+	.id   = 2,
+	.dev  = {
+		.platform_data = &cn4_power_info,
+	},
+};
+
+static void ag5evm_sdhi1_set_pwr(struct platform_device *pdev, int state)
+{
+	static int power_gpio = -EINVAL;
+
+	if (power_gpio < 0) {
+		int ret = gpio_request(GPIO_PORT114, "sdhi1_power");
+		if (!ret) {
+			power_gpio = GPIO_PORT114;
+			gpio_direction_output(power_gpio, 0);
+		}
+	}
+
+	/*
+	 * If requesting the GPIO above failed, it means, that the regulator got
+	 * probed and grabbed the GPIO, but we don't know, whether the sdhi
+	 * driver already uses the regulator. If it doesn't, we have to toggle
+	 * the GPIO ourselves, even though it is now owned by the fixed
+	 * regulator driver. We have to live with the race in case the driver
+	 * gets unloaded and the GPIO freed between these two steps.
+	 */
 	gpio_set_value(GPIO_PORT114, state);
 }
 
@@ -476,6 +526,7 @@ static struct platform_device sdhi1_device = {
 };
 
 static struct platform_device *ag5evm_devices[] __initdata = {
+	&cn4_power,
 	&eth_device,
 	&keysc_device,
 	&fsi_device,
@@ -487,29 +538,14 @@ static struct platform_device *ag5evm_devices[] __initdata = {
 	&sdhi1_device,
 };
 
-static struct map_desc ag5evm_io_desc[] __initdata = {
-	/* create a 1:1 entity map for 0xe6xxxxxx
-	 * used by CPGA, INTC and PFC.
-	 */
-	{
-		.virtual	= 0xe6000000,
-		.pfn		= __phys_to_pfn(0xe6000000),
-		.length		= 256 << 20,
-		.type		= MT_DEVICE_NONSHARED
-	},
-};
-
-static void __init ag5evm_map_io(void)
-{
-	iotable_init(ag5evm_io_desc, ARRAY_SIZE(ag5evm_io_desc));
-
-	/* setup early devices and console here as well */
-	sh73a0_add_early_devices();
-	shmobile_setup_console();
-}
-
 static void __init ag5evm_init(void)
 {
+	regulator_register_always_on(0, "fixed-1.8V", fixed1v8_power_consumers,
+				     ARRAY_SIZE(fixed1v8_power_consumers), 1800000);
+	regulator_register_always_on(1, "fixed-2.8V", fixed2v8_power_consumers,
+				     ARRAY_SIZE(fixed2v8_power_consumers), 3300000);
+	regulator_register_fixed(3, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
 	sh73a0_pinmux_init();
 
 	/* enable SCIFA2 */
@@ -589,7 +625,6 @@ static void __init ag5evm_init(void)
 	lcd_backlight_reset();
 
 	/* enable SDHI0 on CN15 [SD I/F] */
-	gpio_request(GPIO_FN_SDHICD0, NULL);
 	gpio_request(GPIO_FN_SDHIWP0, NULL);
 	gpio_request(GPIO_FN_SDHICMD0, NULL);
 	gpio_request(GPIO_FN_SDHICLK0, NULL);
@@ -598,13 +633,6 @@ static void __init ag5evm_init(void)
 	gpio_request(GPIO_FN_SDHID0_1, NULL);
 	gpio_request(GPIO_FN_SDHID0_0, NULL);
 
-	if (!request_irq(intcs_evt2irq(0x3c0), ag5evm_sdhi0_gpio_cd,
-			 IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-			 "sdhi0 cd", &sdhi0_device.dev))
-		sdhi0_info.tmio_flags |= TMIO_MMC_HAS_COLD_CD;
-	else
-		pr_warn("Unable to setup SDHI0 GPIO IRQ\n");
-
 	/* enable SDHI1 on CN4 [WLAN I/F] */
 	gpio_request(GPIO_FN_SDHICLK1, NULL);
 	gpio_request(GPIO_FN_SDHICMD1_PU, NULL);
@@ -612,33 +640,22 @@ static void __init ag5evm_init(void)
 	gpio_request(GPIO_FN_SDHID1_2_PU, NULL);
 	gpio_request(GPIO_FN_SDHID1_1_PU, NULL);
 	gpio_request(GPIO_FN_SDHID1_0_PU, NULL);
-	gpio_request(GPIO_PORT114, "sdhi1_power");
-	gpio_direction_output(GPIO_PORT114, 0);
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Shared attribute override enable, 64K*8way */
-	l2x0_init(__io(0xf0100000), 0x00460000, 0xc2000fff);
+	l2x0_init(IOMEM(0xf0100000), 0x00460000, 0xc2000fff);
 #endif
 	sh73a0_add_standard_devices();
 	platform_add_devices(ag5evm_devices, ARRAY_SIZE(ag5evm_devices));
 }
 
-static void __init ag5evm_timer_init(void)
-{
-	sh73a0_clock_init();
-	shmobile_timer.init();
-	return;
-}
-
-struct sys_timer ag5evm_timer = {
-	.init	= ag5evm_timer_init,
-};
-
 MACHINE_START(AG5EVM, "ag5evm")
-	.map_io		= ag5evm_map_io,
+	.map_io		= sh73a0_map_io,
+	.init_early	= sh73a0_add_early_devices,
 	.nr_irqs	= NR_IRQS_LEGACY,
 	.init_irq	= sh73a0_init_irq,
 	.handle_irq	= gic_handle_irq,
 	.init_machine	= ag5evm_init,
-	.timer		= &ag5evm_timer,
+	.init_late	= shmobile_init_late,
+	.timer		= &shmobile_timer,
 MACHINE_END

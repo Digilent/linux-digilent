@@ -34,7 +34,6 @@
 #include <linux/can.h>
 #include <linux/can/dev.h>
 #include <linux/can/error.h>
-#include <linux/can/dev.h>
 #include <linux/can/platform/cc770.h>
 
 #include "cc770.h"
@@ -91,7 +90,7 @@ static unsigned char cc770_obj_flags[CC770_OBJ_MAX] = {
 	[CC770_OBJ_TX] = 0,
 };
 
-static struct can_bittiming_const cc770_bittiming_const = {
+static const struct can_bittiming_const cc770_bittiming_const = {
 	.name = KBUILD_MODNAME,
 	.tseg1_min = 1,
 	.tseg1_max = 16,
@@ -696,7 +695,7 @@ static void cc770_tx_interrupt(struct net_device *dev, unsigned int o)
 	netif_wake_queue(dev);
 }
 
-irqreturn_t cc770_interrupt(int irq, void *dev_id)
+static irqreturn_t cc770_interrupt(int irq, void *dev_id)
 {
 	struct net_device *dev = (struct net_device *)dev_id;
 	struct cc770_priv *priv = netdev_priv(dev);

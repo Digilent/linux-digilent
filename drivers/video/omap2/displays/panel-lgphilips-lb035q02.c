@@ -40,6 +40,12 @@ static struct omap_video_timings lb035q02_timings = {
 	.vsw		= 2,
 	.vfp		= 4,
 	.vbp		= 18,
+
+	.vsync_level	= OMAPDSS_SIG_ACTIVE_LOW,
+	.hsync_level	= OMAPDSS_SIG_ACTIVE_LOW,
+	.data_pclk_edge	= OMAPDSS_DRIVE_SIG_RISING_EDGE,
+	.de_level	= OMAPDSS_SIG_ACTIVE_HIGH,
+	.sync_pclk_edge	= OMAPDSS_DRIVE_SIG_OPPOSITE_EDGES,
 };
 
 static int lb035q02_panel_power_on(struct omap_dss_device *dssdev)
@@ -82,8 +88,6 @@ static int lb035q02_panel_probe(struct omap_dss_device *dssdev)
 	struct lb035q02_data *ld;
 	int r;
 
-	dssdev->panel.config = OMAP_DSS_LCD_TFT | OMAP_DSS_LCD_IVS |
-		OMAP_DSS_LCD_IHS;
 	dssdev->panel.timings = lb035q02_timings;
 
 	ld = kzalloc(sizeof(*ld), GFP_KERNEL);
@@ -264,16 +268,6 @@ static struct spi_driver lb035q02_spi_driver = {
 	.remove		= __devexit_p(lb035q02_panel_spi_remove),
 };
 
-static int __init lb035q02_panel_drv_init(void)
-{
-	return spi_register_driver(&lb035q02_spi_driver);
-}
+module_spi_driver(lb035q02_spi_driver);
 
-static void __exit lb035q02_panel_drv_exit(void)
-{
-	spi_unregister_driver(&lb035q02_spi_driver);
-}
-
-module_init(lb035q02_panel_drv_init);
-module_exit(lb035q02_panel_drv_exit);
 MODULE_LICENSE("GPL");

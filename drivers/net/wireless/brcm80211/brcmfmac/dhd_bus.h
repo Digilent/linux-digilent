@@ -36,17 +36,28 @@ struct dngl_stats {
 	unsigned long multicast;	/* multicast packets received */
 };
 
+struct brcmf_bus_dcmd {
+	char *name;
+	char *param;
+	int param_len;
+	struct list_head list;
+};
+
 /* interface structure between common and bus layer */
 struct brcmf_bus {
 	u8 type;		/* bus type */
-	void *bus_priv;		/* pointer to bus private structure */
-	void *drvr;		/* pointer to driver pub structure brcmf_pub */
+	union {
+		struct brcmf_sdio_dev *sdio;
+		struct brcmf_usbdev *usb;
+	} bus_priv;
+	struct brcmf_pub *drvr;	/* pointer to driver pub structure brcmf_pub */
 	enum brcmf_bus_state state;
 	uint maxctl;		/* Max size rxctl request from proto to bus */
 	bool drvr_up;		/* Status flag of driver up/down */
 	unsigned long tx_realloc;	/* Tx packets realloced for headroom */
 	struct dngl_stats dstats;	/* Stats for dongle-based data */
 	u8 align;		/* bus alignment requirement */
+	struct list_head dcmd_list;
 
 	/* interface functions pointers */
 	/* Stop bus module: clear pending frames, disable data flow */
@@ -102,4 +113,14 @@ extern int brcmf_bus_start(struct device *dev);
 
 extern int brcmf_add_if(struct device *dev, int ifidx,
 			char *name, u8 *mac_addr);
+
+#ifdef CONFIG_BRCMFMAC_SDIO
+extern void brcmf_sdio_exit(void);
+extern void brcmf_sdio_init(void);
+#endif
+#ifdef CONFIG_BRCMFMAC_USB
+extern void brcmf_usb_exit(void);
+extern void brcmf_usb_init(void);
+#endif
+
 #endif				/* _BRCMF_BUS_H_ */

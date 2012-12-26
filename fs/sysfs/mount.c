@@ -36,7 +36,7 @@ struct sysfs_dirent sysfs_root = {
 	.s_name		= "",
 	.s_count	= ATOMIC_INIT(1),
 	.s_flags	= SYSFS_DIR | (KOBJ_NS_TYPE_NONE << SYSFS_NS_TYPE_SHIFT),
-	.s_mode		= S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
+	.s_mode		= S_IFDIR | S_IRUGO | S_IXUGO,
 	.s_ino		= 1,
 };
 
@@ -61,14 +61,14 @@ static int sysfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	/* instantiate and link root dentry */
-	root = d_alloc_root(inode);
+	root = d_make_root(inode);
 	if (!root) {
 		pr_debug("%s: could not get root dentry!\n",__func__);
-		iput(inode);
 		return -ENOMEM;
 	}
 	root->d_fsdata = &sysfs_root;
 	sb->s_root = root;
+	sb->s_d_op = &sysfs_dentry_ops;
 	return 0;
 }
 
@@ -118,13 +118,12 @@ static struct dentry *sysfs_mount(struct file_system_type *fs_type,
 	for (type = KOBJ_NS_TYPE_NONE; type < KOBJ_NS_TYPES; type++)
 		info->ns[type] = kobj_ns_grab_current(type);
 
-	sb = sget(fs_type, sysfs_test_super, sysfs_set_super, info);
+	sb = sget(fs_type, sysfs_test_super, sysfs_set_super, flags, info);
 	if (IS_ERR(sb) || sb->s_fs_info != info)
 		free_sysfs_super_info(info);
 	if (IS_ERR(sb))
 		return ERR_CAST(sb);
 	if (!sb->s_root) {
-		sb->s_flags = flags;
 		error = sysfs_fill_super(sb, data, flags & MS_SILENT ? 1 : 0);
 		if (error) {
 			deactivate_locked_super(sb);

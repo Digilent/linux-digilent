@@ -19,9 +19,7 @@
 #include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_types.h"
-#include "xfs_bit.h"
 #include "xfs_log.h"
-#include "xfs_inum.h"
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
@@ -36,6 +34,7 @@
 #include "xfs_btree.h"
 #include "xfs_ialloc.h"
 #include "xfs_alloc.h"
+#include "xfs_extent_busy.h"
 #include "xfs_bmap.h"
 #include "xfs_quota.h"
 #include "xfs_trans_priv.h"
@@ -577,18 +576,23 @@ xfs_trans_alloc(
 	xfs_mount_t	*mp,
 	uint		type)
 {
-	xfs_wait_for_freeze(mp, SB_FREEZE_TRANS);
-	return _xfs_trans_alloc(mp, type, KM_SLEEP);
+	xfs_trans_t     *tp;
+
+	sb_start_intwrite(mp->m_super);
+	tp = _xfs_trans_alloc(mp, type, KM_SLEEP);
+	tp->t_flags |= XFS_TRANS_FREEZE_PROT;
+	return tp;
 }
 
 xfs_trans_t *
 _xfs_trans_alloc(
 	xfs_mount_t	*mp,
 	uint		type,
-	uint		memflags)
+	xfs_km_flags_t	memflags)
 {
 	xfs_trans_t	*tp;
 
+	WARN_ON(mp->m_super->s_writers.frozen == SB_FREEZE_COMPLETE);
 	atomic_inc(&mp->m_active_trans);
 
 	tp = kmem_zone_zalloc(xfs_trans_zone, memflags);
@@ -608,10 +612,12 @@ STATIC void
 xfs_trans_free(
 	struct xfs_trans	*tp)
 {
-	xfs_alloc_busy_sort(&tp->t_busy);
-	xfs_alloc_busy_clear(tp->t_mountp, &tp->t_busy, false);
+	xfs_extent_busy_sort(&tp->t_busy);
+	xfs_extent_busy_clear(tp->t_mountp, &tp->t_busy, false);
 
 	atomic_dec(&tp->t_mountp->m_active_trans);
+	if (tp->t_flags & XFS_TRANS_FREEZE_PROT)
+		sb_end_intwrite(tp->t_mountp->m_super);
 	xfs_trans_free_dqinfo(tp);
 	kmem_zone_free(xfs_trans_zone, tp);
 }
@@ -644,7 +650,11 @@ xfs_trans_dup(
 	ASSERT(tp->t_flags & XFS_TRANS_PERM_LOG_RES);
 	ASSERT(tp->t_ticket != NULL);
 
-	ntp->t_flags = XFS_TRANS_PERM_LOG_RES | (tp->t_flags & XFS_TRANS_RESERVE);
+	ntp->t_flags = XFS_TRANS_PERM_LOG_RES |
+		       (tp->t_flags & XFS_TRANS_RESERVE) |
+		       (tp->t_flags & XFS_TRANS_FREEZE_PROT);
+	/* We gave our writer reference to the new transaction */
+	tp->t_flags &= ~XFS_TRANS_FREEZE_PROT;
 	ntp->t_ticket = xfs_log_ticket_get(tp->t_ticket);
 	ntp->t_blk_res = tp->t_blk_res - tp->t_blk_res_used;
 	tp->t_blk_res = tp->t_blk_res_used;
@@ -681,7 +691,6 @@ xfs_trans_reserve(
 	uint		flags,
 	uint		logcount)
 {
-	int		log_flags;
 	int		error = 0;
 	int		rsvd = (tp->t_flags & XFS_TRANS_RESERVE) != 0;
 
@@ -707,24 +716,32 @@ xfs_trans_reserve(
 	 * Reserve the log space needed for this transaction.
 	 */
 	if (logspace > 0) {
-		ASSERT((tp->t_log_res == 0) || (tp->t_log_res == logspace));
-		ASSERT((tp->t_log_count == 0) ||
-			(tp->t_log_count == logcount));
+		bool	permanent = false;
+
+		ASSERT(tp->t_log_res == 0 || tp->t_log_res == logspace);
+		ASSERT(tp->t_log_count == 0 || tp->t_log_count == logcount);
+
 		if (flags & XFS_TRANS_PERM_LOG_RES) {
-			log_flags = XFS_LOG_PERM_RESERV;
 			tp->t_flags |= XFS_TRANS_PERM_LOG_RES;
+			permanent = true;
 		} else {
 			ASSERT(tp->t_ticket == NULL);
 			ASSERT(!(tp->t_flags & XFS_TRANS_PERM_LOG_RES));
-			log_flags = 0;
 		}
 
-		error = xfs_log_reserve(tp->t_mountp, logspace, logcount,
-					&tp->t_ticket,
-					XFS_TRANSACTION, log_flags, tp->t_type);
-		if (error) {
-			goto undo_blocks;
+		if (tp->t_ticket != NULL) {
+			ASSERT(flags & XFS_TRANS_PERM_LOG_RES);
+			error = xfs_log_regrant(tp->t_mountp, tp->t_ticket);
+		} else {
+			error = xfs_log_reserve(tp->t_mountp, logspace,
+						logcount, &tp->t_ticket,
+						XFS_TRANSACTION, permanent,
+						tp->t_type);
 		}
+
+		if (error)
+			goto undo_blocks;
+
 		tp->t_log_res = logspace;
 		tp->t_log_count = logcount;
 	}
@@ -752,6 +769,8 @@ xfs_trans_reserve(
 	 */
 undo_log:
 	if (logspace > 0) {
+		int		log_flags;
+
 		if (flags & XFS_TRANS_PERM_LOG_RES) {
 			log_flags = XFS_LOG_REL_PERM_RESERV;
 		} else {

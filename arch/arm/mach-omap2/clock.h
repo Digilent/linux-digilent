@@ -146,14 +146,6 @@ extern const struct clksel_rate gpt_sys_rates[];
 extern const struct clksel_rate gfx_l3_rates[];
 extern const struct clksel_rate dsp_ick_rates[];
 
-#if defined(CONFIG_ARCH_OMAP2) && defined(CONFIG_CPU_FREQ)
-extern void omap2_clk_init_cpufreq_table(struct cpufreq_frequency_table **table);
-extern void omap2_clk_exit_cpufreq_table(struct cpufreq_frequency_table **table);
-#else
-#define omap2_clk_init_cpufreq_table	0
-#define omap2_clk_exit_cpufreq_table	0
-#endif
-
 extern const struct clkops clkops_omap2_iclk_dflt_wait;
 extern const struct clkops clkops_omap2_iclk_dflt;
 extern const struct clkops clkops_omap2_iclk_idle_only;
@@ -162,5 +154,19 @@ extern const struct clkops clkops_omap2xxx_dpll_ops;
 extern const struct clkops clkops_omap3_noncore_dpll_ops;
 extern const struct clkops clkops_omap3_core_dpll_ops;
 extern const struct clkops clkops_omap4_dpllmx_ops;
+
+/* clksel_rate blocks shared between OMAP44xx and AM33xx */
+extern const struct clksel_rate div_1_0_rates[];
+extern const struct clksel_rate div_1_1_rates[];
+extern const struct clksel_rate div_1_2_rates[];
+extern const struct clksel_rate div_1_3_rates[];
+extern const struct clksel_rate div_1_4_rates[];
+extern const struct clksel_rate div31_1to31_rates[];
+
+/* clocks shared between various OMAP SoCs */
+extern struct clk virt_19200000_ck;
+extern struct clk virt_26000000_ck;
+
+extern int am33xx_clk_init(void);
 
 #endif

@@ -31,6 +31,12 @@ struct dev_archdata {
 #ifdef CONFIG_SWIOTLB
 	dma_addr_t		max_direct_dma_addr;
 #endif
+#ifdef CONFIG_EEH
+	struct eeh_dev		*edev;
+#endif
+#ifdef CONFIG_FAIL_IOMMU
+	int fail_iommu;
+#endif
 };
 
 struct pdev_archdata {

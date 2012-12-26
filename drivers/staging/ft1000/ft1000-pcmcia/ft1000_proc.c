@@ -29,21 +29,19 @@
 #define FT1000_PROC "ft1000"
 #define MAX_FILE_LEN 255
 
-#define PUTM_TO_PAGE(len,page,args...) \
+#define PUTM_TO_PAGE(len, page, args...) \
 	len += snprintf(page+len, PAGE_SIZE - len, args)
 
-#define PUTX_TO_PAGE(len,page,message,size,var) \
+#define PUTX_TO_PAGE(len, page, message, size, var) \
 	len += snprintf(page+len, PAGE_SIZE - len, message); \
-	for(i = 0; i < (size - 1); i++) \
-	{ \
+	for(i = 0; i < (size - 1); i++) { \
 		len += snprintf(page+len, PAGE_SIZE - len, "%02x:", var[i]); \
 	} \
 	len += snprintf(page+len, PAGE_SIZE - len, "%02x\n", var[i])
 
-#define PUTD_TO_PAGE(len,page,message,size,var) \
+#define PUTD_TO_PAGE(len, page, message, size, var) \
 	len += snprintf(page+len, PAGE_SIZE - len, message); \
-	for(i = 0; i < (size - 1); i++) \
-	{ \
+	for(i = 0; i < (size - 1); i++) { \
 		len += snprintf(page+len, PAGE_SIZE - len, "%d.", var[i]); \
 	} \
 	len += snprintf(page+len, PAGE_SIZE - len, "%d\n", var[i])
@@ -55,8 +53,8 @@ static int ft1000ReadProc(char *page, char **start, off_t off,
 	int len;
 	int i;
 	struct ft1000_info *info;
-	char *status[] =
-		{ "Idle (Disconnect)", "Searching", "Active (Connected)",
+	char *status[] = {
+		"Idle (Disconnect)", "Searching", "Active (Connected)",
 		"Waiting for L2", "Sleep", "No Coverage", "", ""
 	};
 	char *signal[] = { "", "*", "**", "***", "****" };

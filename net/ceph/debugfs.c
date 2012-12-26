@@ -94,9 +94,9 @@ static int monc_show(struct seq_file *s, void *p)
 	mutex_lock(&monc->mutex);
 
 	if (monc->have_mdsmap)
-		seq_printf(s, "have mdsmap %u\n", (unsigned)monc->have_mdsmap);
+		seq_printf(s, "have mdsmap %u\n", (unsigned int)monc->have_mdsmap);
 	if (monc->have_osdmap)
-		seq_printf(s, "have osdmap %u\n", (unsigned)monc->have_osdmap);
+		seq_printf(s, "have osdmap %u\n", (unsigned int)monc->have_osdmap);
 	if (monc->want_next_osdmap)
 		seq_printf(s, "want next osdmap\n");
 
@@ -146,7 +146,7 @@ static int osdc_show(struct seq_file *s, void *pp)
 
 		if (req->r_reassert_version.epoch)
 			seq_printf(s, "\t%u'%llu",
-			   (unsigned)le32_to_cpu(req->r_reassert_version.epoch),
+			   (unsigned int)le32_to_cpu(req->r_reassert_version.epoch),
 			   le64_to_cpu(req->r_reassert_version.version));
 		else
 			seq_printf(s, "\t");
@@ -189,6 +189,9 @@ int ceph_debugfs_client_init(struct ceph_client *client)
 	snprintf(name, sizeof(name), "%pU.client%lld", &client->fsid,
 		 client->monc.auth->global_id);
 
+	dout("ceph_debugfs_client_init %p %s\n", client, name);
+
+	BUG_ON(client->debugfs_dir);
 	client->debugfs_dir = debugfs_create_dir(name, ceph_debugfs_dir);
 	if (!client->debugfs_dir)
 		goto out;
@@ -234,6 +237,7 @@ out:
 
 void ceph_debugfs_client_cleanup(struct ceph_client *client)
 {
+	dout("ceph_debugfs_client_cleanup %p\n", client);
 	debugfs_remove(client->debugfs_osdmap);
 	debugfs_remove(client->debugfs_monmap);
 	debugfs_remove(client->osdc.debugfs_file);

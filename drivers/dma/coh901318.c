@@ -24,6 +24,7 @@
 #include <mach/coh901318.h>
 
 #include "coh901318_lli.h"
+#include "dmaengine.h"
 
 #define COHC_2_DEV(cohc) (&cohc->chan.dev->device)
 
@@ -59,7 +60,6 @@ struct coh901318_base {
 struct coh901318_chan {
 	spinlock_t lock;
 	int allocated;
-	int completed;
 	int id;
 	int stopped;
 
@@ -103,13 +103,6 @@ static void coh901318_list_print(struct coh901318_chan *cohc,
 
 static struct coh901318_base *debugfs_dma_base;
 static struct dentry *dma_dentry;
-
-static int coh901318_debugfs_open(struct inode *inode, struct file *file)
-{
-
-	file->private_data = inode->i_private;
-	return 0;
-}
 
 static int coh901318_debugfs_read(struct file *file, char __user *buf,
 				  size_t count, loff_t *f_pos)
@@ -158,7 +151,7 @@ static int coh901318_debugfs_read(struct file *file, char __user *buf,
 
 static const struct file_operations coh901318_debugfs_status_operations = {
 	.owner		= THIS_MODULE,
-	.open		= coh901318_debugfs_open,
+	.open		= simple_open,
 	.read		= coh901318_debugfs_read,
 	.llseek		= default_llseek,
 };
@@ -317,20 +310,6 @@ static int coh901318_prep_linked_list(struct coh901318_chan *cohc,
 	       COH901318_CX_CTRL_SPACING * channel);
 
 	return 0;
-}
-static dma_cookie_t
-coh901318_assign_cookie(struct coh901318_chan *cohc,
-			struct coh901318_desc *cohd)
-{
-	dma_cookie_t cookie = cohc->chan.cookie;
-
-	if (++cookie < 0)
-		cookie = 1;
-
-	cohc->chan.cookie = cookie;
-	cohd->desc.cookie = cookie;
-
-	return cookie;
 }
 
 static struct coh901318_desc *
@@ -705,7 +684,7 @@ static void dma_tasklet(unsigned long data)
 	callback_param = cohd_fin->desc.callback_param;
 
 	/* sign this job as completed on the channel */
-	cohc->completed = cohd_fin->desc.cookie;
+	dma_cookie_complete(&cohd_fin->desc);
 
 	/* release the lli allocation and remove the descriptor */
 	coh901318_lli_free(&cohc->base->pool, &cohd_fin->lli);
@@ -929,7 +908,7 @@ static int coh901318_alloc_chan_resources(struct dma_chan *chan)
 	coh901318_config(cohc, NULL);
 
 	cohc->allocated = 1;
-	cohc->completed = chan->cookie = 1;
+	dma_cookie_init(chan);
 
 	spin_unlock_irqrestore(&cohc->lock, flags);
 
@@ -966,16 +945,16 @@ coh901318_tx_submit(struct dma_async_tx_descriptor *tx)
 						   desc);
 	struct coh901318_chan *cohc = to_coh901318_chan(tx->chan);
 	unsigned long flags;
+	dma_cookie_t cookie;
 
 	spin_lock_irqsave(&cohc->lock, flags);
-
-	tx->cookie = coh901318_assign_cookie(cohc, cohd);
+	cookie = dma_cookie_assign(tx);
 
 	coh901318_desc_queue(cohc, cohd);
 
 	spin_unlock_irqrestore(&cohc->lock, flags);
 
-	return tx->cookie;
+	return cookie;
 }
 
 static struct dma_async_tx_descriptor *
@@ -1035,7 +1014,7 @@ coh901318_prep_memcpy(struct dma_chan *chan, dma_addr_t dest, dma_addr_t src,
 static struct dma_async_tx_descriptor *
 coh901318_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 			unsigned int sg_len, enum dma_transfer_direction direction,
-			unsigned long flags)
+			unsigned long flags, void *context)
 {
 	struct coh901318_chan *cohc = to_coh901318_chan(chan);
 	struct coh901318_lli *lli;
@@ -1054,7 +1033,7 @@ coh901318_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 
 	if (!sgl)
 		goto out;
-	if (sgl->length == 0)
+	if (sg_dma_len(sgl) == 0)
 		goto out;
 
 	spin_lock_irqsave(&cohc->lock, flg);
@@ -1165,17 +1144,12 @@ coh901318_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 		 struct dma_tx_state *txstate)
 {
 	struct coh901318_chan *cohc = to_coh901318_chan(chan);
-	dma_cookie_t last_used;
-	dma_cookie_t last_complete;
-	int ret;
+	enum dma_status ret;
 
-	last_complete = cohc->completed;
-	last_used = chan->cookie;
+	ret = dma_cookie_status(chan, cookie, txstate);
+	/* FIXME: should be conditional on ret != DMA_SUCCESS? */
+	dma_set_residue(txstate, coh901318_get_bytes_left(chan));
 
-	ret = dma_async_is_complete(cookie, last_complete, last_used);
-
-	dma_set_tx_state(txstate, last_complete, last_used,
-			 coh901318_get_bytes_left(chan));
 	if (ret == DMA_IN_PROGRESS && cohc->stopped)
 		ret = DMA_PAUSED;
 
@@ -1464,34 +1438,32 @@ static int __init coh901318_probe(struct platform_device *pdev)
 
 	io = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!io)
-		goto err_get_resource;
+		return -ENODEV;
 
 	/* Map DMA controller registers to virtual memory */
-	if (request_mem_region(io->start,
-			       resource_size(io),
-			       pdev->dev.driver->name) == NULL) {
-		err = -EBUSY;
-		goto err_request_mem;
-	}
+	if (devm_request_mem_region(&pdev->dev,
+				    io->start,
+				    resource_size(io),
+				    pdev->dev.driver->name) == NULL)
+		return -ENOMEM;
 
 	pdata = pdev->dev.platform_data;
 	if (!pdata)
-		goto err_no_platformdata;
+		return -ENODEV;
 
-	base = kmalloc(ALIGN(sizeof(struct coh901318_base), 4) +
-		       pdata->max_channels *
-		       sizeof(struct coh901318_chan),
-		       GFP_KERNEL);
+	base = devm_kzalloc(&pdev->dev,
+			    ALIGN(sizeof(struct coh901318_base), 4) +
+			    pdata->max_channels *
+			    sizeof(struct coh901318_chan),
+			    GFP_KERNEL);
 	if (!base)
-		goto err_alloc_coh_dma_channels;
+		return -ENOMEM;
 
 	base->chans = ((void *)base) + ALIGN(sizeof(struct coh901318_base), 4);
 
-	base->virtbase = ioremap(io->start, resource_size(io));
-	if (!base->virtbase) {
-		err = -ENOMEM;
-		goto err_no_ioremap;
-	}
+	base->virtbase = devm_ioremap(&pdev->dev, io->start, resource_size(io));
+	if (!base->virtbase)
+		return -ENOMEM;
 
 	base->dev = &pdev->dev;
 	base->platform = pdata;
@@ -1500,25 +1472,20 @@ static int __init coh901318_probe(struct platform_device *pdev)
 
 	COH901318_DEBUGFS_ASSIGN(debugfs_dma_base, base);
 
-	platform_set_drvdata(pdev, base);
-
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		goto err_no_irq;
+		return irq;
 
-	err = request_irq(irq, dma_irq_handler, IRQF_DISABLED,
-			  "coh901318", base);
-	if (err) {
-		dev_crit(&pdev->dev,
-			 "Cannot allocate IRQ for DMA controller!\n");
-		goto err_request_irq;
-	}
+	err = devm_request_irq(&pdev->dev, irq, dma_irq_handler, IRQF_DISABLED,
+			       "coh901318", base);
+	if (err)
+		return err;
 
 	err = coh901318_pool_create(&base->pool, &pdev->dev,
 				    sizeof(struct coh901318_lli),
 				    32);
 	if (err)
-		goto err_pool_create;
+		return err;
 
 	/* init channels for device transfers */
 	coh901318_base_init(&base->dma_slave,  base->platform->chans_slave,
@@ -1564,6 +1531,7 @@ static int __init coh901318_probe(struct platform_device *pdev)
 	if (err)
 		goto err_register_memcpy;
 
+	platform_set_drvdata(pdev, base);
 	dev_info(&pdev->dev, "Initialized COH901318 DMA on virtual base 0x%08x\n",
 		(u32) base->virtbase);
 
@@ -1573,19 +1541,6 @@ static int __init coh901318_probe(struct platform_device *pdev)
 	dma_async_device_unregister(&base->dma_slave);
  err_register_slave:
 	coh901318_pool_destroy(&base->pool);
- err_pool_create:
-	free_irq(platform_get_irq(pdev, 0), base);
- err_request_irq:
- err_no_irq:
-	iounmap(base->virtbase);
- err_no_ioremap:
-	kfree(base);
- err_alloc_coh_dma_channels:
- err_no_platformdata:
-	release_mem_region(pdev->resource->start,
-			   resource_size(pdev->resource));
- err_request_mem:
- err_get_resource:
 	return err;
 }
 
@@ -1596,11 +1551,6 @@ static int __exit coh901318_remove(struct platform_device *pdev)
 	dma_async_device_unregister(&base->dma_memcpy);
 	dma_async_device_unregister(&base->dma_slave);
 	coh901318_pool_destroy(&base->pool);
-	free_irq(platform_get_irq(pdev, 0), base);
-	iounmap(base->virtbase);
-	kfree(base);
-	release_mem_region(pdev->resource->start,
-			   resource_size(pdev->resource));
 	return 0;
 }
 

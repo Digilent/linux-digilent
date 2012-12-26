@@ -1,5 +1,6 @@
 menu "Mapping drivers for chip access"
 	depends on MTD!=n
+	depends on HAS_IOMEM
 
 config MTD_COMPLEX_MAPPINGS
 	bool "Support non-linear mappings of flash chips"
@@ -95,12 +96,6 @@ config MSP_FLASH_MAP_LIMIT
 	hex
 	default "0x02000000"
 	depends on MSP_FLASH_MAP_LIMIT_32M
-
-config MTD_XILINX_OPB
-	bool "OPB CFI Flash device mapped on Xilinx boards"
-	depends on MTD_CFI_INTELEXT && SP3E && HAVE_XILINX_EMC
-	help
-	OPB Flash mapping support for Xilinx boards
 
 config MTD_SUN_UFLASH
 	tristate "Sun Microsystems userflash support"
@@ -229,7 +224,7 @@ config MTD_CK804XROM
 
 config MTD_SCB2_FLASH
 	tristate "BIOS flash chip on Intel SCB2 boards"
-	depends on X86 && MTD_JEDECPROBE
+	depends on X86 && MTD_JEDECPROBE && PCI
 	help
 	  Support for treating the BIOS flash chip on Intel SCB2 boards
 	  as an MTD device - with this you can reprogram your BIOS.

@@ -548,11 +548,10 @@ static int max6639_probe(struct i2c_client *client,
 	struct max6639_data *data;
 	int err;
 
-	data = kzalloc(sizeof(struct max6639_data), GFP_KERNEL);
-	if (!data) {
-		err = -ENOMEM;
-		goto exit;
-	}
+	data = devm_kzalloc(&client->dev, sizeof(struct max6639_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
 	i2c_set_clientdata(client, data);
 	mutex_init(&data->update_lock);
@@ -560,12 +559,12 @@ static int max6639_probe(struct i2c_client *client,
 	/* Initialize the max6639 chip */
 	err = max6639_init_client(client);
 	if (err < 0)
-		goto error_free;
+		return err;
 
 	/* Register sysfs hooks */
 	err = sysfs_create_group(&client->dev.kobj, &max6639_group);
 	if (err)
-		goto error_free;
+		return err;
 
 	data->hwmon_dev = hwmon_device_register(&client->dev);
 	if (IS_ERR(data->hwmon_dev)) {
@@ -579,9 +578,6 @@ static int max6639_probe(struct i2c_client *client,
 
 error_remove:
 	sysfs_remove_group(&client->dev.kobj, &max6639_group);
-error_free:
-	kfree(data);
-exit:
 	return err;
 }
 
@@ -592,12 +588,13 @@ static int max6639_remove(struct i2c_client *client)
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &max6639_group);
 
-	kfree(data);
 	return 0;
 }
 
-static int max6639_suspend(struct i2c_client *client, pm_message_t mesg)
+#ifdef CONFIG_PM_SLEEP
+static int max6639_suspend(struct device *dev)
 {
+	struct i2c_client *client = to_i2c_client(dev);
 	int data = i2c_smbus_read_byte_data(client, MAX6639_REG_GCONFIG);
 	if (data < 0)
 		return data;
@@ -606,8 +603,9 @@ static int max6639_suspend(struct i2c_client *client, pm_message_t mesg)
 			MAX6639_REG_GCONFIG, data | MAX6639_GCONFIG_STANDBY);
 }
 
-static int max6639_resume(struct i2c_client *client)
+static int max6639_resume(struct device *dev)
 {
+	struct i2c_client *client = to_i2c_client(dev);
 	int data = i2c_smbus_read_byte_data(client, MAX6639_REG_GCONFIG);
 	if (data < 0)
 		return data;
@@ -615,6 +613,7 @@ static int max6639_resume(struct i2c_client *client)
 	return i2c_smbus_write_byte_data(client,
 			MAX6639_REG_GCONFIG, data & ~MAX6639_GCONFIG_STANDBY);
 }
+#endif /* CONFIG_PM_SLEEP */
 
 static const struct i2c_device_id max6639_id[] = {
 	{"max6639", 0},
@@ -623,33 +622,25 @@ static const struct i2c_device_id max6639_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, max6639_id);
 
+static const struct dev_pm_ops max6639_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(max6639_suspend, max6639_resume)
+};
+
 static struct i2c_driver max6639_driver = {
 	.class = I2C_CLASS_HWMON,
 	.driver = {
 		   .name = "max6639",
+		   .pm = &max6639_pm_ops,
 		   },
 	.probe = max6639_probe,
 	.remove = max6639_remove,
-	.suspend = max6639_suspend,
-	.resume = max6639_resume,
 	.id_table = max6639_id,
 	.detect = max6639_detect,
 	.address_list = normal_i2c,
 };
 
-static int __init max6639_init(void)
-{
-	return i2c_add_driver(&max6639_driver);
-}
-
-static void __exit max6639_exit(void)
-{
-	i2c_del_driver(&max6639_driver);
-}
+module_i2c_driver(max6639_driver);
 
 MODULE_AUTHOR("Roland Stigge <stigge@antcom.de>");
 MODULE_DESCRIPTION("max6639 driver");
 MODULE_LICENSE("GPL");
-
-module_init(max6639_init);
-module_exit(max6639_exit);

@@ -21,12 +21,6 @@ static char *szStates[] = {
 static void lbs_debug_init(struct lbs_private *priv);
 #endif
 
-static int open_file_generic(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
 static ssize_t write_file_dummy(struct file *file, const char __user *buf,
                                 size_t count, loff_t *ppos)
 {
@@ -489,7 +483,7 @@ static ssize_t lbs_rdmac_write(struct file *file,
 		res = -EFAULT;
 		goto out_unlock;
 	}
-	priv->mac_offset = simple_strtoul((char *)buf, NULL, 16);
+	priv->mac_offset = simple_strtoul(buf, NULL, 16);
 	res = count;
 out_unlock:
 	free_page(addr);
@@ -571,7 +565,7 @@ static ssize_t lbs_rdbbp_write(struct file *file,
 		res = -EFAULT;
 		goto out_unlock;
 	}
-	priv->bbp_offset = simple_strtoul((char *)buf, NULL, 16);
+	priv->bbp_offset = simple_strtoul(buf, NULL, 16);
 	res = count;
 out_unlock:
 	free_page(addr);
@@ -696,7 +690,7 @@ out_unlock:
 
 #define FOPS(fread, fwrite) { \
 	.owner = THIS_MODULE, \
-	.open = open_file_generic, \
+	.open = simple_open, \
 	.read = (fread), \
 	.write = (fwrite), \
 	.llseek = generic_file_llseek, \
@@ -962,7 +956,7 @@ static ssize_t lbs_debugfs_write(struct file *f, const char __user *buf,
 
 static const struct file_operations lbs_debug_fops = {
 	.owner = THIS_MODULE,
-	.open = open_file_generic,
+	.open = simple_open,
 	.write = lbs_debugfs_write,
 	.read = lbs_debugfs_read,
 	.llseek = default_llseek,

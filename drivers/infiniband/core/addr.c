@@ -129,7 +129,7 @@ int rdma_translate_ip(struct sockaddr *addr, struct rdma_dev_addr *dev_addr)
 		dev_put(dev);
 		break;
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 	case AF_INET6:
 		rcu_read_lock();
 		for_each_netdev_rcu(&init_net, dev) {
@@ -178,21 +178,25 @@ static void queue_req(struct addr_req *req)
 	mutex_unlock(&lock);
 }
 
-static int dst_fetch_ha(struct dst_entry *dst, struct rdma_dev_addr *addr)
+static int dst_fetch_ha(struct dst_entry *dst, struct rdma_dev_addr *dev_addr, void *daddr)
 {
 	struct neighbour *n;
 	int ret;
 
+	n = dst_neigh_lookup(dst, daddr);
+
 	rcu_read_lock();
-	n = dst_get_neighbour_noref(dst);
 	if (!n || !(n->nud_state & NUD_VALID)) {
 		if (n)
 			neigh_event_send(n, NULL);
 		ret = -ENODATA;
 	} else {
-		ret = rdma_copy_addr(addr, dst->dev, n->ha);
+		ret = rdma_copy_addr(dev_addr, dst->dev, n->ha);
 	}
 	rcu_read_unlock();
+
+	if (n)
+		neigh_release(n);
 
 	return ret;
 }
@@ -232,14 +236,14 @@ static int addr4_resolve(struct sockaddr_in *src_in,
 		goto put;
 	}
 
-	ret = dst_fetch_ha(&rt->dst, addr);
+	ret = dst_fetch_ha(&rt->dst, addr, &fl4.daddr);
 put:
 	ip_rt_put(rt);
 out:
 	return ret;
 }
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 static int addr6_resolve(struct sockaddr_in6 *src_in,
 			 struct sockaddr_in6 *dst_in,
 			 struct rdma_dev_addr *addr)
@@ -280,7 +284,7 @@ static int addr6_resolve(struct sockaddr_in6 *src_in,
 		goto put;
 	}
 
-	ret = dst_fetch_ha(dst, addr);
+	ret = dst_fetch_ha(dst, addr, &fl6.daddr);
 put:
 	dst_release(dst);
 	return ret;

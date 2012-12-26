@@ -39,7 +39,6 @@
 #include <linux/serial.h>
 #include <linux/serial_reg.h>
 #include <linux/bitops.h>
-#include <asm/system.h>
 #include <asm/io.h>
 
 #include <linux/device.h>
@@ -187,9 +186,9 @@ static void bt3c_write_wakeup(bt3c_info_t *info)
 		return;
 
 	do {
-		register unsigned int iobase = info->p_dev->resource[0]->start;
+		unsigned int iobase = info->p_dev->resource[0]->start;
 		register struct sk_buff *skb;
-		register int len;
+		int len;
 
 		if (!pcmcia_dev_present(info->p_dev))
 			break;
@@ -389,7 +388,7 @@ static irqreturn_t bt3c_interrupt(int irq, void *dev_inst)
 
 static int bt3c_hci_flush(struct hci_dev *hdev)
 {
-	bt3c_info_t *info = (bt3c_info_t *)(hdev->driver_data);
+	bt3c_info_t *info = hci_get_drvdata(hdev);
 
 	/* Drop TX queue */
 	skb_queue_purge(&(info->txq));
@@ -428,7 +427,7 @@ static int bt3c_hci_send_frame(struct sk_buff *skb)
 		return -ENODEV;
 	}
 
-	info = (bt3c_info_t *) (hdev->driver_data);
+	info = hci_get_drvdata(hdev);
 
 	switch (bt_cb(skb)->pkt_type) {
 	case HCI_COMMAND_PKT:
@@ -453,11 +452,6 @@ static int bt3c_hci_send_frame(struct sk_buff *skb)
 	spin_unlock_irqrestore(&(info->lock), flags);
 
 	return 0;
-}
-
-
-static void bt3c_hci_destruct(struct hci_dev *hdev)
-{
 }
 
 
@@ -580,17 +574,14 @@ static int bt3c_open(bt3c_info_t *info)
 	info->hdev = hdev;
 
 	hdev->bus = HCI_PCCARD;
-	hdev->driver_data = info;
+	hci_set_drvdata(hdev, info);
 	SET_HCIDEV_DEV(hdev, &info->p_dev->dev);
 
 	hdev->open     = bt3c_hci_open;
 	hdev->close    = bt3c_hci_close;
 	hdev->flush    = bt3c_hci_flush;
 	hdev->send     = bt3c_hci_send_frame;
-	hdev->destruct = bt3c_hci_destruct;
 	hdev->ioctl    = bt3c_hci_ioctl;
-
-	hdev->owner = THIS_MODULE;
 
 	/* Load firmware */
 	err = request_firmware(&firmware, "BT3CPCC.bin", &info->p_dev->dev);
@@ -673,7 +664,7 @@ static int bt3c_check_config(struct pcmcia_device *p_dev, void *priv_data)
 {
 	int *try = priv_data;
 
-	if (try == 0)
+	if (!try)
 		p_dev->io_lines = 16;
 
 	if ((p_dev->resource[0]->end != 8) || (p_dev->resource[0]->start == 0))

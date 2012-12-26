@@ -22,7 +22,7 @@
 
 /*
  * mt9m001 i2c address 0x5d
- * The platform has to define ctruct i2c_board_info objects and link to them
+ * The platform has to define struct i2c_board_info objects and link to them
  * from struct soc_camera_link
  */
 
@@ -730,18 +730,7 @@ static struct i2c_driver mt9m001_i2c_driver = {
 	.id_table	= mt9m001_id,
 };
 
-static int __init mt9m001_mod_init(void)
-{
-	return i2c_add_driver(&mt9m001_i2c_driver);
-}
-
-static void __exit mt9m001_mod_exit(void)
-{
-	i2c_del_driver(&mt9m001_i2c_driver);
-}
-
-module_init(mt9m001_mod_init);
-module_exit(mt9m001_mod_exit);
+module_i2c_driver(mt9m001_i2c_driver);
 
 MODULE_DESCRIPTION("Micron MT9M001 Camera driver");
 MODULE_AUTHOR("Guennadi Liakhovetski <kernel@pengutronix.de>");

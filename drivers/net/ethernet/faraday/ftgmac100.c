@@ -479,9 +479,14 @@ static bool ftgmac100_rx_packet(struct ftgmac100 *priv, int *processed)
 		rxdes = ftgmac100_current_rxdes(priv);
 	} while (!done);
 
-	if (skb->len <= 64)
+	/* Small frames are copied into linear part of skb to free one page */
+	if (skb->len <= 128) {
 		skb->truesize -= PAGE_SIZE;
-	__pskb_pull_tail(skb, min(skb->len, 64U));
+		__pskb_pull_tail(skb, skb->len);
+	} else {
+		/* We pull the minimum amount into linear part */
+		__pskb_pull_tail(skb, ETH_HLEN);
+	}
 	skb->protocol = eth_type_trans(skb, netdev);
 
 	netdev->stats.rx_packets++;
@@ -1289,7 +1294,7 @@ static int ftgmac100_probe(struct platform_device *pdev)
 	netdev_info(netdev, "irq %d, mapped at %p\n", priv->irq, priv->base);
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
-		random_ether_addr(netdev->dev_addr);
+		eth_hw_addr_random(netdev);
 		netdev_info(netdev, "generated random MAC address %pM\n",
 			    netdev->dev_addr);
 	}

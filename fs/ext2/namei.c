@@ -41,8 +41,8 @@ static inline int ext2_add_nondir(struct dentry *dentry, struct inode *inode)
 {
 	int err = ext2_add_link(dentry, inode);
 	if (!err) {
-		d_instantiate(dentry, inode);
 		unlock_new_inode(inode);
+		d_instantiate(dentry, inode);
 		return 0;
 	}
 	inode_dec_link_count(inode);
@@ -55,7 +55,7 @@ static inline int ext2_add_nondir(struct dentry *dentry, struct inode *inode)
  * Methods themselves.
  */
 
-static struct dentry *ext2_lookup(struct inode * dir, struct dentry *dentry, struct nameidata *nd)
+static struct dentry *ext2_lookup(struct inode * dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode * inode;
 	ino_t ino;
@@ -79,7 +79,7 @@ static struct dentry *ext2_lookup(struct inode * dir, struct dentry *dentry, str
 
 struct dentry *ext2_get_parent(struct dentry *child)
 {
-	struct qstr dotdot = {.name = "..", .len = 2};
+	struct qstr dotdot = QSTR_INIT("..", 2);
 	unsigned long ino = ext2_inode_by_name(child->d_inode, &dotdot);
 	if (!ino)
 		return ERR_PTR(-ENOENT);
@@ -94,7 +94,7 @@ struct dentry *ext2_get_parent(struct dentry *child)
  * If the create succeeds, we fill in the inode information
  * with d_instantiate(). 
  */
-static int ext2_create (struct inode * dir, struct dentry * dentry, umode_t mode, struct nameidata *nd)
+static int ext2_create (struct inode * dir, struct dentry * dentry, umode_t mode, bool excl)
 {
 	struct inode *inode;
 
@@ -195,9 +195,6 @@ static int ext2_link (struct dentry * old_dentry, struct inode * dir,
 	struct inode *inode = old_dentry->d_inode;
 	int err;
 
-	if (inode->i_nlink >= EXT2_LINK_MAX)
-		return -EMLINK;
-
 	dquot_initialize(dir);
 
 	inode->i_ctime = CURRENT_TIME_SEC;
@@ -217,10 +214,7 @@ static int ext2_link (struct dentry * old_dentry, struct inode * dir,
 static int ext2_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 {
 	struct inode * inode;
-	int err = -EMLINK;
-
-	if (dir->i_nlink >= EXT2_LINK_MAX)
-		goto out;
+	int err;
 
 	dquot_initialize(dir);
 
@@ -248,8 +242,8 @@ static int ext2_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 	if (err)
 		goto out_fail;
 
-	d_instantiate(dentry, inode);
 	unlock_new_inode(inode);
+	d_instantiate(dentry, inode);
 out:
 	return err;
 
@@ -346,11 +340,6 @@ static int ext2_rename (struct inode * old_dir, struct dentry * old_dentry,
 			drop_nlink(new_inode);
 		inode_dec_link_count(new_inode);
 	} else {
-		if (dir_de) {
-			err = -EMLINK;
-			if (new_dir->i_nlink >= EXT2_LINK_MAX)
-				goto out_dir;
-		}
 		err = ext2_add_link(new_dentry, old_inode);
 		if (err)
 			goto out_dir;

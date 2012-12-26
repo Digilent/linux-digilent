@@ -23,6 +23,8 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/smsc911x.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 
 #include <mach/common.h>
 #include <mach/hardware.h>
@@ -133,8 +135,7 @@ static struct resource ard_smsc911x_resources[] = {
 		.flags = IORESOURCE_MEM,
 	},
 	{
-		.start =  IMX_GPIO_TO_IRQ(ARD_ETHERNET_INT_B),
-		.end =  IMX_GPIO_TO_IRQ(ARD_ETHERNET_INT_B),
+		/* irq number is run-time assigned */
 		.flags = IORESOURCE_IRQ,
 	},
 };
@@ -214,6 +215,11 @@ static int weim_cs_config(void)
 	return 0;
 }
 
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+};
+
 void __init imx53_ard_common_init(void)
 {
 	mxc_iomux_v3_setup_multiple_pads(mx53_ard_pads,
@@ -232,10 +238,13 @@ static void __init mx53_ard_board_init(void)
 
 	imx53_ard_common_init();
 	mx53_ard_io_init();
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+	ard_smsc911x_resources[1].start = gpio_to_irq(ARD_ETHERNET_INT_B);
+	ard_smsc911x_resources[1].end = gpio_to_irq(ARD_ETHERNET_INT_B);
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	imx53_add_sdhci_esdhc_imx(0, &mx53_ard_sd1_data);
-	imx53_add_imx2_wdt(0, NULL);
+	imx53_add_imx2_wdt(0);
 	imx53_add_imx_i2c(1, &mx53_ard_i2c2_data);
 	imx53_add_imx_i2c(2, &mx53_ard_i2c3_data);
 	imx_add_gpio_keys(&ard_button_data);
@@ -258,5 +267,6 @@ MACHINE_START(MX53_ARD, "Freescale MX53 ARD Board")
 	.handle_irq = imx53_handle_irq,
 	.timer = &mx53_ard_timer,
 	.init_machine = mx53_ard_board_init,
+	.init_late	= imx53_init_late,
 	.restart	= mxc_restart,
 MACHINE_END

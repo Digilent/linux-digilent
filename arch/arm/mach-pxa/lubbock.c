@@ -223,6 +223,7 @@ static struct resource sa1111_resources[] = {
 
 static struct sa1111_platform_data sa1111_info = {
 	.irq_base	= LUBBOCK_SA1111_IRQ_BASE,
+	.disable_devs	= SA1111_DEVID_SAC,
 };
 
 static struct platform_device sa1111_device = {
@@ -455,7 +456,7 @@ static int lubbock_mci_init(struct device *dev,
 	init_timer(&mmc_timer);
 	mmc_timer.data = (unsigned long) data;
 	return request_irq(LUBBOCK_SD_IRQ, lubbock_detect_int,
-			IRQF_SAMPLE_RANDOM, "lubbock-sd-detect", data);
+			   0, "lubbock-sd-detect", data);
 }
 
 static int lubbock_mci_get_ro(struct device *dev)

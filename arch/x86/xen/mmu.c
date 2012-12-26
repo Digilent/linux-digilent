@@ -308,8 +308,20 @@ static bool xen_batched_set_pte(pte_t *ptep, pte_t pteval)
 
 static inline void __xen_set_pte(pte_t *ptep, pte_t pteval)
 {
-	if (!xen_batched_set_pte(ptep, pteval))
-		native_set_pte(ptep, pteval);
+	if (!xen_batched_set_pte(ptep, pteval)) {
+		/*
+		 * Could call native_set_pte() here and trap and
+		 * emulate the PTE write but with 32-bit guests this
+		 * needs two traps (one for each of the two 32-bit
+		 * words in the PTE) so do one hypercall directly
+		 * instead.
+		 */
+		struct mmu_update u;
+
+		u.ptr = virt_to_machine(ptep).maddr | MMU_NORMAL_PT_UPDATE;
+		u.val = pte_val_ma(pteval);
+		HYPERVISOR_mmu_update(&u, 1, NULL, DOMID_SELF);
+	}
 }
 
 static void xen_set_pte(pte_t *ptep, pte_t pteval)
@@ -353,8 +365,13 @@ static pteval_t pte_mfn_to_pfn(pteval_t val)
 {
 	if (val & _PAGE_PRESENT) {
 		unsigned long mfn = (val & PTE_PFN_MASK) >> PAGE_SHIFT;
+		unsigned long pfn = mfn_to_pfn(mfn);
+
 		pteval_t flags = val & PTE_FLAGS_MASK;
-		val = ((pteval_t)mfn_to_pfn(mfn) << PAGE_SHIFT) | flags;
+		if (unlikely(pfn == ~0))
+			val = flags & ~_PAGE_PRESENT;
+		else
+			val = ((pteval_t)pfn << PAGE_SHIFT) | flags;
 	}
 
 	return val;
@@ -1071,14 +1088,14 @@ static void drop_other_mm_ref(void *info)
 	struct mm_struct *mm = info;
 	struct mm_struct *active_mm;
 
-	active_mm = percpu_read(cpu_tlbstate.active_mm);
+	active_mm = this_cpu_read(cpu_tlbstate.active_mm);
 
-	if (active_mm == mm && percpu_read(cpu_tlbstate.state) != TLBSTATE_OK)
+	if (active_mm == mm && this_cpu_read(cpu_tlbstate.state) != TLBSTATE_OK)
 		leave_mm(smp_processor_id());
 
 	/* If this cpu still has a stale cr3 reference, then make sure
 	   it has been flushed. */
-	if (percpu_read(xen_current_cr3) == __pa(mm->pgd))
+	if (this_cpu_read(xen_current_cr3) == __pa(mm->pgd))
 		load_cr3(swapper_pg_dir);
 }
 
@@ -1185,17 +1202,17 @@ static void __init xen_pagetable_setup_done(pgd_t *base)
 
 static void xen_write_cr2(unsigned long cr2)
 {
-	percpu_read(xen_vcpu)->arch.cr2 = cr2;
+	this_cpu_read(xen_vcpu)->arch.cr2 = cr2;
 }
 
 static unsigned long xen_read_cr2(void)
 {
-	return percpu_read(xen_vcpu)->arch.cr2;
+	return this_cpu_read(xen_vcpu)->arch.cr2;
 }
 
 unsigned long xen_read_cr2_direct(void)
 {
-	return percpu_read(xen_vcpu_info.arch.cr2);
+	return this_cpu_read(xen_vcpu_info.arch.cr2);
 }
 
 static void xen_flush_tlb(void)
@@ -1239,7 +1256,8 @@ static void xen_flush_tlb_single(unsigned long addr)
 }
 
 static void xen_flush_tlb_others(const struct cpumask *cpus,
-				 struct mm_struct *mm, unsigned long va)
+				 struct mm_struct *mm, unsigned long start,
+				 unsigned long end)
 {
 	struct {
 		struct mmuext_op op;
@@ -1251,7 +1269,7 @@ static void xen_flush_tlb_others(const struct cpumask *cpus,
 	} *args;
 	struct multicall_space mcs;
 
-	trace_xen_mmu_flush_tlb_others(cpus, mm, va);
+	trace_xen_mmu_flush_tlb_others(cpus, mm, start, end);
 
 	if (cpumask_empty(cpus))
 		return;		/* nothing to do */
@@ -1264,11 +1282,10 @@ static void xen_flush_tlb_others(const struct cpumask *cpus,
 	cpumask_and(to_cpumask(args->mask), cpus, cpu_online_mask);
 	cpumask_clear_cpu(smp_processor_id(), to_cpumask(args->mask));
 
-	if (va == TLB_FLUSH_ALL) {
-		args->op.cmd = MMUEXT_TLB_FLUSH_MULTI;
-	} else {
+	args->op.cmd = MMUEXT_TLB_FLUSH_MULTI;
+	if (end != TLB_FLUSH_ALL && (end - start) <= PAGE_SIZE) {
 		args->op.cmd = MMUEXT_INVLPG_MULTI;
-		args->op.arg1.linear_addr = va;
+		args->op.arg1.linear_addr = start;
 	}
 
 	MULTI_mmuext_op(mcs.mc, &args->op, 1, NULL, DOMID_SELF);
@@ -1278,12 +1295,12 @@ static void xen_flush_tlb_others(const struct cpumask *cpus,
 
 static unsigned long xen_read_cr3(void)
 {
-	return percpu_read(xen_cr3);
+	return this_cpu_read(xen_cr3);
 }
 
 static void set_current_cr3(void *v)
 {
-	percpu_write(xen_current_cr3, (unsigned long)v);
+	this_cpu_write(xen_current_cr3, (unsigned long)v);
 }
 
 static void __xen_write_cr3(bool kernel, unsigned long cr3)
@@ -1306,7 +1323,7 @@ static void __xen_write_cr3(bool kernel, unsigned long cr3)
 	xen_extend_mmuext_op(&op);
 
 	if (kernel) {
-		percpu_write(xen_cr3, cr3);
+		this_cpu_write(xen_cr3, cr3);
 
 		/* Update xen_current_cr3 once the batch has actually
 		   been submitted. */
@@ -1322,7 +1339,7 @@ static void xen_write_cr3(unsigned long cr3)
 
 	/* Update while interrupts are disabled, so its atomic with
 	   respect to ipis */
-	percpu_write(xen_cr3, cr3);
+	this_cpu_write(xen_cr3, cr3);
 
 	__xen_write_cr3(true, cr3);
 
@@ -1411,13 +1428,28 @@ static pte_t __init mask_rw_pte(pte_t *ptep, pte_t pte)
 }
 #endif /* CONFIG_X86_64 */
 
-/* Init-time set_pte while constructing initial pagetables, which
-   doesn't allow RO pagetable pages to be remapped RW */
+/*
+ * Init-time set_pte while constructing initial pagetables, which
+ * doesn't allow RO page table pages to be remapped RW.
+ *
+ * If there is no MFN for this PFN then this page is initially
+ * ballooned out so clear the PTE (as in decrease_reservation() in
+ * drivers/xen/balloon.c).
+ *
+ * Many of these PTE updates are done on unpinned and writable pages
+ * and doing a hypercall for these is unnecessary and expensive.  At
+ * this point it is not possible to tell if a page is pinned or not,
+ * so always write the PTE directly and rely on Xen trapping and
+ * emulating any updates as necessary.
+ */
 static void __init xen_set_pte_init(pte_t *ptep, pte_t pte)
 {
-	pte = mask_rw_pte(ptep, pte);
+	if (pte_mfn(pte) != INVALID_P2M_ENTRY)
+		pte = mask_rw_pte(ptep, pte);
+	else
+		pte = __pte_ma(0);
 
-	xen_set_pte(ptep, pte);
+	native_set_pte(ptep, pte);
 }
 
 static void pin_pagetable_pfn(unsigned cmd, unsigned long pfn)
@@ -1926,29 +1958,6 @@ static void xen_set_fixmap(unsigned idx, phys_addr_t phys, pgprot_t prot)
 		set_pte_vaddr_pud(level3_user_vsyscall, vaddr, pte);
 	}
 #endif
-}
-
-void __init xen_ident_map_ISA(void)
-{
-	unsigned long pa;
-
-	/*
-	 * If we're dom0, then linear map the ISA machine addresses into
-	 * the kernel's address space.
-	 */
-	if (!xen_initial_domain())
-		return;
-
-	xen_raw_printk("Xen: setup ISA identity maps\n");
-
-	for (pa = ISA_START_ADDRESS; pa < ISA_END_ADDRESS; pa += PAGE_SIZE) {
-		pte_t pte = mfn_pte(PFN_DOWN(pa), PAGE_KERNEL_IO);
-
-		if (HYPERVISOR_update_va_mapping(PAGE_OFFSET + pa, pte, 0))
-			BUG();
-	}
-
-	xen_flush_tlb();
 }
 
 static void __init xen_post_allocator_init(void)

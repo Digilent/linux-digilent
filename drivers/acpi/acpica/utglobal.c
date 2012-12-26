@@ -140,6 +140,7 @@ const struct acpi_predefined_names acpi_gbl_pre_defined_names[] = {
 	{NULL, ACPI_TYPE_ANY, NULL}
 };
 
+#if (!ACPI_REDUCED_HARDWARE)
 /******************************************************************************
  *
  * Event and Hardware globals
@@ -236,6 +237,7 @@ struct acpi_fixed_event_info acpi_gbl_fixed_event_info[ACPI_NUM_FIXED_EVENTS] = 
 					ACPI_BITMASK_RT_CLOCK_STATUS,
 					ACPI_BITMASK_RT_CLOCK_ENABLE},
 };
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 /*******************************************************************************
  *
@@ -245,8 +247,9 @@ struct acpi_fixed_event_info acpi_gbl_fixed_event_info[ACPI_NUM_FIXED_EVENTS] = 
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Init library globals.  All globals that require specific
- *              initialization should be initialized here!
+ * DESCRIPTION: Initialize ACPICA globals. All globals that require specific
+ *              initialization should be initialized here. This allows for
+ *              a warm restart.
  *
  ******************************************************************************/
 
@@ -282,9 +285,11 @@ acpi_status acpi_ut_init_globals(void)
 		acpi_gbl_owner_id_mask[i] = 0;
 	}
 
-	/* Last owner_iD is never valid */
+	/* Last owner_ID is never valid */
 
 	acpi_gbl_owner_id_mask[ACPI_NUM_OWNERID_MASKS - 1] = 0x80000000;
+
+#if (!ACPI_REDUCED_HARDWARE)
 
 	/* GPE support */
 
@@ -294,15 +299,18 @@ acpi_status acpi_ut_init_globals(void)
 	acpi_current_gpe_count = 0;
 	acpi_gbl_all_gpes_initialized = FALSE;
 
+	acpi_gbl_global_event_handler = NULL;
+
+#endif				/* !ACPI_REDUCED_HARDWARE */
+
 	/* Global handlers */
 
-	acpi_gbl_system_notify.handler = NULL;
-	acpi_gbl_device_notify.handler = NULL;
+	acpi_gbl_global_notify[0].handler = NULL;
+	acpi_gbl_global_notify[1].handler = NULL;
 	acpi_gbl_exception_handler = NULL;
 	acpi_gbl_init_handler = NULL;
 	acpi_gbl_table_handler = NULL;
 	acpi_gbl_interface_handler = NULL;
-	acpi_gbl_global_event_handler = NULL;
 
 	/* Global Lock support */
 

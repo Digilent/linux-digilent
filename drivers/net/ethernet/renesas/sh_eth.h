@@ -1,8 +1,8 @@
 /*
  *  SuperH Ethernet device driver
  *
- *  Copyright (C) 2006-2008 Nobuhiro Iwamatsu
- *  Copyright (C) 2008-2011 Renesas Solutions Corp.
+ *  Copyright (C) 2006-2012 Nobuhiro Iwamatsu
+ *  Copyright (C) 2008-2012 Renesas Solutions Corp.
  *
  *  This program is free software; you can redistribute it and/or modify it
  *  under the terms and conditions of the GNU General Public License,
@@ -27,8 +27,14 @@
 #define TX_TIMEOUT	(5*HZ)
 #define TX_RING_SIZE	64	/* Tx ring size */
 #define RX_RING_SIZE	64	/* Rx ring size */
+#define TX_RING_MIN	64
+#define RX_RING_MIN	64
+#define TX_RING_MAX	1024
+#define RX_RING_MAX	1024
 #define ETHERSMALL		60
 #define PKT_BUF_SZ		1538
+#define SH_ETH_TSU_TIMEOUT_MS	500
+#define SH_ETH_TSU_CAM_ENTRIES	32
 
 enum {
 	/* E-DMAC registers */
@@ -96,6 +102,8 @@ enum {
 	CEECR,
 	MAFCR,
 	RTRATE,
+	CSMR,
+	RMII_MII,
 
 	/* TSU Absolute address */
 	ARSTR,
@@ -170,6 +178,7 @@ static const u16 sh_eth_offset_gigabit[SH_ETH_MAX_REGISTER_OFFSET] = {
 	[RMCR]	= 0x0458,
 	[RPADIR]	= 0x0460,
 	[FCFTR]	= 0x0468,
+	[CSMR] = 0x04E4,
 
 	[ECMR]	= 0x0500,
 	[ECSR]	= 0x0510,
@@ -198,6 +207,7 @@ static const u16 sh_eth_offset_gigabit[SH_ETH_MAX_REGISTER_OFFSET] = {
 	[CERCR]	= 0x0768,
 	[CEECR]	= 0x0770,
 	[MAFCR]	= 0x0778,
+	[RMII_MII] =  0x0790,
 
 	[ARSTR]	= 0x0000,
 	[TSU_CTRST]	= 0x0004,
@@ -366,7 +376,7 @@ static const u16 sh_eth_offset_fast_sh3_sh2[SH_ETH_MAX_REGISTER_OFFSET] = {
 };
 
 /* Driver's parameters */
-#if defined(CONFIG_CPU_SH4)
+#if defined(CONFIG_CPU_SH4) || defined(CONFIG_ARCH_SHMOBILE)
 #define SH4_SKB_RX_ALIGN	32
 #else
 #define SH2_SH3_SKB_RX_ALIGN	2
@@ -375,7 +385,8 @@ static const u16 sh_eth_offset_fast_sh3_sh2[SH_ETH_MAX_REGISTER_OFFSET] = {
 /*
  * Register's bits
  */
-#ifdef CONFIG_CPU_SUBTYPE_SH7763
+#if defined(CONFIG_CPU_SUBTYPE_SH7734) || defined(CONFIG_CPU_SUBTYPE_SH7763) ||\
+    defined(CONFIG_ARCH_R8A7740)
 /* EDSR */
 enum EDSR_BIT {
 	EDSR_ENT = 0x01, EDSR_ENR = 0x02,
@@ -578,71 +589,6 @@ enum RPADIR_BIT {
 /* FDR */
 #define DEFAULT_FDR_INIT	0x00000707
 
-enum phy_offsets {
-	PHY_CTRL = 0, PHY_STAT = 1, PHY_IDT1 = 2, PHY_IDT2 = 3,
-	PHY_ANA = 4, PHY_ANL = 5, PHY_ANE = 6,
-	PHY_16 = 16,
-};
-
-/* PHY_CTRL */
-enum PHY_CTRL_BIT {
-	PHY_C_RESET = 0x8000, PHY_C_LOOPBK = 0x4000, PHY_C_SPEEDSL = 0x2000,
-	PHY_C_ANEGEN = 0x1000, PHY_C_PWRDN = 0x0800, PHY_C_ISO = 0x0400,
-	PHY_C_RANEG = 0x0200, PHY_C_DUPLEX = 0x0100, PHY_C_COLT = 0x0080,
-};
-#define DM9161_PHY_C_ANEGEN 0	/* auto nego special */
-
-/* PHY_STAT */
-enum PHY_STAT_BIT {
-	PHY_S_100T4 = 0x8000, PHY_S_100X_F = 0x4000, PHY_S_100X_H = 0x2000,
-	PHY_S_10T_F = 0x1000, PHY_S_10T_H = 0x0800, PHY_S_ANEGC = 0x0020,
-	PHY_S_RFAULT = 0x0010, PHY_S_ANEGA = 0x0008, PHY_S_LINK = 0x0004,
-	PHY_S_JAB = 0x0002, PHY_S_EXTD = 0x0001,
-};
-
-/* PHY_ANA */
-enum PHY_ANA_BIT {
-	PHY_A_NP = 0x8000, PHY_A_ACK = 0x4000, PHY_A_RF = 0x2000,
-	PHY_A_FCS = 0x0400, PHY_A_T4 = 0x0200, PHY_A_FDX = 0x0100,
-	PHY_A_HDX = 0x0080, PHY_A_10FDX = 0x0040, PHY_A_10HDX = 0x0020,
-	PHY_A_SEL = 0x001e,
-};
-/* PHY_ANL */
-enum PHY_ANL_BIT {
-	PHY_L_NP = 0x8000, PHY_L_ACK = 0x4000, PHY_L_RF = 0x2000,
-	PHY_L_FCS = 0x0400, PHY_L_T4 = 0x0200, PHY_L_FDX = 0x0100,
-	PHY_L_HDX = 0x0080, PHY_L_10FDX = 0x0040, PHY_L_10HDX = 0x0020,
-	PHY_L_SEL = 0x001f,
-};
-
-/* PHY_ANE */
-enum PHY_ANE_BIT {
-	PHY_E_PDF = 0x0010, PHY_E_LPNPA = 0x0008, PHY_E_NPA = 0x0004,
-	PHY_E_PRX = 0x0002, PHY_E_LPANEGA = 0x0001,
-};
-
-/* DM9161 */
-enum PHY_16_BIT {
-	PHY_16_BP4B45 = 0x8000, PHY_16_BPSCR = 0x4000, PHY_16_BPALIGN = 0x2000,
-	PHY_16_BP_ADPOK = 0x1000, PHY_16_Repeatmode = 0x0800,
-	PHY_16_TXselect = 0x0400,
-	PHY_16_Rsvd = 0x0200, PHY_16_RMIIEnable = 0x0100,
-	PHY_16_Force100LNK = 0x0080,
-	PHY_16_APDLED_CTL = 0x0040, PHY_16_COLLED_CTL = 0x0020,
-	PHY_16_RPDCTR_EN = 0x0010,
-	PHY_16_ResetStMch = 0x0008, PHY_16_PreamSupr = 0x0004,
-	PHY_16_Sleepmode = 0x0002,
-	PHY_16_RemoteLoopOut = 0x0001,
-};
-
-#define POST_RX		0x08
-#define POST_FW		0x04
-#define POST0_RX	(POST_RX)
-#define POST0_FW	(POST_FW)
-#define POST1_RX	(POST_RX >> 2)
-#define POST1_FW	(POST_FW >> 2)
-#define POST_ALL	(POST0_RX | POST0_FW | POST1_RX | POST1_FW)
-
 /* ARSTR */
 enum ARSTR_BIT { ARSTR_ARSTR = 0x00000001, };
 
@@ -677,13 +623,17 @@ enum TSU_FWSLC_BIT {
 	TSU_FWSLC_CAMSEL11 = 0x0002, TSU_FWSLC_CAMSEL10 = 0x0001,
 };
 
+/* TSU_VTAGn */
+#define TSU_VTAG_ENABLE		0x80000000
+#define TSU_VTAG_VID_MASK	0x00000fff
+
 /*
  * The sh ether Tx buffer descriptors.
  * This structure should be 20 bytes.
  */
 struct sh_eth_txdesc {
 	u32 status;		/* TD0 */
-#if defined(CONFIG_CPU_LITTLE_ENDIAN)
+#if defined(__LITTLE_ENDIAN)
 	u16 pad0;		/* TD1 */
 	u16 buffer_length;	/* TD1 */
 #else
@@ -700,7 +650,7 @@ struct sh_eth_txdesc {
  */
 struct sh_eth_rxdesc {
 	u32 status;		/* RD0 */
-#if defined(CONFIG_CPU_LITTLE_ENDIAN)
+#if defined(__LITTLE_ENDIAN)
 	u16 frame_length;	/* RD1 */
 	u16 buffer_length;	/* RD1 */
 #else
@@ -745,6 +695,8 @@ struct sh_eth_cpu_data {
 	unsigned rpadir:1;		/* E-DMAC have RPADIR */
 	unsigned no_trimd:1;		/* E-DMAC DO NOT have TRIMD */
 	unsigned no_ade:1;	/* E-DMAC DO NOT have ADE bit in EESR */
+	unsigned hw_crc:1;	/* E-DMAC have CSMR */
+	unsigned select_mii:1;	/* EtherC have RMII_MII (MII select register) */
 };
 
 struct sh_eth_private {
@@ -753,14 +705,14 @@ struct sh_eth_private {
 	const u16 *reg_offset;
 	void __iomem *addr;
 	void __iomem *tsu_addr;
+	u32 num_rx_ring;
+	u32 num_tx_ring;
 	dma_addr_t rx_desc_dma;
 	dma_addr_t tx_desc_dma;
 	struct sh_eth_rxdesc *rx_ring;
 	struct sh_eth_txdesc *tx_ring;
 	struct sk_buff **rx_skbuff;
 	struct sk_buff **tx_skbuff;
-	struct net_device_stats stats;
-	struct timer_list timer;
 	spinlock_t lock;
 	u32 cur_rx, dirty_rx;	/* Producer/consumer ring indices */
 	u32 cur_tx, dirty_tx;
@@ -775,10 +727,8 @@ struct sh_eth_private {
 	int msg_enable;
 	int speed;
 	int duplex;
-	u32 rx_int_var, tx_int_var;	/* interrupt control variables */
-	char post_rx;		/* POST receive */
-	char post_fw;		/* POST forward */
-	struct net_device_stats tsu_stats;	/* TSU forward status */
+	int port;		/* for TSU */
+	int vlan_num_ids;	/* for VLAN tag filter */
 
 	unsigned no_ether_link:1;
 	unsigned ether_link_active_low:1;
@@ -810,6 +760,12 @@ static inline unsigned long sh_eth_read(struct net_device *ndev,
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 
 	return ioread32(mdp->addr + mdp->reg_offset[enum_index]);
+}
+
+static inline void *sh_eth_tsu_get_offset(struct sh_eth_private *mdp,
+					  int enum_index)
+{
+	return mdp->tsu_addr + mdp->reg_offset[enum_index];
 }
 
 static inline void sh_eth_tsu_write(struct sh_eth_private *mdp,

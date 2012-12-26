@@ -7,7 +7,7 @@
     Thanks to Pierfrancesco 'qM2' Passerini.
 
     Generalised for soundcards based on DT-0196 and ALS-007 chips
-    by Jonathan Woithe <jwoithe@physics.adelaide.edu.au>: June 2002.
+    by Jonathan Woithe <jwoithe@just42.net>: June 2002.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -233,7 +233,7 @@ static int __devinit snd_card_als100_probe(int dev,
 			irq[dev], dma8[dev], dma16[dev]);
 	}
 
-	if ((error = snd_sb16dsp_pcm(chip, 0, NULL)) < 0) {
+	if ((error = snd_sb16dsp_pcm(chip, 0, &chip->pcm)) < 0) {
 		snd_card_free(card);
 		return error;
 	}

@@ -22,6 +22,9 @@
   Author: Giuseppe Cavallaro <peppe.cavallaro@st.com>
 *******************************************************************************/
 
+#ifndef __DWMAC_DMA_H__
+#define __DWMAC_DMA_H__
+
 /* DMA CRS Control and Status Register Mapping */
 #define DMA_BUS_MODE		0x00001000	/* Bus Mode */
 #define DMA_XMT_POLL_DEMAND	0x00001004	/* Transmit Poll Demand */
@@ -32,6 +35,7 @@
 #define DMA_CONTROL		0x00001018	/* Ctrl (Operational Mode) */
 #define DMA_INTR_ENA		0x0000101c	/* Interrupt Enable */
 #define DMA_MISSED_FRAME_CTR	0x00001020	/* Missed Frame Counter */
+#define DMA_AXI_BUS_MODE       0x00001028      /* AXI Bus Mode */
 #define DMA_CUR_TX_BUF_ADDR	0x00001050	/* Current Host Tx Buffer */
 #define DMA_CUR_RX_BUF_ADDR	0x00001054	/* Current Host Rx Buffer */
 #define DMA_HW_FEATURE		0x00001058	/* HW Feature Register */
@@ -69,6 +73,7 @@
 #define DMA_INTR_DEFAULT_MASK	(DMA_INTR_NORMAL | DMA_INTR_ABNORMAL)
 
 /* DMA Status register defines */
+#define DMA_STATUS_GLPII	0x40000000	/* GMAC LPI interrupt */
 #define DMA_STATUS_GPI		0x10000000	/* PMT interrupt */
 #define DMA_STATUS_GMI		0x08000000	/* MMC interrupt */
 #define DMA_STATUS_GLI		0x04000000	/* GMAC Line interface int */
@@ -107,3 +112,5 @@ extern void dwmac_dma_start_rx(void __iomem *ioaddr);
 extern void dwmac_dma_stop_rx(void __iomem *ioaddr);
 extern int dwmac_dma_interrupt(void __iomem *ioaddr,
 				struct stmmac_extra_stats *x);
+
+#endif /* __DWMAC_DMA_H__ */

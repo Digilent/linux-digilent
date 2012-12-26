@@ -23,6 +23,7 @@
 #include <linux/mutex.h>
 #include <linux/pm.h>
 #include <linux/atomic.h>
+#include <linux/ratelimit.h>
 #include <asm/device.h>
 
 struct device;
@@ -35,6 +36,7 @@ struct subsys_private;
 struct bus_type;
 struct device_node;
 struct iommu_ops;
+struct iommu_group;
 
 struct bus_attribute {
 	struct attribute	attr;
@@ -238,8 +240,6 @@ struct device_driver {
 extern int __must_check driver_register(struct device_driver *drv);
 extern void driver_unregister(struct device_driver *drv);
 
-extern struct device_driver *get_driver(struct device_driver *drv);
-extern void put_driver(struct device_driver *drv);
 extern struct device_driver *driver_find(const char *name,
 					 struct bus_type *bus);
 extern int driver_probe_done(void);
@@ -263,10 +263,6 @@ extern int __must_check driver_create_file(struct device_driver *driver,
 					const struct driver_attribute *attr);
 extern void driver_remove_file(struct device_driver *driver,
 			       const struct driver_attribute *attr);
-
-extern int __must_check driver_add_kobj(struct device_driver *drv,
-					struct kobject *kobj,
-					const char *fmt, ...);
 
 extern int __must_check driver_for_each_device(struct device_driver *drv,
 					       struct device *start,
@@ -508,7 +504,10 @@ ssize_t device_store_int(struct device *dev, struct device_attribute *attr,
 		{ __ATTR(_name, _mode, device_show_ulong, device_store_ulong), &(_var) }
 #define DEVICE_INT_ATTR(_name, _mode, _var) \
 	struct dev_ext_attribute dev_attr_##_name = \
-		{ __ATTR(_name, _mode, device_show_ulong, device_store_ulong), &(_var) }
+		{ __ATTR(_name, _mode, device_show_int, device_store_int), &(_var) }
+#define DEVICE_ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store) \
+	struct device_attribute dev_attr_##_name =		\
+		__ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store)
 
 extern int device_create_file(struct device *device,
 			      const struct device_attribute *entry);
@@ -546,6 +545,8 @@ extern void *devres_get(struct device *dev, void *new_res,
 extern void *devres_remove(struct device *dev, dr_release_t release,
 			   dr_match_t match, void *match_data);
 extern int devres_destroy(struct device *dev, dr_release_t release,
+			  dr_match_t match, void *match_data);
+extern int devres_release(struct device *dev, dr_release_t release,
 			  dr_match_t match, void *match_data);
 
 /* devres group */
@@ -587,6 +588,10 @@ struct device_dma_parameters {
  * @mutex:	Mutex to synchronize calls to its driver.
  * @bus:	Type of bus device is on.
  * @driver:	Which driver has allocated this
+ * @deferred_probe: entry in deferred_probe_list which is used to retry the
+ * 		binding of drivers which were unable to get all the resources
+ * 		needed by the device; typically because it depends on another
+ * 		driver getting probed first.
  * @platform_data: Platform data specific to the device.
  * 		Example: For devices on custom boards, as typical of embedded
  * 		and SOC based hardware, Linux often uses platform_data to point
@@ -646,6 +651,7 @@ struct device {
 	struct bus_type	*bus;		/* type of bus device is on */
 	struct device_driver *driver;	/* which driver has allocated this
 					   device */
+	struct list_head	deferred_probe;
 	void		*platform_data;	/* Platform specific data, device
 					   core doesn't touch it */
 	struct dev_pm_info	power;
@@ -667,6 +673,10 @@ struct device {
 
 	struct dma_coherent_mem	*dma_mem; /* internal for coherent mem
 					     override */
+#ifdef CONFIG_CMA
+	struct cma *cma_area;		/* contiguous memory area for dma
+					   allocations */
+#endif
 	/* arch specific additions */
 	struct dev_archdata	archdata;
 
@@ -683,7 +693,13 @@ struct device {
 	const struct attribute_group **groups;	/* optional groups */
 
 	void	(*release)(struct device *dev);
+	struct iommu_group	*iommu_group;
 };
+
+static inline struct device *kobj_to_dev(struct kobject *kobj)
+{
+	return container_of(kobj, struct device, kobj);
+}
 
 /* Get the wakeup routines, which depend on struct device */
 #include <linux/pm_wakeup.h>
@@ -861,8 +877,6 @@ extern int (*platform_notify_remove)(struct device *dev);
 extern struct device *get_device(struct device *dev);
 extern void put_device(struct device *dev);
 
-extern void wait_for_device_probe(void);
-
 #ifdef CONFIG_DEVTMPFS
 extern int devtmpfs_create_node(struct device *dev);
 extern int devtmpfs_delete_node(struct device *dev);
@@ -937,6 +951,32 @@ int _dev_info(const struct device *dev, const char *fmt, ...)
 
 #endif
 
+#define dev_level_ratelimited(dev_level, dev, fmt, ...)			\
+do {									\
+	static DEFINE_RATELIMIT_STATE(_rs,				\
+				      DEFAULT_RATELIMIT_INTERVAL,	\
+				      DEFAULT_RATELIMIT_BURST);		\
+	if (__ratelimit(&_rs))						\
+		dev_level(dev, fmt, ##__VA_ARGS__);			\
+} while (0)
+
+#define dev_emerg_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_emerg, dev, fmt, ##__VA_ARGS__)
+#define dev_alert_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_alert, dev, fmt, ##__VA_ARGS__)
+#define dev_crit_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_crit, dev, fmt, ##__VA_ARGS__)
+#define dev_err_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_err, dev, fmt, ##__VA_ARGS__)
+#define dev_warn_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_warn, dev, fmt, ##__VA_ARGS__)
+#define dev_notice_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_notice, dev, fmt, ##__VA_ARGS__)
+#define dev_info_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_info, dev, fmt, ##__VA_ARGS__)
+#define dev_dbg_ratelimited(dev, fmt, ...)				\
+	dev_level_ratelimited(dev_dbg, dev, fmt, ##__VA_ARGS__)
+
 /*
  * Stupid hackaround for existing uses of non-printk uses dev_info
  *
@@ -946,14 +986,14 @@ int _dev_info(const struct device *dev, const char *fmt, ...)
 
 #define dev_info(dev, fmt, arg...) _dev_info(dev, fmt, ##arg)
 
-#if defined(DEBUG)
-#define dev_dbg(dev, format, arg...)		\
-	dev_printk(KERN_DEBUG, dev, format, ##arg)
-#elif defined(CONFIG_DYNAMIC_DEBUG)
+#if defined(CONFIG_DYNAMIC_DEBUG)
 #define dev_dbg(dev, format, ...)		     \
 do {						     \
 	dynamic_dev_dbg(dev, format, ##__VA_ARGS__); \
 } while (0)
+#elif defined(DEBUG)
+#define dev_dbg(dev, format, arg...)		\
+	dev_printk(KERN_DEBUG, dev, format, ##arg)
 #else
 #define dev_dbg(dev, format, arg...)				\
 ({								\
@@ -1007,19 +1047,20 @@ extern long sysfs_deprecated;
  * @__driver: driver name
  * @__register: register function for this driver type
  * @__unregister: unregister function for this driver type
+ * @...: Additional arguments to be passed to __register and __unregister.
  *
  * Use this macro to construct bus specific macros for registering
  * drivers, and do not use it on its own.
  */
-#define module_driver(__driver, __register, __unregister) \
+#define module_driver(__driver, __register, __unregister, ...) \
 static int __init __driver##_init(void) \
 { \
-	return __register(&(__driver)); \
+	return __register(&(__driver) , ##__VA_ARGS__); \
 } \
 module_init(__driver##_init); \
 static void __exit __driver##_exit(void) \
 { \
-	__unregister(&(__driver)); \
+	__unregister(&(__driver) , ##__VA_ARGS__); \
 } \
 module_exit(__driver##_exit);
 

@@ -1231,8 +1231,14 @@ out_free:
 	SCTP_DEBUG_PRINTK("About to exit __sctp_connect() free asoc: %p"
 			  " kaddrs: %p err: %d\n",
 			  asoc, kaddrs, err);
-	if (asoc)
+	if (asoc) {
+		/* sctp_primitive_ASSOCIATE may have added this association
+		 * To the hash table, try to unhash it, just in case, its a noop
+		 * if it wasn't hashed so we're safe
+		 */
+		sctp_unhash_established(asoc);
 		sctp_association_free(asoc);
+	}
 	return err;
 }
 
@@ -1853,7 +1859,7 @@ SCTP_STATIC int sctp_sendmsg(struct kiocb *iocb, struct sock *sk,
 	}
 
 	if (asoc->pmtu_pending)
-		sctp_assoc_pending_pmtu(asoc);
+		sctp_assoc_pending_pmtu(sk, asoc);
 
 	/* If fragmentation is disabled and the message length exceeds the
 	 * association fragmentation point, return EMSGSIZE.  The I-D
@@ -1942,8 +1948,10 @@ SCTP_STATIC int sctp_sendmsg(struct kiocb *iocb, struct sock *sk,
 	goto out_unlock;
 
 out_free:
-	if (new_asoc)
+	if (new_asoc) {
+		sctp_unhash_established(asoc);
 		sctp_association_free(asoc);
+	}
 out_unlock:
 	sctp_release_sock(sk);
 
@@ -2365,7 +2373,7 @@ static int sctp_apply_peer_addr_params(struct sctp_paddrparams *params,
 	if ((params->spp_flags & SPP_PMTUD_DISABLE) && params->spp_pathmtu) {
 		if (trans) {
 			trans->pathmtu = params->spp_pathmtu;
-			sctp_assoc_sync_pmtu(asoc);
+			sctp_assoc_sync_pmtu(sctp_opt2sk(sp), asoc);
 		} else if (asoc) {
 			asoc->pathmtu = params->spp_pathmtu;
 			sctp_frag_point(asoc, params->spp_pathmtu);
@@ -2382,7 +2390,7 @@ static int sctp_apply_peer_addr_params(struct sctp_paddrparams *params,
 				(trans->param_flags & ~SPP_PMTUD) | pmtud_change;
 			if (update) {
 				sctp_transport_pmtu(trans, sctp_opt2sk(sp));
-				sctp_assoc_sync_pmtu(asoc);
+				sctp_assoc_sync_pmtu(sctp_opt2sk(sp), asoc);
 			}
 		} else if (asoc) {
 			asoc->param_flags =
@@ -3470,6 +3478,56 @@ static int sctp_setsockopt_auto_asconf(struct sock *sk, char __user *optval,
 }
 
 
+/*
+ * SCTP_PEER_ADDR_THLDS
+ *
+ * This option allows us to alter the partially failed threshold for one or all
+ * transports in an association.  See Section 6.1 of:
+ * http://www.ietf.org/id/draft-nishida-tsvwg-sctp-failover-05.txt
+ */
+static int sctp_setsockopt_paddr_thresholds(struct sock *sk,
+					    char __user *optval,
+					    unsigned int optlen)
+{
+	struct sctp_paddrthlds val;
+	struct sctp_transport *trans;
+	struct sctp_association *asoc;
+
+	if (optlen < sizeof(struct sctp_paddrthlds))
+		return -EINVAL;
+	if (copy_from_user(&val, (struct sctp_paddrthlds __user *)optval,
+			   sizeof(struct sctp_paddrthlds)))
+		return -EFAULT;
+
+
+	if (sctp_is_any(sk, (const union sctp_addr *)&val.spt_address)) {
+		asoc = sctp_id2assoc(sk, val.spt_assoc_id);
+		if (!asoc)
+			return -ENOENT;
+		list_for_each_entry(trans, &asoc->peer.transport_addr_list,
+				    transports) {
+			if (val.spt_pathmaxrxt)
+				trans->pathmaxrxt = val.spt_pathmaxrxt;
+			trans->pf_retrans = val.spt_pathpfthld;
+		}
+
+		if (val.spt_pathmaxrxt)
+			asoc->pathmaxrxt = val.spt_pathmaxrxt;
+		asoc->pf_retrans = val.spt_pathpfthld;
+	} else {
+		trans = sctp_addr_id2transport(sk, &val.spt_address,
+					       val.spt_assoc_id);
+		if (!trans)
+			return -ENOENT;
+
+		if (val.spt_pathmaxrxt)
+			trans->pathmaxrxt = val.spt_pathmaxrxt;
+		trans->pf_retrans = val.spt_pathpfthld;
+	}
+
+	return 0;
+}
+
 /* API 6.2 setsockopt(), getsockopt()
  *
  * Applications use setsockopt() and getsockopt() to set or retrieve
@@ -3618,6 +3676,9 @@ SCTP_STATIC int sctp_setsockopt(struct sock *sk, int level, int optname,
 		break;
 	case SCTP_AUTO_ASCONF:
 		retval = sctp_setsockopt_auto_asconf(sk, optval, optlen);
+		break;
+	case SCTP_PEER_ADDR_THLDS:
+		retval = sctp_setsockopt_paddr_thresholds(sk, optval, optlen);
 		break;
 	default:
 		retval = -ENOPROTOOPT;
@@ -4133,9 +4194,10 @@ static int sctp_getsockopt_disable_fragments(struct sock *sk, int len,
 static int sctp_getsockopt_events(struct sock *sk, int len, char __user *optval,
 				  int __user *optlen)
 {
-	if (len < sizeof(struct sctp_event_subscribe))
+	if (len <= 0)
 		return -EINVAL;
-	len = sizeof(struct sctp_event_subscribe);
+	if (len > sizeof(struct sctp_event_subscribe))
+		len = sizeof(struct sctp_event_subscribe);
 	if (put_user(len, optlen))
 		return -EFAULT;
 	if (copy_to_user(optval, &sctp_sk(sk)->subscribe, len))
@@ -4170,13 +4232,15 @@ static int sctp_getsockopt_autoclose(struct sock *sk, int len, char __user *optv
 }
 
 /* Helper routine to branch off an association to a new socket.  */
-SCTP_STATIC int sctp_do_peeloff(struct sctp_association *asoc,
-				struct socket **sockp)
+int sctp_do_peeloff(struct sock *sk, sctp_assoc_t id, struct socket **sockp)
 {
-	struct sock *sk = asoc->base.sk;
+	struct sctp_association *asoc = sctp_id2assoc(sk, id);
 	struct socket *sock;
 	struct sctp_af *af;
 	int err = 0;
+
+	if (!asoc)
+		return -EINVAL;
 
 	/* An association cannot be branched off from an already peeled-off
 	 * socket, nor is this supported for tcp style sockets.
@@ -4206,13 +4270,13 @@ SCTP_STATIC int sctp_do_peeloff(struct sctp_association *asoc,
 
 	return err;
 }
+EXPORT_SYMBOL(sctp_do_peeloff);
 
 static int sctp_getsockopt_peeloff(struct sock *sk, int len, char __user *optval, int __user *optlen)
 {
 	sctp_peeloff_arg_t peeloff;
 	struct socket *newsock;
 	int retval = 0;
-	struct sctp_association *asoc;
 
 	if (len < sizeof(sctp_peeloff_arg_t))
 		return -EINVAL;
@@ -4220,15 +4284,7 @@ static int sctp_getsockopt_peeloff(struct sock *sk, int len, char __user *optval
 	if (copy_from_user(&peeloff, optval, len))
 		return -EFAULT;
 
-	asoc = sctp_id2assoc(sk, peeloff.associd);
-	if (!asoc) {
-		retval = -EINVAL;
-		goto out;
-	}
-
-	SCTP_DEBUG_PRINTK("%s: sk: %p asoc: %p\n", __func__, sk, asoc);
-
-	retval = sctp_do_peeloff(asoc, &newsock);
+	retval = sctp_do_peeloff(sk, peeloff.associd, &newsock);
 	if (retval < 0)
 		goto out;
 
@@ -4239,8 +4295,8 @@ static int sctp_getsockopt_peeloff(struct sock *sk, int len, char __user *optval
 		goto out;
 	}
 
-	SCTP_DEBUG_PRINTK("%s: sk: %p asoc: %p newsk: %p sd: %d\n",
-			  __func__, sk, asoc, newsock->sk, retval);
+	SCTP_DEBUG_PRINTK("%s: sk: %p newsk: %p sd: %d\n",
+			  __func__, sk, newsock->sk, retval);
 
 	/* Return the fd mapped to the new socket.  */
 	peeloff.sd = retval;
@@ -5495,6 +5551,51 @@ static int sctp_getsockopt_assoc_ids(struct sock *sk, int len,
 	return 0;
 }
 
+/*
+ * SCTP_PEER_ADDR_THLDS
+ *
+ * This option allows us to fetch the partially failed threshold for one or all
+ * transports in an association.  See Section 6.1 of:
+ * http://www.ietf.org/id/draft-nishida-tsvwg-sctp-failover-05.txt
+ */
+static int sctp_getsockopt_paddr_thresholds(struct sock *sk,
+					    char __user *optval,
+					    int len,
+					    int __user *optlen)
+{
+	struct sctp_paddrthlds val;
+	struct sctp_transport *trans;
+	struct sctp_association *asoc;
+
+	if (len < sizeof(struct sctp_paddrthlds))
+		return -EINVAL;
+	len = sizeof(struct sctp_paddrthlds);
+	if (copy_from_user(&val, (struct sctp_paddrthlds __user *)optval, len))
+		return -EFAULT;
+
+	if (sctp_is_any(sk, (const union sctp_addr *)&val.spt_address)) {
+		asoc = sctp_id2assoc(sk, val.spt_assoc_id);
+		if (!asoc)
+			return -ENOENT;
+
+		val.spt_pathpfthld = asoc->pf_retrans;
+		val.spt_pathmaxrxt = asoc->pathmaxrxt;
+	} else {
+		trans = sctp_addr_id2transport(sk, &val.spt_address,
+					       val.spt_assoc_id);
+		if (!trans)
+			return -ENOENT;
+
+		val.spt_pathmaxrxt = trans->pathmaxrxt;
+		val.spt_pathpfthld = trans->pf_retrans;
+	}
+
+	if (put_user(len, optlen) || copy_to_user(optval, &val, len))
+		return -EFAULT;
+
+	return 0;
+}
+
 SCTP_STATIC int sctp_getsockopt(struct sock *sk, int level, int optname,
 				char __user *optval, int __user *optlen)
 {
@@ -5632,6 +5733,9 @@ SCTP_STATIC int sctp_getsockopt(struct sock *sk, int level, int optname,
 		break;
 	case SCTP_AUTO_ASCONF:
 		retval = sctp_getsockopt_auto_asconf(sk, len, optval, optlen);
+		break;
+	case SCTP_PEER_ADDR_THLDS:
+		retval = sctp_getsockopt_paddr_thresholds(sk, optval, len, optlen);
 		break;
 	default:
 		retval = -ENOPROTOOPT;
@@ -5845,10 +5949,8 @@ SCTP_STATIC int sctp_listen_start(struct sock *sk, int backlog)
 	if (!sctp_sk(sk)->hmac && sctp_hmac_alg) {
 		tfm = crypto_alloc_hash(sctp_hmac_alg, 0, CRYPTO_ALG_ASYNC);
 		if (IS_ERR(tfm)) {
-			if (net_ratelimit()) {
-				pr_info("failed to load transform for %s: %ld\n",
-					sctp_hmac_alg, PTR_ERR(tfm));
-			}
+			net_info_ratelimited("failed to load transform for %s: %ld\n",
+					     sctp_hmac_alg, PTR_ERR(tfm));
 			return -ENOSYS;
 		}
 		sctp_sk(sk)->hmac = tfm;

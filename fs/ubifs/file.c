@@ -37,11 +37,11 @@
  *
  * A thing to keep in mind: inode @i_mutex is locked in most VFS operations we
  * implement. However, this is not true for 'ubifs_writepage()', which may be
- * called with @i_mutex unlocked. For example, when pdflush is doing background
- * write-back, it calls 'ubifs_writepage()' with unlocked @i_mutex. At "normal"
- * work-paths the @i_mutex is locked in 'ubifs_writepage()', e.g. in the
- * "sys_write -> alloc_pages -> direct reclaim path". So, in 'ubifs_writepage()'
- * we are only guaranteed that the page is locked.
+ * called with @i_mutex unlocked. For example, when flusher thread is doing
+ * background write-back, it calls 'ubifs_writepage()' with unlocked @i_mutex.
+ * At "normal" work-paths the @i_mutex is locked in 'ubifs_writepage()', e.g.
+ * in the "sys_write -> alloc_pages -> direct reclaim path". So, in
+ * 'ubifs_writepage()' we are only guaranteed that the page is locked.
  *
  * Similarly, @i_mutex is not always locked in 'ubifs_readpage()', e.g., the
  * read-ahead path does not lock it ("sys_read -> generic_file_aio_read ->
@@ -97,7 +97,7 @@ static int read_block(struct inode *inode, void *addr, unsigned int block,
 dump:
 	ubifs_err("bad data node (block %u, inode %lu)",
 		  block, inode->i_ino);
-	dbg_dump_node(c, dn);
+	ubifs_dump_node(c, dn);
 	return -EINVAL;
 }
 
@@ -1042,10 +1042,10 @@ static int ubifs_writepage(struct page *page, struct writeback_control *wbc)
 	 * the page size, the remaining memory is zeroed when mapped, and
 	 * writes to that region are not written out to the file."
 	 */
-	kaddr = kmap_atomic(page, KM_USER0);
+	kaddr = kmap_atomic(page);
 	memset(kaddr + len, 0, PAGE_CACHE_SIZE - len);
 	flush_dcache_page(page);
-	kunmap_atomic(kaddr, KM_USER0);
+	kunmap_atomic(kaddr);
 
 	if (i_size > synced_i_size) {
 		err = inode->i_sb->s_op->write_inode(inode, NULL);
@@ -1562,12 +1562,10 @@ const struct address_space_operations ubifs_file_address_operations = {
 const struct inode_operations ubifs_file_inode_operations = {
 	.setattr     = ubifs_setattr,
 	.getattr     = ubifs_getattr,
-#ifdef CONFIG_UBIFS_FS_XATTR
 	.setxattr    = ubifs_setxattr,
 	.getxattr    = ubifs_getxattr,
 	.listxattr   = ubifs_listxattr,
 	.removexattr = ubifs_removexattr,
-#endif
 };
 
 const struct inode_operations ubifs_symlink_inode_operations = {

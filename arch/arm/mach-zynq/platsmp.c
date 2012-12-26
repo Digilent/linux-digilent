@@ -17,18 +17,25 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+#include <linux/module.h>
 #include <linux/jiffies.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/smp.h>
-
 #include <asm/cacheflush.h>
 #include <asm/smp_scu.h>
 #include <asm/hardware/gic.h>
 #include <mach/zynq_soc.h>
 #include "common.h"
 
+extern void secondary_startup(void);
+
 static DEFINE_SPINLOCK(boot_lock);
+
+/* Store pointer to ioremap area which points to address 0x0 */
+static u8 *zero;
+
+static u32 mem_backup[3];
+static u32 mem_backup_done;
 
 /* Secondary CPU kernel startup is a 2 step process. The primary CPU
  * starts the secondary CPU by giving it the address of the kernel and
@@ -47,8 +54,14 @@ void __cpuinit platform_secondary_init(unsigned int cpu)
 	/* Indicate to the primary core that the secondary is up and running.
 	 * Let the write buffer drain.
 	 */
-	__raw_writel(BOOT_STATUS_CPU1_UP, OCM_HIGH_BASE + BOOT_STATUS_OFFSET);
-	wmb();
+
+	/* Restore memory content */
+	if (mem_backup_done) {
+		__raw_writel(mem_backup[0], zero + 0x0);
+		__raw_writel(mem_backup[1], zero + 0x4);
+		__raw_writel(mem_backup[2], zero + 0x8);
+	}
+
 
 	/*
 	 * Synchronise with the boot thread.
@@ -57,9 +70,83 @@ void __cpuinit platform_secondary_init(unsigned int cpu)
 	spin_unlock(&boot_lock);
 }
 
+/*
+ * Store pointer to SLCR registers. SLCR driver can't be used because
+ * it is not initialized yet and this code is used for bootup the second CPU
+ */
+#define SLCR_UNLOCK	0xDF0D
+#define SLCR_LOCK	0x767B
+
+static u8 *slcr;
+
+int zynq_cpu1_start(u32 address)
+{
+	if (!slcr) {
+		printk(KERN_INFO "Map SLCR registers\n");
+		/* Remap the SLCR registers to be able to work with cpu1 */
+		slcr = ioremap(0xF8000000, PAGE_SIZE);
+		if (!slcr) {
+			printk(KERN_WARNING
+				"!!!! SLCR jump vectors can't be used !!!!\n");
+			return -1;
+		}
+	}
+	mem_backup_done = 0;
+
+	/* MS: Expectation that SLCR are directly map and accessible */
+	/* Not possible to jump to non aligned address */
+	if (!(address & 3) && (!address || (address >= 0xC))) {
+		__raw_writel(SLCR_UNLOCK, slcr + 0x8); /* UNLOCK SLCR */
+		__raw_writel(0x22, slcr + 0x244); /* stop CLK and reset CPU1 */
+
+		/*
+		 * This is elegant way how to jump to any address
+		 * 0x0: Load address at 0x8 to r0
+		 * 0x4: Jump by mov instruction
+		 * 0x8: Jumping address
+		 */
+		if (address) {
+			if (!zero) {
+				printk(KERN_WARNING
+					"BOOTUP jump vectors is not mapped!\n");
+				return -1;
+			}
+			mem_backup[0] = __raw_readl(zero + 0x0);
+			mem_backup[1] = __raw_readl(zero + 0x4);
+			mem_backup[2] = __raw_readl(zero + 0x8);
+			mem_backup_done = 1;
+			__raw_writel(0xe59f0000, zero + 0x0);/* 0:ldr r0, [8] */
+			__raw_writel(0xe1a0f000, zero + 0x4);/* 4:mov pc, r0 */
+			__raw_writel(address, zero + 0x8);/* 8:.word address */
+		}
+
+		flush_cache_all();
+		outer_flush_all();
+		wmb();
+
+		__raw_writel(0x20, slcr + 0x244); /* enable CPU1 */
+		__raw_writel(0x0, slcr + 0x244); /* enable CLK for CPU1 */
+
+		/* the SLCR locking/unlocking needs to be re-done, for now
+		 * there is not centralized locking/unlocking so leave it
+		 * unlocked
+		 */
+#if 0
+		__raw_writel(SLCR_LOCK, slcr + 0x4); /* LOCK SLCR */
+#endif
+		return 0;
+	}
+
+	printk(KERN_WARNING "Can't start CPU1: Wrong starting address %x\n",
+								address);
+
+	return -1;
+}
+EXPORT_SYMBOL(zynq_cpu1_start);
+
 int __cpuinit boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
-	unsigned long timeout;
+	int ret;
 
 	/*
 	 * set synchronisation state between this boot processor
@@ -67,28 +154,9 @@ int __cpuinit boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 */
 	spin_lock(&boot_lock);
 
-	/* Initialize the boot status and give the secondary core
-	 * the start address of the kernel, let the write buffer drain
-	 */
-	__raw_writel(0, OCM_HIGH_BASE + BOOT_STATUS_OFFSET);
-
-	__raw_writel(virt_to_phys(secondary_startup),
-					OCM_HIGH_BASE + BOOT_ADDR_OFFSET);
-	wmb();
-
-	/*
-	 * Send an event to wake the secondary core from WFE state.
-	 */
-	sev();
-
-	/*
-	 * Wait for the other CPU to boot, but timeout if it doesn't
-	 */
-	timeout = jiffies + (1 * HZ);
-	while ((__raw_readl(OCM_HIGH_BASE + BOOT_STATUS_OFFSET) !=
-				BOOT_STATUS_CPU1_UP) &&
-				(time_before(jiffies, timeout)))
-		rmb();
+	ret = zynq_cpu1_start(virt_to_phys(secondary_startup));
+	if (ret)
+		return -1;
 
 	/*
 	 * now the secondary core is starting up let it run its
@@ -117,5 +185,32 @@ void __init smp_init_cpus(void)
 
 void __init platform_smp_prepare_cpus(unsigned int max_cpus)
 {
+	int i;
+
+	/*
+	 * Remap the first three addresses at zero which are used
+	 * for 32bit long jump for SMP. Look at zynq_cpu1_start()
+	 */
+#if defined(CONFIG_PHYS_OFFSET) && (CONFIG_PHYS_OFFSET != 0)
+	zero = ioremap(0, 12);
+	if (!zero) {
+		printk(KERN_WARNING
+			"!!!! BOOTUP jump vectors can't be used !!!!\n");
+		while (1)
+			;
+	}
+#else
+	/* The first three addresses at zero are already mapped */
+	zero = (u8 *)CONFIG_PAGE_OFFSET;
+#endif
+
+	/*
+	 * Initialise the present map, which describes the set of CPUs
+	 * actually populated at the present time.
+	 */
+	for (i = 0; i < max_cpus; i++)
+		set_cpu_present(i, true);
+
 	scu_enable(SCU_PERIPH_BASE);
 }
+

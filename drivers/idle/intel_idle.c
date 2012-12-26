@@ -62,6 +62,7 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/module.h>
+#include <asm/cpu_device_id.h>
 #include <asm/mwait.h>
 #include <asm/msr.h>
 
@@ -81,17 +82,23 @@ static unsigned int mwait_substates;
 /* Reliable LAPIC Timer States, bit 1 for C1 etc.  */
 static unsigned int lapic_timer_reliable_states = (1 << 1);	 /* Default to only C1 */
 
+struct idle_cpu {
+	struct cpuidle_state *state_table;
+
+	/*
+	 * Hardware C-state auto-demotion may not always be optimal.
+	 * Indicate which enable bits to clear here.
+	 */
+	unsigned long auto_demotion_disable_flags;
+};
+
+static const struct idle_cpu *icpu;
 static struct cpuidle_device __percpu *intel_idle_cpuidle_devices;
 static int intel_idle(struct cpuidle_device *dev,
 			struct cpuidle_driver *drv, int index);
+static int intel_idle_cpu_init(int cpu);
 
 static struct cpuidle_state *cpuidle_state_table;
-
-/*
- * Hardware C-state auto-demotion may not always be optimal.
- * Indicate which enable bits to clear here.
- */
-static unsigned long long auto_demotion_disable_flags;
 
 /*
  * Set this flag for states where the HW flushes the TLB for us
@@ -160,6 +167,38 @@ static struct cpuidle_state snb_cstates[MWAIT_MAX_NUM_CSTATES] = {
 		.flags = CPUIDLE_FLAG_TIME_VALID | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 109,
 		.target_residency = 345,
+		.enter = &intel_idle },
+};
+
+static struct cpuidle_state ivb_cstates[MWAIT_MAX_NUM_CSTATES] = {
+	{ /* MWAIT C0 */ },
+	{ /* MWAIT C1 */
+		.name = "C1-IVB",
+		.desc = "MWAIT 0x00",
+		.flags = CPUIDLE_FLAG_TIME_VALID,
+		.exit_latency = 1,
+		.target_residency = 1,
+		.enter = &intel_idle },
+	{ /* MWAIT C2 */
+		.name = "C3-IVB",
+		.desc = "MWAIT 0x10",
+		.flags = CPUIDLE_FLAG_TIME_VALID | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 59,
+		.target_residency = 156,
+		.enter = &intel_idle },
+	{ /* MWAIT C3 */
+		.name = "C6-IVB",
+		.desc = "MWAIT 0x20",
+		.flags = CPUIDLE_FLAG_TIME_VALID | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 80,
+		.target_residency = 300,
+		.enter = &intel_idle },
+	{ /* MWAIT C4 */
+		.name = "C7-IVB",
+		.desc = "MWAIT 0x30",
+		.flags = CPUIDLE_FLAG_TIME_VALID | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 87,
+		.target_residency = 300,
 		.enter = &intel_idle },
 };
 
@@ -296,22 +335,35 @@ static void __setup_broadcast_timer(void *arg)
 	clockevents_notify(reason, &cpu);
 }
 
-static int setup_broadcast_cpuhp_notify(struct notifier_block *n,
-		unsigned long action, void *hcpu)
+static int cpu_hotplug_notify(struct notifier_block *n,
+			      unsigned long action, void *hcpu)
 {
 	int hotcpu = (unsigned long)hcpu;
+	struct cpuidle_device *dev;
 
 	switch (action & 0xf) {
 	case CPU_ONLINE:
-		smp_call_function_single(hotcpu, __setup_broadcast_timer,
-			(void *)true, 1);
+
+		if (lapic_timer_reliable_states != LAPIC_TIMER_ALWAYS_RELIABLE)
+			smp_call_function_single(hotcpu, __setup_broadcast_timer,
+						 (void *)true, 1);
+
+		/*
+		 * Some systems can hotplug a cpu at runtime after
+		 * the kernel has booted, we have to initialize the
+		 * driver in this case
+		 */
+		dev = per_cpu_ptr(intel_idle_cpuidle_devices, hotcpu);
+		if (!dev->registered)
+			intel_idle_cpu_init(hotcpu);
+
 		break;
 	}
 	return NOTIFY_OK;
 }
 
-static struct notifier_block setup_broadcast_notifier = {
-	.notifier_call = setup_broadcast_cpuhp_notify,
+static struct notifier_block cpu_hotplug_notifier = {
+	.notifier_call = cpu_hotplug_notify,
 };
 
 static void auto_demotion_disable(void *dummy)
@@ -319,9 +371,51 @@ static void auto_demotion_disable(void *dummy)
 	unsigned long long msr_bits;
 
 	rdmsrl(MSR_NHM_SNB_PKG_CST_CFG_CTL, msr_bits);
-	msr_bits &= ~auto_demotion_disable_flags;
+	msr_bits &= ~(icpu->auto_demotion_disable_flags);
 	wrmsrl(MSR_NHM_SNB_PKG_CST_CFG_CTL, msr_bits);
 }
+
+static const struct idle_cpu idle_cpu_nehalem = {
+	.state_table = nehalem_cstates,
+	.auto_demotion_disable_flags = NHM_C1_AUTO_DEMOTE | NHM_C3_AUTO_DEMOTE,
+};
+
+static const struct idle_cpu idle_cpu_atom = {
+	.state_table = atom_cstates,
+};
+
+static const struct idle_cpu idle_cpu_lincroft = {
+	.state_table = atom_cstates,
+	.auto_demotion_disable_flags = ATM_LNC_C6_AUTO_DEMOTE,
+};
+
+static const struct idle_cpu idle_cpu_snb = {
+	.state_table = snb_cstates,
+};
+
+static const struct idle_cpu idle_cpu_ivb = {
+	.state_table = ivb_cstates,
+};
+
+#define ICPU(model, cpu) \
+	{ X86_VENDOR_INTEL, 6, model, X86_FEATURE_MWAIT, (unsigned long)&cpu }
+
+static const struct x86_cpu_id intel_idle_ids[] = {
+	ICPU(0x1a, idle_cpu_nehalem),
+	ICPU(0x1e, idle_cpu_nehalem),
+	ICPU(0x1f, idle_cpu_nehalem),
+	ICPU(0x25, idle_cpu_nehalem),
+	ICPU(0x2c, idle_cpu_nehalem),
+	ICPU(0x2e, idle_cpu_nehalem),
+	ICPU(0x1c, idle_cpu_atom),
+	ICPU(0x26, idle_cpu_lincroft),
+	ICPU(0x2f, idle_cpu_nehalem),
+	ICPU(0x2a, idle_cpu_snb),
+	ICPU(0x2d, idle_cpu_snb),
+	ICPU(0x3a, idle_cpu_ivb),
+	{}
+};
+MODULE_DEVICE_TABLE(x86cpu, intel_idle_ids);
 
 /*
  * intel_idle_probe()
@@ -329,17 +423,21 @@ static void auto_demotion_disable(void *dummy)
 static int intel_idle_probe(void)
 {
 	unsigned int eax, ebx, ecx;
+	const struct x86_cpu_id *id;
 
 	if (max_cstate == 0) {
 		pr_debug(PREFIX "disabled\n");
 		return -EPERM;
 	}
 
-	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
+	id = x86_match_cpu(intel_idle_ids);
+	if (!id) {
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+		    boot_cpu_data.x86 == 6)
+			pr_debug(PREFIX "does not run on family %d model %d\n",
+				boot_cpu_data.x86, boot_cpu_data.x86_model);
 		return -ENODEV;
-
-	if (!boot_cpu_has(X86_FEATURE_MWAIT))
-		return -ENODEV;
+	}
 
 	if (boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
 		return -ENODEV;
@@ -353,50 +451,15 @@ static int intel_idle_probe(void)
 
 	pr_debug(PREFIX "MWAIT substates: 0x%x\n", mwait_substates);
 
-
-	if (boot_cpu_data.x86 != 6)	/* family 6 */
-		return -ENODEV;
-
-	switch (boot_cpu_data.x86_model) {
-
-	case 0x1A:	/* Core i7, Xeon 5500 series */
-	case 0x1E:	/* Core i7 and i5 Processor - Lynnfield Jasper Forest */
-	case 0x1F:	/* Core i7 and i5 Processor - Nehalem */
-	case 0x2E:	/* Nehalem-EX Xeon */
-	case 0x2F:	/* Westmere-EX Xeon */
-	case 0x25:	/* Westmere */
-	case 0x2C:	/* Westmere */
-		cpuidle_state_table = nehalem_cstates;
-		auto_demotion_disable_flags =
-			(NHM_C1_AUTO_DEMOTE | NHM_C3_AUTO_DEMOTE);
-		break;
-
-	case 0x1C:	/* 28 - Atom Processor */
-		cpuidle_state_table = atom_cstates;
-		break;
-
-	case 0x26:	/* 38 - Lincroft Atom Processor */
-		cpuidle_state_table = atom_cstates;
-		auto_demotion_disable_flags = ATM_LNC_C6_AUTO_DEMOTE;
-		break;
-
-	case 0x2A:	/* SNB */
-	case 0x2D:	/* SNB Xeon */
-		cpuidle_state_table = snb_cstates;
-		break;
-
-	default:
-		pr_debug(PREFIX "does not run on family %d model %d\n",
-			boot_cpu_data.x86, boot_cpu_data.x86_model);
-		return -ENODEV;
-	}
+	icpu = (const struct idle_cpu *)id->driver_data;
+	cpuidle_state_table = icpu->state_table;
 
 	if (boot_cpu_has(X86_FEATURE_ARAT))	/* Always Reliable APIC Timer */
 		lapic_timer_reliable_states = LAPIC_TIMER_ALWAYS_RELIABLE;
-	else {
+	else
 		on_each_cpu(__setup_broadcast_timer, (void *)true, 1);
-		register_cpu_notifier(&setup_broadcast_notifier);
-	}
+
+	register_cpu_notifier(&cpu_hotplug_notifier);
 
 	pr_debug(PREFIX "v" INTEL_IDLE_VERSION
 		" model 0x%X\n", boot_cpu_data.x86_model);
@@ -470,7 +533,7 @@ static int intel_idle_cpuidle_driver_init(void)
 		drv->state_count += 1;
 	}
 
-	if (auto_demotion_disable_flags)
+	if (icpu->auto_demotion_disable_flags)
 		on_each_cpu(auto_demotion_disable, NULL, 1);
 
 	return 0;
@@ -482,7 +545,7 @@ static int intel_idle_cpuidle_driver_init(void)
  * allocate, initialize, register cpuidle_devices
  * @cpu: cpu/core to initialize
  */
-int intel_idle_cpu_init(int cpu)
+static int intel_idle_cpu_init(int cpu)
 {
 	int cstate;
 	struct cpuidle_device *dev;
@@ -495,8 +558,7 @@ int intel_idle_cpu_init(int cpu)
 		int num_substates;
 
 		if (cstate > max_cstate) {
-			printk(PREFIX "max_cstate %d reached\n",
-			       max_cstate);
+			printk(PREFIX "max_cstate %d reached\n", max_cstate);
 			break;
 		}
 
@@ -512,8 +574,9 @@ int intel_idle_cpu_init(int cpu)
 		dev->states_usage[dev->state_count].driver_data =
 			(void *)get_driver_data(cstate);
 
-			dev->state_count += 1;
-		}
+		dev->state_count += 1;
+	}
+
 	dev->cpu = cpu;
 
 	if (cpuidle_register_device(dev)) {
@@ -522,12 +585,11 @@ int intel_idle_cpu_init(int cpu)
 		return -EIO;
 	}
 
-	if (auto_demotion_disable_flags)
+	if (icpu->auto_demotion_disable_flags)
 		smp_call_function_single(cpu, auto_demotion_disable, NULL, 1);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(intel_idle_cpu_init);
 
 static int __init intel_idle_init(void)
 {
@@ -544,8 +606,9 @@ static int __init intel_idle_init(void)
 	intel_idle_cpuidle_driver_init();
 	retval = cpuidle_register_driver(&intel_idle_driver);
 	if (retval) {
+		struct cpuidle_driver *drv = cpuidle_get_driver();
 		printk(KERN_DEBUG PREFIX "intel_idle yielding to %s",
-			cpuidle_get_driver()->name);
+			drv ? drv->name : "none");
 		return retval;
 	}
 
@@ -569,10 +632,10 @@ static void __exit intel_idle_exit(void)
 	intel_idle_cpuidle_devices_uninit();
 	cpuidle_unregister_driver(&intel_idle_driver);
 
-	if (lapic_timer_reliable_states != LAPIC_TIMER_ALWAYS_RELIABLE) {
+
+	if (lapic_timer_reliable_states != LAPIC_TIMER_ALWAYS_RELIABLE)
 		on_each_cpu(__setup_broadcast_timer, (void *)false, 1);
-		unregister_cpu_notifier(&setup_broadcast_notifier);
-	}
+	unregister_cpu_notifier(&cpu_hotplug_notifier);
 
 	return;
 }

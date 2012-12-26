@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2004-2010 Atheros Communications Inc.
+ * Copyright (c) 2011 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -19,6 +20,7 @@
 
 #define AR6003_BOARD_DATA_SZ		1024
 #define AR6003_BOARD_EXT_DATA_SZ	768
+#define AR6003_BOARD_EXT_DATA_SZ_V2	1024
 
 #define AR6004_BOARD_DATA_SZ     6144
 #define AR6004_BOARD_EXT_DATA_SZ 0
@@ -43,6 +45,7 @@
 #define LPO_CAL_ENABLE_S		20
 #define LPO_CAL_ENABLE			0x00100000
 
+#define GPIO_PIN9_ADDRESS		0x0000004c
 #define GPIO_PIN10_ADDRESS		0x00000050
 #define GPIO_PIN11_ADDRESS		0x00000054
 #define GPIO_PIN12_ADDRESS		0x00000058

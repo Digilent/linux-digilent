@@ -33,6 +33,7 @@ struct map {
 	u64			end;
 	u8 /* enum map_type */	type;
 	bool			referenced;
+	bool			erange_warned;
 	u32			priv;
 	u64			pgoff;
 
@@ -118,6 +119,7 @@ void map__delete(struct map *self);
 struct map *map__clone(struct map *self);
 int map__overlap(struct map *l, struct map *r);
 size_t map__fprintf(struct map *self, FILE *fp);
+size_t map__fprintf_dsoname(struct map *map, FILE *fp);
 
 int map__load(struct map *self, symbol_filter_t filter);
 struct symbol *map__find_symbol(struct map *self,
@@ -149,13 +151,14 @@ struct machine *machines__add(struct rb_root *self, pid_t pid,
 struct machine *machines__find_host(struct rb_root *self);
 struct machine *machines__find(struct rb_root *self, pid_t pid);
 struct machine *machines__findnew(struct rb_root *self, pid_t pid);
+void machines__set_id_hdr_size(struct rb_root *self, u16 id_hdr_size);
 char *machine__mmap_name(struct machine *self, char *bf, size_t size);
 int machine__init(struct machine *self, const char *root_dir, pid_t pid);
 void machine__exit(struct machine *self);
 void machine__delete(struct machine *self);
 
 int machine__resolve_callchain(struct machine *machine,
-			       struct perf_evsel *evsel, struct thread *thread,
+			       struct thread *thread,
 			       struct ip_callchain *chain,
 			       struct symbol **parent);
 int maps__set_kallsyms_ref_reloc_sym(struct map **maps, const char *symbol_name,

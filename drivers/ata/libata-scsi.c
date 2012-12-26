@@ -3399,7 +3399,8 @@ int ata_scsi_add_hosts(struct ata_host *host, struct scsi_host_template *sht)
 		 */
 		shost->max_host_blocked = 1;
 
-		rc = scsi_add_host(ap->scsi_host, &ap->tdev);
+		rc = scsi_add_host_with_dma(ap->scsi_host,
+						&ap->tdev, ap->host->dev);
 		if (rc)
 			goto err_add;
 	}
@@ -3444,6 +3445,7 @@ void ata_scsi_scan_host(struct ata_port *ap, int sync)
 			if (!IS_ERR(sdev)) {
 				dev->sdev = sdev;
 				scsi_device_put(sdev);
+				ata_acpi_bind(dev);
 			} else {
 				dev->sdev = NULL;
 			}
@@ -3539,6 +3541,8 @@ static void ata_scsi_remove_dev(struct ata_device *dev)
 	 */
 	mutex_lock(&ap->scsi_host->scan_mutex);
 	spin_lock_irqsave(ap->lock, flags);
+
+	ata_acpi_unbind(dev);
 
 	/* clearing dev->sdev is protected by host lock */
 	sdev = dev->sdev;
@@ -3839,6 +3843,26 @@ void ata_sas_port_stop(struct ata_port *ap)
 EXPORT_SYMBOL_GPL(ata_sas_port_stop);
 
 /**
+ * ata_sas_async_probe - simply schedule probing and return
+ * @ap: Port to probe
+ *
+ * For batch scheduling of probe for sas attached ata devices, assumes
+ * the port has already been through ata_sas_port_init()
+ */
+void ata_sas_async_probe(struct ata_port *ap)
+{
+	__ata_port_probe(ap);
+}
+EXPORT_SYMBOL_GPL(ata_sas_async_probe);
+
+int ata_sas_sync_probe(struct ata_port *ap)
+{
+	return ata_port_probe(ap);
+}
+EXPORT_SYMBOL_GPL(ata_sas_sync_probe);
+
+
+/**
  *	ata_sas_port_init - Initialize a SATA device
  *	@ap: SATA port to initialize
  *
@@ -3853,12 +3877,10 @@ int ata_sas_port_init(struct ata_port *ap)
 {
 	int rc = ap->ops->port_start(ap);
 
-	if (!rc) {
-		ap->print_id = ata_print_id++;
-		rc = ata_port_probe(ap);
-	}
-
-	return rc;
+	if (rc)
+		return rc;
+	ap->print_id = atomic_inc_return(&ata_print_id);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(ata_sas_port_init);
 

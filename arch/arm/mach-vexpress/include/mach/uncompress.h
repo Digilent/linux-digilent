@@ -22,7 +22,35 @@
 #define AMBA_UART_CR(base)	(*(volatile unsigned char *)((base) + 0x30))
 #define AMBA_UART_FR(base)	(*(volatile unsigned char *)((base) + 0x18))
 
-#define get_uart_base()	(0x10000000 + 0x00009000)
+#define UART_BASE	0x10009000
+#define UART_BASE_RS1	0x1c090000
+
+static unsigned long get_uart_base(void)
+{
+#if defined(CONFIG_DEBUG_VEXPRESS_UART0_DETECT)
+	unsigned long mpcore_periph;
+
+	/*
+	 * Make an educated guess regarding the memory map:
+	 * - the original A9 core tile, which has MPCore peripherals
+	 *   located at 0x1e000000, should use UART at 0x10009000
+	 * - all other (RS1 complaint) tiles use UART mapped
+	 *   at 0x1c090000
+	 */
+	asm("mrc p15, 4, %0, c15, c0, 0" : "=r" (mpcore_periph));
+
+	if (mpcore_periph == 0x1e000000)
+		return UART_BASE;
+	else
+		return UART_BASE_RS1;
+#elif defined(CONFIG_DEBUG_VEXPRESS_UART0_CA9)
+	return UART_BASE;
+#elif defined(CONFIG_DEBUG_VEXPRESS_UART0_RS1)
+	return UART_BASE_RS1;
+#else
+	return 0;
+#endif
+}
 
 /*
  * This does not append a newline
@@ -30,6 +58,9 @@
 static inline void putc(int c)
 {
 	unsigned long base = get_uart_base();
+
+	if (!base)
+		return;
 
 	while (AMBA_UART_FR(base) & (1 << 5))
 		barrier();
@@ -40,6 +71,9 @@ static inline void putc(int c)
 static inline void flush(void)
 {
 	unsigned long base = get_uart_base();
+
+	if (!base)
+		return;
 
 	while (AMBA_UART_FR(base) & (1 << 3))
 		barrier();

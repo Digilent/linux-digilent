@@ -30,7 +30,6 @@
 #include <asm/entry.h>
 #include <asm/cpuinfo.h>
 
-#include <asm/system.h>
 #include <asm/prom.h>
 #include <asm/pgtable.h>
 
@@ -41,7 +40,12 @@ DEFINE_PER_CPU(unsigned int, R11_SAVE);	/* Temp variable for entry */
 DEFINE_PER_CPU(unsigned int, CURRENT_SAVE);	/* Saved current pointer */
 
 unsigned int boot_cpuid;
-char cmd_line[COMMAND_LINE_SIZE];
+/*
+ * Placed cmd_line to .data section because can be initialized from
+ * ASM code. Default position is BSS section which is cleared
+ * in machine_early_init().
+ */
+char cmd_line[COMMAND_LINE_SIZE] __attribute__ ((section(".data")));
 
 void __init setup_arch(char **cmdline_p)
 {
@@ -51,8 +55,6 @@ void __init setup_arch(char **cmdline_p)
 
 	unflatten_device_tree();
 
-	/* NOTE I think that this function is not necessary to call */
-	/* irq_early_init(); */
 	setup_cpuinfo();
 
 	microblaze_cache_init();
@@ -67,7 +69,7 @@ void __init setup_arch(char **cmdline_p)
 	xilinx_pci_init();
 
 #if defined(CONFIG_SELFMOD_INTC) || defined(CONFIG_SELFMOD_TIMER)
-	printk(KERN_NOTICE "Self modified code enable\n");
+	pr_notice("Self modified code enable\n");
 #endif
 
 #ifdef CONFIG_VT
@@ -97,8 +99,11 @@ inline unsigned get_romfs_len(unsigned *addr)
 }
 #endif	/* CONFIG_MTD_UCLINUX_EBSS */
 
+unsigned long kernel_tlb;
+
 void __init machine_early_init(const char *cmdline, unsigned int ram,
-		unsigned int fdt, unsigned int msr)
+		unsigned int fdt, unsigned int msr, unsigned int tlb0,
+		unsigned int tlb1)
 {
 	unsigned long *src, *dst;
 	unsigned int offset = 0;
@@ -121,7 +126,7 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 
 	/* Move ROMFS out of BSS before clearing it */
 	if (romfs_size > 0) {
-		memmove(&_ebss, (int *)romfs_base, romfs_size);
+		memmove(&__bss_stop, (int *)romfs_base, romfs_size);
 		klimit += romfs_size;
 	}
 #endif
@@ -129,12 +134,6 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 /* clearing bss section */
 	memset(__bss_start, 0, __bss_stop-__bss_start);
 	memset(_ssbss, 0, _esbss-_ssbss);
-
-	/* Copy command line passed from bootloader */
-#ifndef CONFIG_CMDLINE_BOOL
-	if (cmdline && cmdline[0] != '\0')
-		strlcpy(cmd_line, cmdline, COMMAND_LINE_SIZE);
-#endif
 
 	lockdep_init();
 
@@ -144,6 +143,12 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 #ifdef CONFIG_EARLY_PRINTK
 	setup_early_printk(NULL);
 #endif
+
+	/* setup kernel_tlb after BSS cleaning
+	 * Maybe worth to move to asm code */
+	kernel_tlb = tlb0 + tlb1;
+	/* printk("TLB1 0x%08x, TLB0 0x%08x, tlb 0x%x\n", tlb0,
+							tlb1, kernel_tlb); */
 
 	printk("Ramdisk addr 0x%08x, ", ram);
 	if (fdt)
@@ -159,7 +164,7 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 	BUG_ON(romfs_size < 0); /* What else can we do? */
 
 	printk("Moved 0x%08x bytes from 0x%08x to 0x%08x\n",
-			romfs_size, romfs_base, (unsigned)&_ebss);
+			romfs_size, romfs_base, (unsigned)&__bss_stop);
 
 	printk("New klimit: 0x%08x\n", (unsigned)klimit);
 #endif
@@ -199,6 +204,21 @@ static int microblaze_debugfs_init(void)
 	return of_debugfs_root == NULL;
 }
 arch_initcall(microblaze_debugfs_init);
+
+# ifdef CONFIG_MMU
+static int __init debugfs_tlb(void)
+{
+	struct dentry *d;
+
+	if (!of_debugfs_root)
+		return -ENODEV;
+
+	d = debugfs_create_u32("tlb_skip", S_IRUGO, of_debugfs_root, &tlb_skip);
+	if (!d)
+		return -ENOMEM;
+}
+device_initcall(debugfs_tlb);
+# endif
 #endif
 
 static int dflt_bus_notify(struct notifier_block *nb,

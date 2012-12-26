@@ -1331,7 +1331,7 @@ static const struct spi_device_id ifx_id_table[] = {
 MODULE_DEVICE_TABLE(spi, ifx_id_table);
 
 /* spi operations */
-static const struct spi_driver ifx_spi_driver = {
+static struct spi_driver ifx_spi_driver = {
 	.driver = {
 		.name = DRVNAME,
 		.pm = &ifx_spi_pm,
@@ -1375,12 +1375,9 @@ static int __init ifx_spi_init(void)
 		return -ENOMEM;
 	}
 
-	tty_drv->magic = TTY_DRIVER_MAGIC;
-	tty_drv->owner = THIS_MODULE;
 	tty_drv->driver_name = DRVNAME;
 	tty_drv->name = TTYNAME;
 	tty_drv->minor_start = IFX_SPI_TTY_ID;
-	tty_drv->num = 1;
 	tty_drv->type = TTY_DRIVER_TYPE_SERIAL;
 	tty_drv->subtype = SERIAL_TYPE_NORMAL;
 	tty_drv->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;

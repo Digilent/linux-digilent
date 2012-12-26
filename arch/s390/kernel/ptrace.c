@@ -1,7 +1,7 @@
 /*
  *  Ptrace user space interface.
  *
- *    Copyright IBM Corp. 1999,2010
+ *    Copyright IBM Corp. 1999, 2010
  *    Author(s): Denis Joseph Barrow
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
@@ -26,9 +26,9 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
+#include <asm/switch_to.h>
 #include "entry.h"
 
 #ifdef CONFIG_COMPAT
@@ -719,7 +719,11 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 	long ret = 0;
 
 	/* Do the secure computing check first. */
-	secure_computing(regs->gprs[2]);
+	if (secure_computing(regs->gprs[2])) {
+		/* seccomp failures shouldn't expose any additional code. */
+		ret = -1;
+		goto out;
+	}
 
 	/*
 	 * The sysc_tracesys code in entry.S stored the system
@@ -745,6 +749,7 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 			    regs->gprs[2], regs->orig_gpr2,
 			    regs->gprs[3], regs->gprs[4],
 			    regs->gprs[5]);
+out:
 	return ret ?: regs->gprs[2];
 }
 

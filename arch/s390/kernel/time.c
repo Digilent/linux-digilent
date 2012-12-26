@@ -1,5 +1,4 @@
 /*
- *  arch/s390/kernel/time.c
  *    Time of day based timer functions.
  *
  *  S390 version
@@ -45,7 +44,7 @@
 #include <asm/vdso.h>
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
-#include <asm/timer.h>
+#include <asm/vtimer.h>
 #include <asm/etr.h>
 #include <asm/cio.h>
 #include "entry.h"
@@ -165,7 +164,7 @@ void init_cpu_timer(void)
 	__ctl_set_bit(0, 4);
 }
 
-static void clock_comparator_interrupt(unsigned int ext_int_code,
+static void clock_comparator_interrupt(struct ext_code ext_code,
 				       unsigned int param32,
 				       unsigned long param64)
 {
@@ -177,7 +176,7 @@ static void clock_comparator_interrupt(unsigned int ext_int_code,
 static void etr_timing_alert(struct etr_irq_parm *);
 static void stp_timing_alert(struct stp_irq_parm *);
 
-static void timing_alert_interrupt(unsigned int ext_int_code,
+static void timing_alert_interrupt(struct ext_code ext_code,
 				   unsigned int param32, unsigned long param64)
 {
 	kstat_cpu(smp_processor_id()).irqs[EXTINT_TLA]++;

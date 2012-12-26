@@ -17,8 +17,6 @@
 
 static int ima_audit;
 
-#ifdef CONFIG_IMA_AUDIT
-
 /* ima_audit_setup - enable informational auditing messages */
 static int __init ima_audit_setup(char *str)
 {
@@ -29,7 +27,6 @@ static int __init ima_audit_setup(char *str)
 	return 1;
 }
 __setup("ima_audit=", ima_audit_setup);
-#endif
 
 void integrity_audit_msg(int audit_msgno, struct inode *inode,
 			 const unsigned char *fname, const char *op,
@@ -61,6 +58,6 @@ void integrity_audit_msg(int audit_msgno, struct inode *inode,
 		audit_log_untrustedstring(ab, inode->i_sb->s_id);
 		audit_log_format(ab, " ino=%lu", inode->i_ino);
 	}
-	audit_log_format(ab, " res=%d", !result ? 0 : 1);
+	audit_log_format(ab, " res=%d", !result);
 	audit_log_end(ab);
 }

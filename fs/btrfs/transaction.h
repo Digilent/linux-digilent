@@ -20,6 +20,7 @@
 #define __BTRFS_TRANSACTION__
 #include "btrfs_inode.h"
 #include "delayed-ref.h"
+#include "ctree.h"
 
 struct btrfs_transaction {
 	u64 transid;
@@ -43,11 +44,13 @@ struct btrfs_transaction {
 	wait_queue_head_t commit_wait;
 	struct list_head pending_snapshots;
 	struct btrfs_delayed_ref_root delayed_refs;
+	int aborted;
 };
 
 struct btrfs_trans_handle {
 	u64 transid;
 	u64 bytes_reserved;
+	u64 qgroup_reserved;
 	unsigned long use_count;
 	unsigned long blocks_reserved;
 	unsigned long blocks_used;
@@ -55,12 +58,23 @@ struct btrfs_trans_handle {
 	struct btrfs_transaction *transaction;
 	struct btrfs_block_rsv *block_rsv;
 	struct btrfs_block_rsv *orig_rsv;
+	int aborted;
+	int adding_csums;
+	/*
+	 * this root is only needed to validate that the root passed to
+	 * start_transaction is the same as the one passed to end_transaction.
+	 * Subvolume quota depends on this
+	 */
+	struct btrfs_root *root;
+	struct seq_list delayed_ref_elem;
+	struct list_head qgroup_ref_list;
 };
 
 struct btrfs_pending_snapshot {
 	struct dentry *dentry;
 	struct btrfs_root *root;
 	struct btrfs_root *snap;
+	struct btrfs_qgroup_inherit *inherit;
 	/* block reservation for the operation */
 	struct btrfs_block_rsv block_rsv;
 	/* extra metadata reseration for relocation */
@@ -114,4 +128,5 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 				struct extent_io_tree *dirty_pages, int mark);
 int btrfs_transaction_blocked(struct btrfs_fs_info *info);
 int btrfs_transaction_in_commit(struct btrfs_fs_info *info);
+void put_transaction(struct btrfs_transaction *transaction);
 #endif

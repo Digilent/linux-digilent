@@ -16,8 +16,8 @@
  */
 #include <linux/interrupt.h>
 
-#include "./common.h"
-#include "./mod.h"
+#include "common.h"
+#include "mod.h"
 
 #define usbhs_priv_to_modinfo(priv) (&priv->mod_info)
 #define usbhs_mod_info_call(priv, func, param...)	\
@@ -152,7 +152,7 @@ int usbhs_mod_probe(struct usbhs_priv *priv)
 
 	/* irq settings */
 	ret = request_irq(priv->irq, usbhs_interrupt,
-			  0, dev_name(dev), priv);
+			  priv->irqflags, dev_name(dev), priv);
 	if (ret) {
 		dev_err(dev, "irq request err\n");
 		goto mod_init_gadget_err;

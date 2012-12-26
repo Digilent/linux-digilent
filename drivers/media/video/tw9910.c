@@ -699,11 +699,9 @@ static int tw9910_g_fmt(struct v4l2_subdev *sd,
 	struct tw9910_priv *priv = to_tw9910(client);
 
 	if (!priv->scale) {
-		int ret;
-		u32 width = 640, height = 480;
-		ret = tw9910_set_frame(sd, &width, &height);
-		if (ret < 0)
-			return ret;
+		priv->scale = tw9910_select_norm(priv->norm, 640, 480);
+		if (!priv->scale)
+			return -EINVAL;
 	}
 
 	mf->width	= priv->scale->width;
@@ -951,21 +949,7 @@ static struct i2c_driver tw9910_i2c_driver = {
 	.id_table = tw9910_id,
 };
 
-/*
- * module function
- */
-static int __init tw9910_module_init(void)
-{
-	return i2c_add_driver(&tw9910_i2c_driver);
-}
-
-static void __exit tw9910_module_exit(void)
-{
-	i2c_del_driver(&tw9910_i2c_driver);
-}
-
-module_init(tw9910_module_init);
-module_exit(tw9910_module_exit);
+module_i2c_driver(tw9910_i2c_driver);
 
 MODULE_DESCRIPTION("SoC Camera driver for tw9910");
 MODULE_AUTHOR("Kuninori Morimoto");

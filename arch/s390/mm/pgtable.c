@@ -1,5 +1,5 @@
 /*
- *    Copyright IBM Corp. 2007,2011
+ *    Copyright IBM Corp. 2007, 2011
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
@@ -18,7 +18,6 @@
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
 
-#include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/tlb.h>
@@ -86,7 +85,6 @@ repeat:
 		crst_table_free(mm, table);
 	if (mm->context.asce_limit < limit)
 		goto repeat;
-	update_mm(mm, current);
 	return 0;
 }
 
@@ -94,9 +92,6 @@ void crst_table_downgrade(struct mm_struct *mm, unsigned long limit)
 {
 	pgd_t *pgd;
 
-	if (mm->context.asce_limit <= limit)
-		return;
-	__tlb_flush_mm(mm);
 	while (mm->context.asce_limit > limit) {
 		pgd = mm->pgd;
 		switch (pgd_val(*pgd) & _REGION_ENTRY_TYPE_MASK) {
@@ -119,7 +114,6 @@ void crst_table_downgrade(struct mm_struct *mm, unsigned long limit)
 		mm->task_size = mm->context.asce_limit;
 		crst_table_free(mm, (unsigned long *) pgd);
 	}
-	update_mm(mm, current);
 }
 #endif
 
@@ -679,8 +673,6 @@ void page_table_free(struct mm_struct *mm, unsigned long *table)
 	}
 }
 
-#ifdef CONFIG_HAVE_RCU_TABLE_FREE
-
 static void __page_table_free_rcu(void *table, unsigned bit)
 {
 	struct page *page;
@@ -734,7 +726,66 @@ void __tlb_remove_table(void *_table)
 		free_pages((unsigned long) table, ALLOC_ORDER);
 }
 
-#endif
+static void tlb_remove_table_smp_sync(void *arg)
+{
+	/* Simply deliver the interrupt */
+}
+
+static void tlb_remove_table_one(void *table)
+{
+	/*
+	 * This isn't an RCU grace period and hence the page-tables cannot be
+	 * assumed to be actually RCU-freed.
+	 *
+	 * It is however sufficient for software page-table walkers that rely
+	 * on IRQ disabling. See the comment near struct mmu_table_batch.
+	 */
+	smp_call_function(tlb_remove_table_smp_sync, NULL, 1);
+	__tlb_remove_table(table);
+}
+
+static void tlb_remove_table_rcu(struct rcu_head *head)
+{
+	struct mmu_table_batch *batch;
+	int i;
+
+	batch = container_of(head, struct mmu_table_batch, rcu);
+
+	for (i = 0; i < batch->nr; i++)
+		__tlb_remove_table(batch->tables[i]);
+
+	free_page((unsigned long)batch);
+}
+
+void tlb_table_flush(struct mmu_gather *tlb)
+{
+	struct mmu_table_batch **batch = &tlb->batch;
+
+	if (*batch) {
+		__tlb_flush_mm(tlb->mm);
+		call_rcu_sched(&(*batch)->rcu, tlb_remove_table_rcu);
+		*batch = NULL;
+	}
+}
+
+void tlb_remove_table(struct mmu_gather *tlb, void *table)
+{
+	struct mmu_table_batch **batch = &tlb->batch;
+
+	if (*batch == NULL) {
+		*batch = (struct mmu_table_batch *)
+			__get_free_page(GFP_NOWAIT | __GFP_NOWARN);
+		if (*batch == NULL) {
+			__tlb_flush_mm(tlb->mm);
+			tlb_remove_table_one(table);
+			return;
+		}
+		(*batch)->nr = 0;
+	}
+	(*batch)->tables[(*batch)->nr++] = table;
+	if ((*batch)->nr == MAX_TABLE_BATCH)
+		tlb_table_flush(tlb);
+}
 
 /*
  * switch on pgstes for its userspace process (for kvm)
@@ -745,7 +796,7 @@ int s390_enable_sie(void)
 	struct mm_struct *mm, *old_mm;
 
 	/* Do we have switched amode? If no, we cannot do sie */
-	if (user_mode == HOME_SPACE_MODE)
+	if (addressing_mode == HOME_SPACE_MODE)
 		return -EINVAL;
 
 	/* Do we have pgstes? if yes, we are done */
@@ -766,6 +817,8 @@ int s390_enable_sie(void)
 
 	/* we copy the mm and let dup_mm create the page tables with_pgstes */
 	tsk->mm->context.alloc_pgste = 1;
+	/* make sure that both mms have a correct rss state */
+	sync_mm_rss(tsk->mm);
 	mm = dup_mm(tsk);
 	tsk->mm->context.alloc_pgste = 0;
 	if (!mm)

@@ -24,6 +24,8 @@
 #include <linux/serial_8250.h>
 #include <linux/smsc911x.h>
 #include <linux/types.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 
 #include <asm/irq.h>
 #include <asm/mach-types.h>
@@ -71,7 +73,7 @@ static struct plat_serial8250_port serial_platform_data[] = {
 	{
 		.membase	= KZM_ARM11_IO_ADDRESS(KZM_ARM11_16550),
 		.mapbase	= KZM_ARM11_16550,
-		.irq		= IOMUX_TO_IRQ(MX31_PIN_GPIO1_1),
+		/* irq number is run-time assigned */
 		.irqflags	= IRQ_TYPE_EDGE_RISING,
 		.uartclk	= 14745600,
 		.regshift	= 0,
@@ -89,8 +91,7 @@ static struct resource serial8250_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.start	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_1),
-		.end	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_1),
+		/* irq number is run-time assigned */
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -123,6 +124,13 @@ static int __init kzm_init_ext_uart(void)
 	tmp |= 0x2;
 	__raw_writeb(tmp, KZM_ARM11_IO_ADDRESS(KZM_ARM11_CTL1));
 
+	serial_platform_data[0].irq =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_1));
+	serial8250_resources[1].start =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_1));
+	serial8250_resources[1].end =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_1));
+
 	return platform_device_register(&serial_device);
 }
 #else
@@ -150,8 +158,7 @@ static struct resource kzm_smsc9118_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.start	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_2),
-		.end	= IOMUX_TO_IRQ(MX31_PIN_GPIO1_2),
+		/* irq number is run-time assigned */
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
 	},
 };
@@ -166,6 +173,11 @@ static struct platform_device kzm_smsc9118_device = {
 			  },
 };
 
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+};
+
 static int __init kzm_init_smsc9118(void)
 {
 	/*
@@ -174,6 +186,13 @@ static int __init kzm_init_smsc9118(void)
 	mxc_iomux_mode(IOMUX_MODE(MX31_PIN_GPIO1_2, IOMUX_CONFIG_GPIO));
 	gpio_request(IOMUX_TO_GPIO(MX31_PIN_GPIO1_2), "smsc9118-int");
 	gpio_direction_input(IOMUX_TO_GPIO(MX31_PIN_GPIO1_2));
+
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
+	kzm_smsc9118_resources[1].start =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_2));
+	kzm_smsc9118_resources[1].end =
+			gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO1_2));
 
 	return platform_device_register(&kzm_smsc9118_device);
 }

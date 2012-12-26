@@ -1585,7 +1585,7 @@ static int rt2500pci_validate_eeprom(struct rt2x00_dev *rt2x00dev)
 	 */
 	mac = rt2x00_eeprom_addr(rt2x00dev, EEPROM_MAC_ADDR_0);
 	if (!is_valid_ether_addr(mac)) {
-		random_ether_addr(mac);
+		eth_random_addr(mac);
 		EEPROM(rt2x00dev, "MAC: %pM\n", mac);
 	}
 
@@ -1929,6 +1929,7 @@ static int rt2500pci_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 static int rt2500pci_probe_hw(struct rt2x00_dev *rt2x00dev)
 {
 	int retval;
+	u32 reg;
 
 	/*
 	 * Allocate eeprom data.
@@ -1940,6 +1941,14 @@ static int rt2500pci_probe_hw(struct rt2x00_dev *rt2x00dev)
 	retval = rt2500pci_init_eeprom(rt2x00dev);
 	if (retval)
 		return retval;
+
+	/*
+	 * Enable rfkill polling by setting GPIO direction of the
+	 * rfkill switch GPIO pin correctly.
+	 */
+	rt2x00pci_register_read(rt2x00dev, GPIOCSR, &reg);
+	rt2x00_set_field32(&reg, GPIOCSR_DIR0, 1);
+	rt2x00pci_register_write(rt2x00dev, GPIOCSR, reg);
 
 	/*
 	 * Initialize hw specifications.
@@ -2119,15 +2128,4 @@ static struct pci_driver rt2500pci_driver = {
 	.resume		= rt2x00pci_resume,
 };
 
-static int __init rt2500pci_init(void)
-{
-	return pci_register_driver(&rt2500pci_driver);
-}
-
-static void __exit rt2500pci_exit(void)
-{
-	pci_unregister_driver(&rt2500pci_driver);
-}
-
-module_init(rt2500pci_init);
-module_exit(rt2500pci_exit);
+module_pci_driver(rt2500pci_driver);

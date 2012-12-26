@@ -1,5 +1,5 @@
 /**
- * drivers/net/ks8851_mll.c
+ * drivers/net/ethernet/micrel/ks8851_mll.c
  * Copyright (c) 2009 Micrel Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -16,8 +16,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-/**
- * Supports:
+/* Supports:
  * KS8851 16bit MLL chip from Micrel Inc.
  */
 
@@ -35,12 +34,12 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <asm/io.h>
+#include <linux/ks8851_mll.h>
 
 #define	DRV_NAME	"ks8851_mll"
 
 static u8 KS_DEFAULT_MAC_ADDRESS[] = { 0x00, 0x10, 0xA1, 0x86, 0x95, 0x11 };
-#define MAX_RECV_FRAMES			32
+#define MAX_RECV_FRAMES			255
 #define MAX_BUF_SIZE			2048
 #define TX_BUF_SIZE			2000
 #define RX_BUF_SIZE			2000
@@ -465,8 +464,7 @@ static int msg_enable;
 #define BE1             0x2000      /* Byte Enable 1 */
 #define BE0             0x1000      /* Byte Enable 0 */
 
-/**
- * register read/write calls.
+/* register read/write calls.
  *
  * All these calls issue transactions to access the chip's registers. They
  * all require that the necessary lock is held to prevent accesses when the
@@ -794,7 +792,7 @@ static void ks_rcv(struct ks_net *ks, struct net_device *netdev)
 
 	frame_hdr = ks->frame_head_info;
 	while (ks->frame_cnt--) {
-		skb = dev_alloc_skb(frame_hdr->len + 16);
+		skb = netdev_alloc_skb(netdev, frame_hdr->len + 16);
 		if (likely(skb && (frame_hdr->sts & RXFSHR_RXFV) &&
 			(frame_hdr->len < RX_BUF_SIZE) && frame_hdr->len)) {
 			skb_reserve(skb, 2);
@@ -837,7 +835,7 @@ static void ks_update_link_status(struct net_device *netdev, struct ks_net *ks)
 
 /**
  * ks_irq - device interrupt handler
- * @irq: Interrupt number passed from the IRQ hnalder.
+ * @irq: Interrupt number passed from the IRQ handler.
  * @pw: The private word passed to register_irq(), our struct ks_net.
  *
  * This is the handler invoked to find out what happened
@@ -1103,7 +1101,7 @@ static void ks_set_grpaddr(struct ks_net *ks)
 	}
 }  /* ks_set_grpaddr */
 
-/*
+/**
 * ks_clear_mcast - clear multicast information
 *
 * @ks : The chip information
@@ -1239,6 +1237,7 @@ static int ks_set_mac_address(struct net_device *netdev, void *paddr)
 	struct sockaddr *addr = paddr;
 	u8 *da;
 
+	netdev->addr_assign_type &= ~NET_ADDR_RANDOM;
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
 
 	da = (u8 *)netdev->dev_addr;
@@ -1499,10 +1498,8 @@ static int ks_hw_init(struct ks_net *ks)
 	ks->mcast_lst_size = 0;
 
 	ks->frame_head_info = kmalloc(MHEADER_SIZE, GFP_KERNEL);
-	if (!ks->frame_head_info) {
-		pr_err("Error: Fail to allocate frame memory\n");
+	if (!ks->frame_head_info)
 		return false;
-	}
 
 	ks_set_mac(ks, KS_DEFAULT_MAC_ADDRESS);
 	return true;
@@ -1516,6 +1513,7 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 	struct net_device *netdev;
 	struct ks_net *ks;
 	u16 id, data;
+	struct ks8851_mll_platform_data *pdata;
 
 	io_d = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	io_c = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -1597,17 +1595,27 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 	ks_disable_qmu(ks);
 	ks_setup(ks);
 	ks_setup_int(ks);
-	memcpy(netdev->dev_addr, ks->mac_addr, 6);
 
 	data = ks_rdreg16(ks, KS_OBCR);
 	ks_wrreg16(ks, KS_OBCR, data | OBCR_ODS_16MA);
 
-	/**
-	 * If you want to use the default MAC addr,
-	 * comment out the 2 functions below.
-	 */
+	/* overwriting the default MAC address */
+	pdata = pdev->dev.platform_data;
+	if (!pdata) {
+		netdev_err(netdev, "No platform data\n");
+		err = -ENODEV;
+		goto err_pdata;
+	}
+	memcpy(ks->mac_addr, pdata->mac_addr, 6);
+	if (!is_valid_ether_addr(ks->mac_addr)) {
+		/* Use random MAC address if none passed */
+		eth_random_addr(ks->mac_addr);
+		netdev_info(netdev, "Using random mac address\n");
+	}
+	netdev_info(netdev, "Mac address is: %pM\n", ks->mac_addr);
 
-	random_ether_addr(netdev->dev_addr);
+	memcpy(netdev->dev_addr, ks->mac_addr, 6);
+
 	ks_set_mac(ks, netdev->dev_addr);
 
 	id = ks_rdreg16(ks, KS_CIDER);
@@ -1616,6 +1624,8 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 		    (id >> 8) & 0xff, (id >> 4) & 0xf, (id >> 1) & 0x7);
 	return 0;
 
+err_pdata:
+	unregister_netdev(netdev);
 err_register:
 err_get_irq:
 	iounmap(ks->hw_addr_cmd);

@@ -1000,6 +1000,11 @@ static int __devinit rtsx_probe(struct pci_dev *pci,
 
 	rtsx_init_chip(dev->chip);
 
+	/* set the supported max_lun and max_id for the scsi host
+	 * NOTE: the minimal value of max_id is 1 */
+	host->max_id = 1;
+	host->max_lun = dev->chip->max_lun;
+
 	/* Start up our control thread */
 	th = kthread_run(rtsx_control_thread, dev, CR_DRIVER_NAME);
 	if (IS_ERR(th)) {
@@ -1016,7 +1021,7 @@ static int __devinit rtsx_probe(struct pci_dev *pci,
 	}
 
 	/* Start up the thread for delayed SCSI-device scanning */
-	th = kthread_create(rtsx_scan_thread, dev, "rtsx-scan");
+	th = kthread_run(rtsx_scan_thread, dev, "rtsx-scan");
 	if (IS_ERR(th)) {
 		printk(KERN_ERR "Unable to start the device-scanning thread\n");
 		complete(&dev->scanning_done);
@@ -1024,8 +1029,6 @@ static int __devinit rtsx_probe(struct pci_dev *pci,
 		err = PTR_ERR(th);
 		goto errout;
 	}
-
-	wake_up_process(th);
 
 	/* Start up the thread for polling thread */
 	th = kthread_run(rtsx_polling_thread, dev, "rtsx-polling");

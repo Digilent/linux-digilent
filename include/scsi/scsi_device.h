@@ -1,7 +1,6 @@
 #ifndef _SCSI_SCSI_DEVICE_H
 #define _SCSI_SCSI_DEVICE_H
 
-#include <linux/device.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
@@ -9,6 +8,7 @@
 #include <scsi/scsi.h>
 #include <linux/atomic.h>
 
+struct device;
 struct request_queue;
 struct scsi_cmnd;
 struct scsi_lun;
@@ -42,6 +42,7 @@ enum scsi_device_state {
 				 * originate in the mid-layer) */
 	SDEV_OFFLINE,		/* Device offlined (by error handling or
 				 * user request */
+	SDEV_TRANSPORT_OFFLINE,	/* Offlined by transport class error handler */
 	SDEV_BLOCK,		/* Device blocked by scsi lld.  No
 				 * scsi commands from user or midlayer
 				 * should be issued to the scsi
@@ -136,6 +137,7 @@ struct scsi_device {
 	unsigned use_10_for_ms:1; /* first try 10-byte mode sense/select */
 	unsigned skip_ms_page_8:1;	/* do not use MODE SENSE page 0x08 */
 	unsigned skip_ms_page_3f:1;	/* do not use MODE SENSE page 0x3f */
+	unsigned skip_vpd_pages:1;	/* do not read VPD pages */
 	unsigned use_192_bytes_for_3f:1; /* ask for 192 bytes from page 0x3f */
 	unsigned no_start_on_add:1;	/* do not issue start on add */
 	unsigned allow_restart:1; /* issue START_UNIT in error handler */
@@ -150,7 +152,10 @@ struct scsi_device {
 					   SD_LAST_BUGGY_SECTORS */
 	unsigned no_read_disc_info:1;	/* Avoid READ_DISC_INFO cmds */
 	unsigned no_read_capacity_16:1; /* Avoid READ_CAPACITY_16 cmds */
+	unsigned try_rc_10_first:1;	/* Try READ_CAPACACITY_10 first */
 	unsigned is_visible:1;	/* is the device visible in sysfs */
+	unsigned can_power_off:1; /* Device supports runtime power off */
+	unsigned wce_default_on:1;	/* Cache is ON by default */
 
 	DECLARE_BITMAP(supported_events, SDEV_EVT_MAXBITS); /* supported events */
 	struct list_head event_list;	/* asserted events */
@@ -246,8 +251,10 @@ struct scsi_target {
 	unsigned int		single_lun:1;	/* Indicates we should only
 						 * allow I/O to one of the luns
 						 * for the device at a time. */
-	unsigned int		pdt_1f_for_no_lun;	/* PDT = 0x1f */
-						/* means no lun present */
+	unsigned int		pdt_1f_for_no_lun:1;	/* PDT = 0x1f
+						 * means no lun present. */
+	unsigned int		no_report_luns:1;	/* Don't use
+						 * REPORT LUNS for scanning. */
 	/* commands actually active on LLD. protected by host lock. */
 	unsigned int		target_busy;
 	/*
@@ -369,7 +376,7 @@ extern void scsi_scan_target(struct device *parent, unsigned int channel,
 			     unsigned int id, unsigned int lun, int rescan);
 extern void scsi_target_reap(struct scsi_target *);
 extern void scsi_target_block(struct device *);
-extern void scsi_target_unblock(struct device *);
+extern void scsi_target_unblock(struct device *, enum scsi_device_state);
 extern void scsi_remove_target(struct device *);
 extern void int_to_scsilun(unsigned int, struct scsi_lun *);
 extern int scsilun_to_int(struct scsi_lun *);
@@ -417,6 +424,7 @@ static inline unsigned int sdev_id(struct scsi_device *sdev)
 static inline int scsi_device_online(struct scsi_device *sdev)
 {
 	return (sdev->sdev_state != SDEV_OFFLINE &&
+		sdev->sdev_state != SDEV_TRANSPORT_OFFLINE &&
 		sdev->sdev_state != SDEV_DEL);
 }
 static inline int scsi_device_blocked(struct scsi_device *sdev)

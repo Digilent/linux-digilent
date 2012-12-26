@@ -170,7 +170,7 @@ static struct clk *clk_src_mout_am_list[] = {
 	[1] = &clk_div_apll2.clk,
 };
 
-struct clksrc_sources clk_src_mout_am = {
+static struct clksrc_sources clk_src_mout_am = {
 	.sources	= clk_src_mout_am_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_mout_am_list),
 };
@@ -212,7 +212,7 @@ static struct clk *clk_src_mout_onenand_list[] = {
 	[1] = &clk_div_d1_bus.clk,
 };
 
-struct clksrc_sources clk_src_mout_onenand = {
+static struct clksrc_sources clk_src_mout_onenand = {
 	.sources	= clk_src_mout_onenand_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_mout_onenand_list),
 };
@@ -564,19 +564,19 @@ static struct clk init_clocks_off[] = {
 		.ctrlbit	= (1 << 5),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s5pc100-spi.0",
 		.parent		= &clk_div_d1_bus.clk,
 		.enable		= s5pc100_d1_4_ctrl,
 		.ctrlbit	= (1 << 6),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s5pc100-spi.1",
 		.parent		= &clk_div_d1_bus.clk,
 		.enable		= s5pc100_d1_4_ctrl,
 		.ctrlbit	= (1 << 7),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.2",
+		.devname	= "s5pc100-spi.2",
 		.parent		= &clk_div_d1_bus.clk,
 		.enable		= s5pc100_d1_4_ctrl,
 		.ctrlbit	= (1 << 8),
@@ -702,7 +702,7 @@ static struct clk clk_hsmmc0 = {
 
 static struct clk clk_48m_spi0 = {
 	.name		= "spi_48m",
-	.devname	= "s3c64xx-spi.0",
+	.devname	= "s5pc100-spi.0",
 	.parent		= &clk_mout_48m.clk,
 	.enable		= s5pc100_sclk0_ctrl,
 	.ctrlbit	= (1 << 7),
@@ -710,7 +710,7 @@ static struct clk clk_48m_spi0 = {
 
 static struct clk clk_48m_spi1 = {
 	.name		= "spi_48m",
-	.devname	= "s3c64xx-spi.1",
+	.devname	= "s5pc100-spi.1",
 	.parent		= &clk_mout_48m.clk,
 	.enable		= s5pc100_sclk0_ctrl,
 	.ctrlbit	= (1 << 8),
@@ -718,7 +718,7 @@ static struct clk clk_48m_spi1 = {
 
 static struct clk clk_48m_spi2 = {
 	.name		= "spi_48m",
-	.devname	= "s3c64xx-spi.2",
+	.devname	= "s5pc100-spi.2",
 	.parent		= &clk_mout_48m.clk,
 	.enable		= s5pc100_sclk0_ctrl,
 	.ctrlbit	= (1 << 9),
@@ -756,7 +756,7 @@ static struct clk *clk_src_group1_list[] = {
 	[3] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_group1 = {
+static struct clksrc_sources clk_src_group1 = {
 	.sources	= clk_src_group1_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group1_list),
 };
@@ -766,7 +766,7 @@ static struct clk *clk_src_group2_list[] = {
 	[1] = &clk_div_mpll.clk,
 };
 
-struct clksrc_sources clk_src_group2 = {
+static struct clksrc_sources clk_src_group2 = {
 	.sources	= clk_src_group2_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group2_list),
 };
@@ -780,7 +780,7 @@ static struct clk *clk_src_group3_list[] = {
 	[5] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_group3 = {
+static struct clksrc_sources clk_src_group3 = {
 	.sources	= clk_src_group3_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group3_list),
 };
@@ -806,7 +806,7 @@ static struct clk *clk_src_group4_list[] = {
 	[5] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_group4 = {
+static struct clksrc_sources clk_src_group4 = {
 	.sources	= clk_src_group4_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group4_list),
 };
@@ -831,7 +831,7 @@ static struct clk *clk_src_group5_list[] = {
 	[4] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_group5 = {
+static struct clksrc_sources clk_src_group5 = {
 	.sources	= clk_src_group5_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group5_list),
 };
@@ -854,7 +854,7 @@ static struct clk *clk_src_group6_list[] = {
 	[2] = &clk_div_hdmi.clk,
 };
 
-struct clksrc_sources clk_src_group6 = {
+static struct clksrc_sources clk_src_group6 = {
 	.sources	= clk_src_group6_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group6_list),
 };
@@ -866,7 +866,7 @@ static struct clk *clk_src_group7_list[] = {
 	[3] = &clk_vclk54m,
 };
 
-struct clksrc_sources clk_src_group7 = {
+static struct clksrc_sources clk_src_group7 = {
 	.sources	= clk_src_group7_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_group7_list),
 };
@@ -877,7 +877,7 @@ static struct clk *clk_src_mmc0_list[] = {
 	[2] = &clk_fin_epll,
 };
 
-struct clksrc_sources clk_src_mmc0 = {
+static struct clksrc_sources clk_src_mmc0 = {
 	.sources	= clk_src_mmc0_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_mmc0_list),
 };
@@ -889,7 +889,7 @@ static struct clk *clk_src_mmc12_list[] = {
 	[3] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_mmc12 = {
+static struct clksrc_sources clk_src_mmc12 = {
 	.sources	= clk_src_mmc12_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_mmc12_list),
 };
@@ -901,7 +901,7 @@ static struct clk *clk_src_irda_usb_list[] = {
 	[3] = &clk_mout_hpll.clk,
 };
 
-struct clksrc_sources clk_src_irda_usb = {
+static struct clksrc_sources clk_src_irda_usb = {
 	.sources	= clk_src_irda_usb_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_irda_usb_list),
 };
@@ -912,7 +912,7 @@ static struct clk *clk_src_pwi_list[] = {
 	[2] = &clk_div_mpll.clk,
 };
 
-struct clksrc_sources clk_src_pwi = {
+static struct clksrc_sources clk_src_pwi = {
 	.sources	= clk_src_pwi_list,
 	.nr_sources	= ARRAY_SIZE(clk_src_pwi_list),
 };
@@ -923,7 +923,7 @@ static struct clk *clk_sclk_spdif_list[] = {
 	[2] = &clk_sclk_audio2.clk,
 };
 
-struct clksrc_sources clk_src_sclk_spdif = {
+static struct clksrc_sources clk_src_sclk_spdif = {
 	.sources	= clk_sclk_spdif_list,
 	.nr_sources	= ARRAY_SIZE(clk_sclk_spdif_list),
 };
@@ -1085,7 +1085,7 @@ static struct clksrc_clk clk_sclk_mmc2 = {
 static struct clksrc_clk clk_sclk_spi0 = {
 	.clk	= {
 		.name		= "sclk_spi",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s5pc100-spi.0",
 		.ctrlbit	= (1 << 4),
 		.enable		= s5pc100_sclk0_ctrl,
 	},
@@ -1097,7 +1097,7 @@ static struct clksrc_clk clk_sclk_spi0 = {
 static struct clksrc_clk clk_sclk_spi1 = {
 	.clk	= {
 		.name		= "sclk_spi",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s5pc100-spi.1",
 		.ctrlbit	= (1 << 5),
 		.enable		= s5pc100_sclk0_ctrl,
 	},
@@ -1109,7 +1109,7 @@ static struct clksrc_clk clk_sclk_spi1 = {
 static struct clksrc_clk clk_sclk_spi2 = {
 	.clk	= {
 		.name		= "sclk_spi",
-		.devname	= "s3c64xx-spi.2",
+		.devname	= "s5pc100-spi.2",
 		.ctrlbit	= (1 << 6),
 		.enable		= s5pc100_sclk0_ctrl,
 	},
@@ -1315,12 +1315,12 @@ static struct clk_lookup s5pc100_clk_lookup[] = {
 	CLKDEV_INIT("s3c-sdhci.1", "mmc_busclk.2", &clk_sclk_mmc1.clk),
 	CLKDEV_INIT("s3c-sdhci.2", "mmc_busclk.2", &clk_sclk_mmc2.clk),
 	CLKDEV_INIT(NULL, "spi_busclk0", &clk_p),
-	CLKDEV_INIT("s3c64xx-spi.0", "spi_busclk1", &clk_48m_spi0),
-	CLKDEV_INIT("s3c64xx-spi.0", "spi_busclk2", &clk_sclk_spi0.clk),
-	CLKDEV_INIT("s3c64xx-spi.1", "spi_busclk1", &clk_48m_spi1),
-	CLKDEV_INIT("s3c64xx-spi.1", "spi_busclk2", &clk_sclk_spi1.clk),
-	CLKDEV_INIT("s3c64xx-spi.2", "spi_busclk1", &clk_48m_spi2),
-	CLKDEV_INIT("s3c64xx-spi.2", "spi_busclk2", &clk_sclk_spi2.clk),
+	CLKDEV_INIT("s5pc100-spi.0", "spi_busclk1", &clk_48m_spi0),
+	CLKDEV_INIT("s5pc100-spi.0", "spi_busclk2", &clk_sclk_spi0.clk),
+	CLKDEV_INIT("s5pc100-spi.1", "spi_busclk1", &clk_48m_spi1),
+	CLKDEV_INIT("s5pc100-spi.1", "spi_busclk2", &clk_sclk_spi1.clk),
+	CLKDEV_INIT("s5pc100-spi.2", "spi_busclk1", &clk_48m_spi2),
+	CLKDEV_INIT("s5pc100-spi.2", "spi_busclk2", &clk_sclk_spi2.clk),
 };
 
 void __init s5pc100_register_clocks(void)

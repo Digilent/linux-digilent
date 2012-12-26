@@ -211,11 +211,6 @@ static int nouveau_dsm_power_state(enum vga_switcheroo_client_id id,
 	return nouveau_dsm_set_discrete_state(nouveau_dsm_priv.dhandle, state);
 }
 
-static int nouveau_dsm_init(void)
-{
-	return 0;
-}
-
 static int nouveau_dsm_get_client_id(struct pci_dev *pdev)
 {
 	/* easy option one - intel vendor ID means Integrated */
@@ -232,7 +227,6 @@ static int nouveau_dsm_get_client_id(struct pci_dev *pdev)
 static struct vga_switcheroo_handler nouveau_dsm_handler = {
 	.switchto = nouveau_dsm_switchto,
 	.power_state = nouveau_dsm_power_state,
-	.init = nouveau_dsm_init,
 	.get_client_id = nouveau_dsm_get_client_id,
 };
 
@@ -270,7 +264,7 @@ static bool nouveau_dsm_detect(void)
 	struct acpi_buffer buffer = {sizeof(acpi_method_name), acpi_method_name};
 	struct pci_dev *pdev = NULL;
 	int has_dsm = 0;
-	int has_optimus;
+	int has_optimus = 0;
 	int vga_count = 0;
 	bool guid_valid;
 	int retval;
@@ -338,7 +332,8 @@ void nouveau_switcheroo_optimus_dsm(void)
 
 void nouveau_unregister_dsm_handler(void)
 {
-	vga_switcheroo_unregister_handler();
+	if (nouveau_dsm_priv.optimus_detected || nouveau_dsm_priv.dsm_detected)
+		vga_switcheroo_unregister_handler();
 }
 
 /* retrieve the ROM in 4k blocks */

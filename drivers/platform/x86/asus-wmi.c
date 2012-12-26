@@ -47,6 +47,7 @@
 #include <linux/thermal.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
+#include <acpi/video.h>
 
 #include "asus-wmi.h"
 
@@ -98,6 +99,7 @@ MODULE_LICENSE("GPL");
 #define ASUS_WMI_DEVID_WIRELESS_LED	0x00010002
 #define ASUS_WMI_DEVID_CWAP		0x00010003
 #define ASUS_WMI_DEVID_WLAN		0x00010011
+#define ASUS_WMI_DEVID_WLAN_LED		0x00010012
 #define ASUS_WMI_DEVID_BLUETOOTH	0x00010013
 #define ASUS_WMI_DEVID_GPS		0x00010015
 #define ASUS_WMI_DEVID_WIMAX		0x00010017
@@ -135,6 +137,9 @@ MODULE_LICENSE("GPL");
 
 /* Power */
 #define ASUS_WMI_DEVID_PROCESSOR_STATE	0x00120012
+
+/* Deep S3 / Resume on LID open */
+#define ASUS_WMI_DEVID_LID_RESUME	0x00120031
 
 /* DSTS masks */
 #define ASUS_WMI_DSTS_STATUS_BIT	0x00000001
@@ -411,7 +416,7 @@ static int kbd_led_read(struct asus_wmi *asus, int *level, int *env)
 
 	if (retval >= 0) {
 		if (level)
-			*level = retval & 0x80 ? retval & 0x7F : 0;
+			*level = retval & 0x7F;
 		if (env)
 			*env = (retval >> 8) & 0x7F;
 		retval = 0;
@@ -571,7 +576,7 @@ static void asus_rfkill_hotplug(struct asus_wmi *asus)
 		} else {
 			dev = pci_get_slot(bus, 0);
 			if (dev) {
-				pci_remove_bus_device(dev);
+				pci_stop_and_remove_bus_device(dev);
 				pci_dev_put(dev);
 			}
 		}
@@ -725,8 +730,21 @@ static int asus_rfkill_set(void *data, bool blocked)
 {
 	struct asus_rfkill *priv = data;
 	u32 ctrl_param = !blocked;
+	u32 dev_id = priv->dev_id;
 
-	return asus_wmi_set_devstate(priv->dev_id, ctrl_param, NULL);
+	/*
+	 * If the user bit is set, BIOS can't set and record the wlan status,
+	 * it will report the value read from id ASUS_WMI_DEVID_WLAN_LED
+	 * while we query the wlan status through WMI(ASUS_WMI_DEVID_WLAN).
+	 * So, we have to record wlan status in id ASUS_WMI_DEVID_WLAN_LED
+	 * while setting the wlan status through WMI.
+	 * This is also the behavior that windows app will do.
+	 */
+	if ((dev_id == ASUS_WMI_DEVID_WLAN) &&
+	     priv->asus->driver->wlan_ctrl_by_user)
+		dev_id = ASUS_WMI_DEVID_WLAN_LED;
+
+	return asus_wmi_set_devstate(dev_id, ctrl_param, NULL);
 }
 
 static void asus_rfkill_query(struct rfkill *rfkill, void *data)
@@ -784,7 +802,8 @@ static int asus_new_rfkill(struct asus_wmi *asus,
 	arfkill->dev_id = dev_id;
 	arfkill->asus = asus;
 
-	if (dev_id == ASUS_WMI_DEVID_WLAN && asus->driver->hotplug_wireless)
+	if (dev_id == ASUS_WMI_DEVID_WLAN &&
+	    asus->driver->quirks->hotplug_wireless)
 		*rfkill = rfkill_alloc(name, &asus->platform_device->dev, type,
 				       &asus_rfkill_wlan_ops, arfkill);
 	else
@@ -895,7 +914,7 @@ static int asus_wmi_rfkill_init(struct asus_wmi *asus)
 	if (result && result != -ENODEV)
 		goto exit;
 
-	if (!asus->driver->hotplug_wireless)
+	if (!asus->driver->quirks->hotplug_wireless)
 		goto exit;
 
 	result = asus_setup_pci_hotplug(asus);
@@ -1075,7 +1094,12 @@ static int asus_wmi_hwmon_init(struct asus_wmi *asus)
  */
 static int read_backlight_power(struct asus_wmi *asus)
 {
-	int ret = asus_wmi_get_devstate_simple(asus, ASUS_WMI_DEVID_BACKLIGHT);
+	int ret;
+	if (asus->driver->quirks->store_backlight_power)
+		ret = !asus->driver->panel_power;
+	else
+		ret = asus_wmi_get_devstate_simple(asus,
+						   ASUS_WMI_DEVID_BACKLIGHT);
 
 	if (ret < 0)
 		return ret;
@@ -1116,26 +1140,51 @@ static int read_brightness(struct backlight_device *bd)
 	return retval & ASUS_WMI_DSTS_BRIGHTNESS_MASK;
 }
 
+static u32 get_scalar_command(struct backlight_device *bd)
+{
+	struct asus_wmi *asus = bl_get_data(bd);
+	u32 ctrl_param = 0;
+
+	if ((asus->driver->brightness < bd->props.brightness) ||
+	    bd->props.brightness == bd->props.max_brightness)
+		ctrl_param = 0x00008001;
+	else if ((asus->driver->brightness > bd->props.brightness) ||
+		 bd->props.brightness == 0)
+		ctrl_param = 0x00008000;
+
+	asus->driver->brightness = bd->props.brightness;
+
+	return ctrl_param;
+}
+
 static int update_bl_status(struct backlight_device *bd)
 {
 	struct asus_wmi *asus = bl_get_data(bd);
 	u32 ctrl_param;
-	int power, err;
-
-	ctrl_param = bd->props.brightness;
-
-	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_BRIGHTNESS,
-				    ctrl_param, NULL);
-
-	if (err < 0)
-		return err;
+	int power, err = 0;
 
 	power = read_backlight_power(asus);
 	if (power != -ENODEV && bd->props.power != power) {
 		ctrl_param = !!(bd->props.power == FB_BLANK_UNBLANK);
 		err = asus_wmi_set_devstate(ASUS_WMI_DEVID_BACKLIGHT,
 					    ctrl_param, NULL);
+		if (asus->driver->quirks->store_backlight_power)
+			asus->driver->panel_power = bd->props.power;
+
+		/* When using scalar brightness, updating the brightness
+		 * will mess with the backlight power */
+		if (asus->driver->quirks->scalar_panel_brightness)
+			return err;
 	}
+
+	if (asus->driver->quirks->scalar_panel_brightness)
+		ctrl_param = get_scalar_command(bd);
+	else
+		ctrl_param = bd->props.brightness;
+
+	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_BRIGHTNESS,
+				    ctrl_param, NULL);
+
 	return err;
 }
 
@@ -1196,9 +1245,14 @@ static int asus_wmi_backlight_init(struct asus_wmi *asus)
 
 	asus->backlight_device = bd;
 
+	if (asus->driver->quirks->store_backlight_power)
+		asus->driver->panel_power = power;
+
 	bd->props.brightness = read_brightness(bd);
 	bd->props.power = power;
 	backlight_update_status(bd);
+
+	asus->driver->brightness = bd->props.brightness;
 
 	return 0;
 }
@@ -1329,6 +1383,7 @@ static ssize_t show_sys_wmi(struct asus_wmi *asus, int devid, char *buf)
 ASUS_WMI_CREATE_DEVICE_ATTR(touchpad, 0644, ASUS_WMI_DEVID_TOUCHPAD);
 ASUS_WMI_CREATE_DEVICE_ATTR(camera, 0644, ASUS_WMI_DEVID_CAMERA);
 ASUS_WMI_CREATE_DEVICE_ATTR(cardr, 0644, ASUS_WMI_DEVID_CARDREADER);
+ASUS_WMI_CREATE_DEVICE_ATTR(lid_resume, 0644, ASUS_WMI_DEVID_LID_RESUME);
 
 static ssize_t store_cpufv(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
@@ -1354,6 +1409,7 @@ static struct attribute *platform_attributes[] = {
 	&dev_attr_camera.attr,
 	&dev_attr_cardr.attr,
 	&dev_attr_touchpad.attr,
+	&dev_attr_lid_resume.attr,
 	NULL
 };
 
@@ -1372,6 +1428,8 @@ static umode_t asus_sysfs_is_visible(struct kobject *kobj,
 		devid = ASUS_WMI_DEVID_CARDREADER;
 	else if (attr == &dev_attr_touchpad.attr)
 		devid = ASUS_WMI_DEVID_TOUCHPAD;
+	else if (attr == &dev_attr_lid_resume.attr)
+		devid = ASUS_WMI_DEVID_LID_RESUME;
 
 	if (devid != -1)
 		ok = !(asus_wmi_get_devstate_simple(asus, devid) < 0);
@@ -1431,19 +1489,14 @@ static int asus_wmi_platform_init(struct asus_wmi *asus)
 	 */
 	if (!asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS, 0, 0, NULL))
 		asus->dsts_id = ASUS_WMI_METHODID_DSTS;
-	else if (!asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS2, 0, 0, NULL))
+	else
 		asus->dsts_id = ASUS_WMI_METHODID_DSTS2;
-
-	if (!asus->dsts_id) {
-		pr_err("Can't find DSTS");
-		return -ENODEV;
-	}
 
 	/* CWAP allow to define the behavior of the Fn+F2 key,
 	 * this method doesn't seems to be present on Eee PCs */
-	if (asus->driver->wapf >= 0)
+	if (asus->driver->quirks->wapf >= 0)
 		asus_wmi_set_devstate(ASUS_WMI_DEVID_CWAP,
-				      asus->driver->wapf, NULL);
+				      asus->driver->quirks->wapf, NULL);
 
 	return asus_wmi_sysfs_init(asus->platform_device);
 }
@@ -1612,6 +1665,7 @@ static int asus_wmi_add(struct platform_device *pdev)
 	struct asus_wmi *asus;
 	acpi_status status;
 	int err;
+	u32 result;
 
 	asus = kzalloc(sizeof(struct asus_wmi), GFP_KERNEL);
 	if (!asus)
@@ -1622,8 +1676,8 @@ static int asus_wmi_add(struct platform_device *pdev)
 	wdrv->platform_device = pdev;
 	platform_set_drvdata(asus->platform_device, asus);
 
-	if (wdrv->quirks)
-		wdrv->quirks(asus->driver);
+	if (wdrv->detect_quirks)
+		wdrv->detect_quirks(asus->driver);
 
 	err = asus_wmi_platform_init(asus);
 	if (err)
@@ -1645,7 +1699,11 @@ static int asus_wmi_add(struct platform_device *pdev)
 	if (err)
 		goto fail_rfkill;
 
+	if (asus->driver->quirks->wmi_backlight_power)
+		acpi_video_dmi_promote_vendor();
 	if (!acpi_video_backlight_support()) {
+		pr_info("Disabling ACPI video driver\n");
+		acpi_video_unregister();
 		err = asus_wmi_backlight_init(asus);
 		if (err && err != -ENODEV)
 			goto fail_backlight;
@@ -1663,6 +1721,10 @@ static int asus_wmi_add(struct platform_device *pdev)
 	err = asus_wmi_debugfs_init(asus);
 	if (err)
 		goto fail_debugfs;
+
+	asus_wmi_get_devstate(asus, ASUS_WMI_DEVID_WLAN, &result);
+	if (result & (ASUS_WMI_DSTS_PRESENCE_BIT | ASUS_WMI_DSTS_USER_BIT))
+		asus->driver->wlan_ctrl_by_user = 1;
 
 	return 0;
 

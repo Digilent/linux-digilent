@@ -95,13 +95,6 @@ struct xlltemac_platform_data {
 	u8 mac_addr[6];
 };
 
-/* SPI Controller IP */
-struct xspi_platform_data {
-	s16 bus_num;
-	u16 num_chipselect;
-	u32 speed_hz;
-};
-
 /*- GPIO -*/
 
 /* Flags related to XGPIO device features */
@@ -142,7 +135,7 @@ struct xusbps_usb2_platform_data {
 	int		(*init)(struct platform_device *);
 	void		(*exit)(struct platform_device *);
 	void __iomem	*regs;		/* ioremap'd register base */
-	struct otg_transceiver	*otg;
+	struct usb_phy	*otg;
 	int		irq;
 	struct clk	*clk;
 	unsigned	big_endian_mmio:1;

@@ -837,10 +837,8 @@ static int ov2640_g_fmt(struct v4l2_subdev *sd,
 
 	if (!priv->win) {
 		u32 width = W_SVGA, height = H_SVGA;
-		int ret = ov2640_set_params(client, &width, &height,
-					    V4L2_MBUS_FMT_UYVY8_2X8);
-		if (ret < 0)
-			return ret;
+		priv->win = ov2640_select_win(&width, &height);
+		priv->cfmt_code = V4L2_MBUS_FMT_UYVY8_2X8;
 	}
 
 	mf->width	= priv->win->width;
@@ -1103,21 +1101,7 @@ static struct i2c_driver ov2640_i2c_driver = {
 	.id_table = ov2640_id,
 };
 
-/*
- * Module functions
- */
-static int __init ov2640_module_init(void)
-{
-	return i2c_add_driver(&ov2640_i2c_driver);
-}
-
-static void __exit ov2640_module_exit(void)
-{
-	i2c_del_driver(&ov2640_i2c_driver);
-}
-
-module_init(ov2640_module_init);
-module_exit(ov2640_module_exit);
+module_i2c_driver(ov2640_i2c_driver);
 
 MODULE_DESCRIPTION("SoC Camera driver for Omni Vision 2640 sensor");
 MODULE_AUTHOR("Alberto Panizzo");

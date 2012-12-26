@@ -89,6 +89,10 @@ crit_transfer_to_handler:
 	mfspr	r0,SPRN_SRR1
 	stw	r0,_SRR1(r11)
 
+	/* set the stack limit to the current stack
+	 * and set the limit to protect the thread_info
+	 * struct
+	 */
 	mfspr	r8,SPRN_SPRG_THREAD
 	lwz	r0,KSP_LIMIT(r8)
 	stw	r0,SAVED_KSP_LIMIT(r11)
@@ -109,6 +113,10 @@ crit_transfer_to_handler:
 	mfspr	r0,SPRN_SRR1
 	stw	r0,crit_srr1@l(0)
 
+	/* set the stack limit to the current stack
+	 * and set the limit to protect the thread_info
+	 * struct
+	 */
 	mfspr	r8,SPRN_SPRG_THREAD
 	lwz	r0,KSP_LIMIT(r8)
 	stw	r0,saved_ksp_limit@l(0)
@@ -158,7 +166,7 @@ transfer_to_handler:
 	tophys(r11,r11)
 	addi	r11,r11,global_dbcr0@l
 #ifdef CONFIG_SMP
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r9,TI_CPU(r9)
 	slwi	r9,r9,3
 	add	r11,r11,r9
@@ -179,7 +187,7 @@ transfer_to_handler:
 	ble-	stack_ovf		/* then the kernel stack overflowed */
 5:
 #if defined(CONFIG_6xx) || defined(CONFIG_E500)
-	rlwinm	r9,r1,0,0,31-THREAD_SHIFT
+	CURRENT_THREAD_INFO(r9, r1)
 	tophys(r9,r9)			/* check local flags */
 	lwz	r12,TI_LOCAL_FLAGS(r9)
 	mtcrf	0x01,r12
@@ -206,40 +214,37 @@ reenable_mmu:				/* re-enable mmu so we can */
 	andi.	r10,r10,MSR_EE		/* Did EE change? */
 	beq	1f
 
-	/* Save handler and return address into the 2 unused words
-	 * of the STACK_FRAME_OVERHEAD (sneak sneak sneak). Everything
-	 * else can be recovered from the pt_regs except r3 which for
-	 * normal interrupts has been set to pt_regs and for syscalls
-	 * is an argument, so we temporarily use ORIG_GPR3 to save it
-	 */
-	stw	r9,8(r1)
-	stw	r11,12(r1)
-	stw	r3,ORIG_GPR3(r1)
 	/*
 	 * The trace_hardirqs_off will use CALLER_ADDR0 and CALLER_ADDR1.
 	 * If from user mode there is only one stack frame on the stack, and
 	 * accessing CALLER_ADDR1 will cause oops. So we need create a dummy
 	 * stack frame to make trace_hardirqs_off happy.
+	 *
+	 * This is handy because we also need to save a bunch of GPRs,
+	 * r3 can be different from GPR3(r1) at this point, r9 and r11
+	 * contains the old MSR and handler address respectively,
+	 * r4 & r5 can contain page fault arguments that need to be passed
+	 * along as well. r12, CCR, CTR, XER etc... are left clobbered as
+	 * they aren't useful past this point (aren't syscall arguments),
+	 * the rest is restored from the exception frame.
 	 */
-	andi.	r12,r12,MSR_PR
-	beq	11f
-	stwu	r1,-16(r1)
+	stwu	r1,-32(r1)
+	stw	r9,8(r1)
+	stw	r11,12(r1)
+	stw	r3,16(r1)
+	stw	r4,20(r1)
+	stw	r5,24(r1)
 	bl	trace_hardirqs_off
-	addi	r1,r1,16
-	b	12f
-
-11:
-	bl	trace_hardirqs_off
-12:
+	lwz	r5,24(r1)
+	lwz	r4,20(r1)
+	lwz	r3,16(r1)
+	lwz	r11,12(r1)
+	lwz	r9,8(r1)
+	addi	r1,r1,32
 	lwz	r0,GPR0(r1)
-	lwz	r3,ORIG_GPR3(r1)
-	lwz	r4,GPR4(r1)
-	lwz	r5,GPR5(r1)
 	lwz	r6,GPR6(r1)
 	lwz	r7,GPR7(r1)
 	lwz	r8,GPR8(r1)
-	lwz	r9,8(r1)
-	lwz	r11,12(r1)
 1:	mtctr	r11
 	mtlr	r9
 	bctr				/* jump to handler */
@@ -330,7 +335,7 @@ _GLOBAL(DoSyscall)
 	mtmsr	r11
 1:
 #endif /* CONFIG_TRACE_IRQFLAGS */
-	rlwinm	r10,r1,0,0,(31-THREAD_SHIFT)	/* current_thread_info() */
+	CURRENT_THREAD_INFO(r10, r1)
 	lwz	r11,TI_FLAGS(r10)
 	andi.	r11,r11,_TIF_SYSCALL_T_OR_A
 	bne-	syscall_dotrace
@@ -351,7 +356,7 @@ ret_from_syscall:
 	bl	do_show_syscall_exit
 #endif
 	mr	r6,r3
-	rlwinm	r12,r1,0,0,(31-THREAD_SHIFT)	/* current_thread_info() */
+	CURRENT_THREAD_INFO(r12, r1)
 	/* disable interrupts so current_thread_info()->flags can't change */
 	LOAD_MSR_KERNEL(r10,MSR_KERNEL)	/* doesn't include MSR_EE */
 	/* Note: We don't bother telling lockdep about it */
@@ -819,7 +824,7 @@ ret_from_except:
 
 user_exc_return:		/* r10 contains MSR_KERNEL here */
 	/* Check current_thread_info()->flags */
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r9,TI_FLAGS(r9)
 	andi.	r0,r9,_TIF_USER_WORK_MASK
 	bne	do_work
@@ -839,7 +844,7 @@ restore_user:
 /* N.B. the only way to get here is from the beq following ret_from_except. */
 resume_kernel:
 	/* check current_thread_info->preempt_count */
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r0,TI_PREEMPT(r9)
 	cmpwi	0,r0,0		/* if non-zero, just restore regs and return */
 	bne	restore
@@ -856,7 +861,7 @@ resume_kernel:
 	bl	trace_hardirqs_off
 #endif
 1:	bl	preempt_schedule_irq
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r3,TI_FLAGS(r9)
 	andi.	r0,r3,_TIF_NEED_RESCHED
 	bne-	1b
@@ -1126,7 +1131,7 @@ ret_from_debug_exc:
 	lwz	r10,SAVED_KSP_LIMIT(r1)
 	stw	r10,KSP_LIMIT(r9)
 	lwz	r9,THREAD_INFO-THREAD(r9)
-	rlwinm	r10,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r10, r1)
 	lwz	r10,TI_PREEMPT(r10)
 	stw	r10,TI_PREEMPT(r9)
 	RESTORE_xSRR(SRR0,SRR1);
@@ -1160,7 +1165,7 @@ load_dbcr0:
 	lis	r11,global_dbcr0@ha
 	addi	r11,r11,global_dbcr0@l
 #ifdef CONFIG_SMP
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r9,TI_CPU(r9)
 	slwi	r9,r9,3
 	add	r11,r11,r9
@@ -1201,7 +1206,7 @@ recheck:
 	LOAD_MSR_KERNEL(r10,MSR_KERNEL)
 	SYNC
 	MTMSRD(r10)		/* disable interrupts */
-	rlwinm	r9,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r9, r1)
 	lwz	r9,TI_FLAGS(r9)
 	andi.	r0,r9,_TIF_NEED_RESCHED
 	bne-	do_resched

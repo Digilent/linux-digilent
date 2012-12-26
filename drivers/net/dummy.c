@@ -40,17 +40,6 @@
 
 static int numdummies = 1;
 
-static int dummy_set_address(struct net_device *dev, void *p)
-{
-	struct sockaddr *sa = p;
-
-	if (!is_valid_ether_addr(sa->sa_data))
-		return -EADDRNOTAVAIL;
-
-	memcpy(dev->dev_addr, sa->sa_data, ETH_ALEN);
-	return 0;
-}
-
 /* fake multicast ability */
 static void set_multicast_list(struct net_device *dev)
 {
@@ -74,10 +63,10 @@ static struct rtnl_link_stats64 *dummy_get_stats64(struct net_device *dev,
 
 		dstats = per_cpu_ptr(dev->dstats, i);
 		do {
-			start = u64_stats_fetch_begin(&dstats->syncp);
+			start = u64_stats_fetch_begin_bh(&dstats->syncp);
 			tbytes = dstats->tx_bytes;
 			tpackets = dstats->tx_packets;
-		} while (u64_stats_fetch_retry(&dstats->syncp, start));
+		} while (u64_stats_fetch_retry_bh(&dstats->syncp, start));
 		stats->tx_bytes += tbytes;
 		stats->tx_packets += tpackets;
 	}
@@ -106,18 +95,18 @@ static int dummy_dev_init(struct net_device *dev)
 	return 0;
 }
 
-static void dummy_dev_free(struct net_device *dev)
+static void dummy_dev_uninit(struct net_device *dev)
 {
 	free_percpu(dev->dstats);
-	free_netdev(dev);
 }
 
 static const struct net_device_ops dummy_netdev_ops = {
 	.ndo_init		= dummy_dev_init,
+	.ndo_uninit		= dummy_dev_uninit,
 	.ndo_start_xmit		= dummy_xmit,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_rx_mode	= set_multicast_list,
-	.ndo_set_mac_address	= dummy_set_address,
+	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_get_stats64	= dummy_get_stats64,
 };
 
@@ -127,15 +116,16 @@ static void dummy_setup(struct net_device *dev)
 
 	/* Initialize the device structure. */
 	dev->netdev_ops = &dummy_netdev_ops;
-	dev->destructor = dummy_dev_free;
+	dev->destructor = free_netdev;
 
 	/* Fill in device structure with ethernet-generic values. */
 	dev->tx_queue_len = 0;
 	dev->flags |= IFF_NOARP;
 	dev->flags &= ~IFF_MULTICAST;
+	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	dev->features	|= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_TSO;
 	dev->features	|= NETIF_F_HW_CSUM | NETIF_F_HIGHDMA | NETIF_F_LLTX;
-	random_ether_addr(dev->dev_addr);
+	eth_hw_addr_random(dev);
 }
 
 static int dummy_validate(struct nlattr *tb[], struct nlattr *data[])
@@ -186,8 +176,10 @@ static int __init dummy_init_module(void)
 	rtnl_lock();
 	err = __rtnl_link_register(&dummy_link_ops);
 
-	for (i = 0; i < numdummies && !err; i++)
+	for (i = 0; i < numdummies && !err; i++) {
 		err = dummy_init_one();
+		cond_resched();
+	}
 	if (err < 0)
 		__rtnl_link_unregister(&dummy_link_ops);
 	rtnl_unlock();

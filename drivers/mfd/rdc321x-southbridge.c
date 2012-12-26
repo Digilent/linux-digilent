@@ -87,7 +87,8 @@ static int __devinit rdc321x_sb_probe(struct pci_dev *pdev,
 	rdc321x_wdt_pdata.sb_pdev = pdev;
 
 	return mfd_add_devices(&pdev->dev, -1,
-		rdc321x_sb_cells, ARRAY_SIZE(rdc321x_sb_cells), NULL, 0);
+			       rdc321x_sb_cells, ARRAY_SIZE(rdc321x_sb_cells),
+			       NULL, 0, NULL);
 }
 
 static void __devexit rdc321x_sb_remove(struct pci_dev *pdev)
@@ -108,18 +109,7 @@ static struct pci_driver rdc321x_sb_driver = {
 	.remove		= __devexit_p(rdc321x_sb_remove),
 };
 
-static int __init rdc321x_sb_init(void)
-{
-	return pci_register_driver(&rdc321x_sb_driver);
-}
-
-static void __exit rdc321x_sb_exit(void)
-{
-	pci_unregister_driver(&rdc321x_sb_driver);
-}
-
-module_init(rdc321x_sb_init);
-module_exit(rdc321x_sb_exit);
+module_pci_driver(rdc321x_sb_driver);
 
 MODULE_AUTHOR("Florian Fainelli <florian@openwrt.org>");
 MODULE_LICENSE("GPL");

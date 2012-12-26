@@ -84,7 +84,7 @@ void pcibios_remove_pci_devices(struct pci_bus *bus)
 	list_for_each_entry_safe(dev, tmp, &bus->devices, bus_list) {
 		pr_debug("     * Removing %s...\n", pci_name(dev));
 		eeh_remove_bus_device(dev);
- 		pci_remove_bus_device(dev);
+ 		pci_stop_and_remove_bus_device(dev);
  	}
 }
 EXPORT_SYMBOL_GPL(pcibios_remove_pci_devices);
@@ -121,7 +121,7 @@ void pcibios_add_pci_devices(struct pci_bus * bus)
 		if (!num)
 			return;
 		pcibios_setup_bus_devices(bus);
-		max = bus->secondary;
+		max = bus->busn_res.start;
 		for (pass=0; pass < 2; pass++)
 			list_for_each_entry(dev, &bus->devices, bus_list) {
 			if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
@@ -146,6 +146,9 @@ struct pci_controller * __devinit init_phb_dynamic(struct device_node *dn)
 	pci_process_bridge_OF_ranges(phb, dn, 0);
 
 	pci_devs_phb_init_dynamic(phb);
+
+	/* Create EEH devices for the PHB */
+	eeh_dev_phb_init_dynamic(phb);
 
 	if (dn->child)
 		eeh_add_device_tree_early(dn);

@@ -201,6 +201,8 @@
  *    http://www.microsoft.com/whdc/archive/amp_12.mspx]
  */
 
+#define pr_fmt(fmt) "apm: " fmt
+
 #include <linux/module.h>
 
 #include <linux/poll.h>
@@ -231,7 +233,6 @@
 #include <linux/syscore_ops.h>
 #include <linux/i8253.h>
 
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/desc.h>
 #include <asm/olpc.h>
@@ -486,11 +487,11 @@ static void apm_error(char *str, int err)
 		if (error_table[i].key == err)
 			break;
 	if (i < ERROR_COUNT)
-		printk(KERN_NOTICE "apm: %s: %s\n", str, error_table[i].msg);
+		pr_notice("%s: %s\n", str, error_table[i].msg);
 	else if (err < 0)
-		printk(KERN_NOTICE "apm: %s: linux error code %i\n", str, err);
+		pr_notice("%s: linux error code %i\n", str, err);
 	else
-		printk(KERN_NOTICE "apm: %s: unknown error code %#2.2x\n",
+		pr_notice("%s: unknown error code %#2.2x\n",
 		       str, err);
 }
 
@@ -1185,7 +1186,7 @@ static void queue_event(apm_event_t event, struct apm_user *sender)
 			static int notified;
 
 			if (notified++ == 0)
-			    printk(KERN_ERR "apm: an event queue overflowed\n");
+				pr_err("an event queue overflowed\n");
 			if (++as->event_tail >= APM_MAX_EVENTS)
 				as->event_tail = 0;
 		}
@@ -1234,8 +1235,7 @@ static int suspend(int vetoable)
 	struct apm_user	*as;
 
 	dpm_suspend_start(PMSG_SUSPEND);
-
-	dpm_suspend_noirq(PMSG_SUSPEND);
+	dpm_suspend_end(PMSG_SUSPEND);
 
 	local_irq_disable();
 	syscore_suspend();
@@ -1259,9 +1259,9 @@ static int suspend(int vetoable)
 	syscore_resume();
 	local_irq_enable();
 
-	dpm_resume_noirq(PMSG_RESUME);
-
+	dpm_resume_start(PMSG_RESUME);
 	dpm_resume_end(PMSG_RESUME);
+
 	queue_event(APM_NORMAL_RESUME, NULL);
 	spin_lock(&user_list_lock);
 	for (as = user_list; as != NULL; as = as->next) {
@@ -1277,7 +1277,7 @@ static void standby(void)
 {
 	int err;
 
-	dpm_suspend_noirq(PMSG_SUSPEND);
+	dpm_suspend_end(PMSG_SUSPEND);
 
 	local_irq_disable();
 	syscore_suspend();
@@ -1291,7 +1291,7 @@ static void standby(void)
 	syscore_resume();
 	local_irq_enable();
 
-	dpm_resume_noirq(PMSG_RESUME);
+	dpm_resume_start(PMSG_RESUME);
 }
 
 static apm_event_t get_event(void)
@@ -1449,7 +1449,7 @@ static void apm_mainloop(void)
 static int check_apm_user(struct apm_user *as, const char *func)
 {
 	if (as == NULL || as->magic != APM_BIOS_MAGIC) {
-		printk(KERN_ERR "apm: %s passed bad filp\n", func);
+		pr_err("%s passed bad filp\n", func);
 		return 1;
 	}
 	return 0;
@@ -1588,7 +1588,7 @@ static int do_release(struct inode *inode, struct file *filp)
 		     as1 = as1->next)
 			;
 		if (as1 == NULL)
-			printk(KERN_ERR "apm: filp not in user list\n");
+			pr_err("filp not in user list\n");
 		else
 			as1->next = as->next;
 	}
@@ -1602,11 +1602,9 @@ static int do_open(struct inode *inode, struct file *filp)
 	struct apm_user *as;
 
 	as = kmalloc(sizeof(*as), GFP_KERNEL);
-	if (as == NULL) {
-		printk(KERN_ERR "apm: cannot allocate struct of size %d bytes\n",
-		       sizeof(*as));
+	if (as == NULL)
 		return -ENOMEM;
-	}
+
 	as->magic = APM_BIOS_MAGIC;
 	as->event_tail = as->event_head = 0;
 	as->suspends_pending = as->standbys_pending = 0;
@@ -2315,16 +2313,16 @@ static int __init apm_init(void)
 	}
 
 	if (apm_info.disabled) {
-		printk(KERN_NOTICE "apm: disabled on user request.\n");
+		pr_notice("disabled on user request.\n");
 		return -ENODEV;
 	}
 	if ((num_online_cpus() > 1) && !power_off && !smp) {
-		printk(KERN_NOTICE "apm: disabled - APM is not SMP safe.\n");
+		pr_notice("disabled - APM is not SMP safe.\n");
 		apm_info.disabled = 1;
 		return -ENODEV;
 	}
 	if (!acpi_disabled) {
-		printk(KERN_NOTICE "apm: overridden by ACPI.\n");
+		pr_notice("overridden by ACPI.\n");
 		apm_info.disabled = 1;
 		return -ENODEV;
 	}
@@ -2358,8 +2356,7 @@ static int __init apm_init(void)
 
 	kapmd_task = kthread_create(apm, NULL, "kapmd");
 	if (IS_ERR(kapmd_task)) {
-		printk(KERN_ERR "apm: disabled - Unable to start kernel "
-				"thread.\n");
+		pr_err("disabled - Unable to start kernel thread\n");
 		err = PTR_ERR(kapmd_task);
 		kapmd_task = NULL;
 		remove_proc_entry("apm", NULL);
@@ -2403,7 +2400,7 @@ static void __exit apm_exit(void)
 		 * (pm_idle), Wait for all processors to update cached/local
 		 * copies of pm_idle before proceeding.
 		 */
-		cpu_idle_wait();
+		kick_all_cpus_sync();
 	}
 	if (((apm_info.bios.flags & APM_BIOS_DISENGAGED) == 0)
 	    && (apm_info.connection_version > 0x0100)) {

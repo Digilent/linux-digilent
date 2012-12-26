@@ -18,7 +18,7 @@ static int add_nondir(struct dentry *dentry, struct inode *inode)
 	return err;
 }
 
-static struct dentry *minix_lookup(struct inode * dir, struct dentry *dentry, struct nameidata *nd)
+static struct dentry *minix_lookup(struct inode * dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode * inode = NULL;
 	ino_t ino;
@@ -55,7 +55,7 @@ static int minix_mknod(struct inode * dir, struct dentry *dentry, umode_t mode, 
 }
 
 static int minix_create(struct inode *dir, struct dentry *dentry, umode_t mode,
-		struct nameidata *nd)
+		bool excl)
 {
 	return minix_mknod(dir, dentry, mode, 0);
 }
@@ -94,9 +94,6 @@ static int minix_link(struct dentry * old_dentry, struct inode * dir,
 {
 	struct inode *inode = old_dentry->d_inode;
 
-	if (inode->i_nlink >= minix_sb(inode->i_sb)->s_link_max)
-		return -EMLINK;
-
 	inode->i_ctime = CURRENT_TIME_SEC;
 	inode_inc_link_count(inode);
 	ihold(inode);
@@ -106,10 +103,7 @@ static int minix_link(struct dentry * old_dentry, struct inode * dir,
 static int minix_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
 {
 	struct inode * inode;
-	int err = -EMLINK;
-
-	if (dir->i_nlink >= minix_sb(dir->i_sb)->s_link_max)
-		goto out;
+	int err;
 
 	inode_inc_link_count(dir);
 
@@ -181,7 +175,6 @@ static int minix_rmdir(struct inode * dir, struct dentry *dentry)
 static int minix_rename(struct inode * old_dir, struct dentry *old_dentry,
 			   struct inode * new_dir, struct dentry *new_dentry)
 {
-	struct minix_sb_info * info = minix_sb(old_dir->i_sb);
 	struct inode * old_inode = old_dentry->d_inode;
 	struct inode * new_inode = new_dentry->d_inode;
 	struct page * dir_page = NULL;
@@ -219,11 +212,6 @@ static int minix_rename(struct inode * old_dir, struct dentry *old_dentry,
 			drop_nlink(new_inode);
 		inode_dec_link_count(new_inode);
 	} else {
-		if (dir_de) {
-			err = -EMLINK;
-			if (new_dir->i_nlink >= info->s_link_max)
-				goto out_dir;
-		}
 		err = minix_add_link(new_dentry, old_inode);
 		if (err)
 			goto out_dir;

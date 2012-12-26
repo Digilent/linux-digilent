@@ -84,7 +84,6 @@
 #include <linux/prefetch.h>
 
 #include <asm/irq.h>
-#include <asm/system.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 
@@ -544,12 +543,12 @@ static void postproc_ep(struct isp1362_hcd *isp1362_hcd, struct isp1362_ep *ep)
 			    usb_pipein(urb->pipe) ? "IN" : "OUT", ep->nextpid,
 			    short_ok ? "" : "not_",
 			    PTD_GET_COUNT(ptd), ep->maxpacket, len);
+			/* save the data underrun error code for later and
+			 * proceed with the status stage
+			 */
+			urb->actual_length += PTD_GET_COUNT(ptd);
 			if (usb_pipecontrol(urb->pipe)) {
 				ep->nextpid = USB_PID_ACK;
-				/* save the data underrun error code for later and
-				 * proceed with the status stage
-				 */
-				urb->actual_length += PTD_GET_COUNT(ptd);
 				BUG_ON(urb->actual_length > urb->transfer_buffer_length);
 
 				if (urb->status == -EINPROGRESS)
@@ -2693,6 +2692,9 @@ static int __devinit isp1362_probe(struct platform_device *pdev)
 	struct resource *irq_res;
 	unsigned int irq_flags = 0;
 
+	if (usb_disabled())
+		return -ENODEV;
+
 	/* basic sanity checks first.  board-specific init logic should
 	 * have initialized this the three resources and probably board
 	 * specific platform_data.  we don't probe for IRQs, and do only
@@ -2864,19 +2866,4 @@ static struct platform_driver isp1362_driver = {
 	},
 };
 
-/*-------------------------------------------------------------------------*/
-
-static int __init isp1362_init(void)
-{
-	if (usb_disabled())
-		return -ENODEV;
-	pr_info("driver %s, %s\n", hcd_name, DRIVER_VERSION);
-	return platform_driver_register(&isp1362_driver);
-}
-module_init(isp1362_init);
-
-static void __exit isp1362_cleanup(void)
-{
-	platform_driver_unregister(&isp1362_driver);
-}
-module_exit(isp1362_cleanup);
+module_platform_driver(isp1362_driver);

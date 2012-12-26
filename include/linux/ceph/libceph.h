@@ -7,6 +7,7 @@
 #include <linux/backing-dev.h>
 #include <linux/completion.h>
 #include <linux/exportfs.h>
+#include <linux/bug.h>
 #include <linux/fs.h>
 #include <linux/mempool.h>
 #include <linux/pagemap.h>
@@ -20,12 +21,6 @@
 #include "mon_client.h"
 #include "osd_client.h"
 #include "ceph_fs.h"
-
-/*
- * Supported features
- */
-#define CEPH_FEATURE_SUPPORTED_DEFAULT CEPH_FEATURE_NOSRCADDR
-#define CEPH_FEATURE_REQUIRED_DEFAULT  CEPH_FEATURE_NOSRCADDR
 
 /*
  * mount options
@@ -131,7 +126,7 @@ struct ceph_client {
 	u32 supported_features;
 	u32 required_features;
 
-	struct ceph_messenger *msgr;   /* messenger instance */
+	struct ceph_messenger msgr;   /* messenger instance */
 	struct ceph_mon_client monc;
 	struct ceph_osd_client osdc;
 
@@ -159,7 +154,7 @@ struct ceph_client {
 struct ceph_snap_context {
 	atomic_t nref;
 	u64 seq;
-	int num_snaps;
+	u32 num_snaps;
 	u64 snaps[];
 };
 
@@ -207,7 +202,7 @@ extern struct kmem_cache *ceph_cap_cachep;
 extern struct kmem_cache *ceph_dentry_cachep;
 extern struct kmem_cache *ceph_file_cachep;
 
-extern int ceph_parse_options(struct ceph_options **popt, char *options,
+extern struct ceph_options *ceph_parse_options(char *options,
 			      const char *dev_name, const char *dev_name_end,
 			      int (*parse_extra_token)(char *c, void *private),
 			      void *private);

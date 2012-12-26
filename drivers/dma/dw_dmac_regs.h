@@ -13,6 +13,18 @@
 
 #define DW_DMA_MAX_NR_CHANNELS	8
 
+/* flow controller */
+enum dw_dma_fc {
+	DW_DMA_FC_D_M2M,
+	DW_DMA_FC_D_M2P,
+	DW_DMA_FC_D_P2M,
+	DW_DMA_FC_D_P2P,
+	DW_DMA_FC_P_P2M,
+	DW_DMA_FC_SP_P2P,
+	DW_DMA_FC_P_M2P,
+	DW_DMA_FC_DP_P2P,
+};
+
 /*
  * Redefine this macro to handle differences between 32- and 64-bit
  * addressing, big vs. little endian, etc.
@@ -70,7 +82,7 @@ struct dw_dma_regs {
 	DW_REG(ID);
 	DW_REG(TEST);
 
-	/* optional encoded params, 0x3c8..0x3 */
+	/* optional encoded params, 0x3c8..0x3f7 */
 };
 
 /* Bitfields in CTL_LO */
@@ -146,13 +158,15 @@ struct dw_dma_chan {
 
 	/* these other elements are all protected by lock */
 	unsigned long		flags;
-	dma_cookie_t		completed;
 	struct list_head	active_list;
 	struct list_head	queue;
 	struct list_head	free_list;
 	struct dw_cyclic_desc	*cdesc;
 
 	unsigned int		descs_allocated;
+
+	/* configuration passed via DMA_SLAVE_CONFIG */
+	struct dma_slave_config dma_sconfig;
 };
 
 static inline struct dw_dma_chan_regs __iomem *
@@ -205,9 +219,9 @@ static inline struct dw_dma *to_dw_dma(struct dma_device *ddev)
 /* LLI == Linked List Item; a.k.a. DMA block descriptor */
 struct dw_lli {
 	/* values that are not changed by hardware */
-	dma_addr_t	sar;
-	dma_addr_t	dar;
-	dma_addr_t	llp;		/* chain to next lli */
+	u32		sar;
+	u32		dar;
+	u32		llp;		/* chain to next lli */
 	u32		ctllo;
 	/* values that may get written back: */
 	u32		ctlhi;

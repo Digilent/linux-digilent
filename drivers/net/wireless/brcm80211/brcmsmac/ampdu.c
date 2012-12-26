@@ -663,9 +663,6 @@ brcms_c_sendampdu(struct ampdu_info *ampdu, struct brcms_txq_info *qi,
 		/* patch the first MPDU */
 		if (count == 1) {
 			u8 plcp0, plcp3, is40, sgi;
-			struct ieee80211_sta *sta;
-
-			sta = tx_info->control.sta;
 
 			if (rr) {
 				plcp0 = plcp[0];
@@ -735,10 +732,8 @@ brcms_c_sendampdu(struct ampdu_info *ampdu, struct brcms_txq_info *qi,
 		 * a candidate for aggregation
 		 */
 		p = pktq_ppeek(&qi->q, prec);
-		/* tx_info must be checked with current p */
-		tx_info = IEEE80211_SKB_CB(p);
-
 		if (p) {
+			tx_info = IEEE80211_SKB_CB(p);
 			if ((tx_info->flags & IEEE80211_TX_CTL_AMPDU) &&
 			    ((u8) (p->priority) == tid)) {
 				plen = p->len + AMPDU_MAX_MPDU_OVERHEAD;
@@ -759,6 +754,7 @@ brcms_c_sendampdu(struct ampdu_info *ampdu, struct brcms_txq_info *qi,
 					p = NULL;
 					continue;
 				}
+				/* next packet fit for aggregation so dequeue */
 				p = brcmu_pktq_pdeq(&qi->q, prec);
 			} else {
 				p = NULL;
@@ -915,7 +911,7 @@ brcms_c_ampdu_dotxstatus_complete(struct ampdu_info *ampdu, struct scb *scb,
 	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(p);
 	struct wiphy *wiphy = wlc->wiphy;
 
-#ifdef BCMDBG
+#ifdef DEBUG
 	u8 hole[AMPDU_MAX_MPDU];
 	memset(hole, 0, sizeof(hole));
 #endif
@@ -959,14 +955,13 @@ brcms_c_ampdu_dotxstatus_complete(struct ampdu_info *ampdu, struct scb *scb,
 		if (supr_status) {
 			update_rate = false;
 			if (supr_status == TX_STATUS_SUPR_BADCH) {
-				wiphy_err(wiphy, "%s: Pkt tx suppressed, "
-					  "illegal channel possibly %d\n",
+				wiphy_err(wiphy,
+					  "%s: Pkt tx suppressed, illegal channel possibly %d\n",
 					  __func__, CHSPEC_CHANNEL(
 					  wlc->default_bss->chanspec));
 			} else {
 				if (supr_status != TX_STATUS_SUPR_FRAG)
-					wiphy_err(wiphy, "%s:"
-						  "supr_status 0x%x\n",
+					wiphy_err(wiphy, "%s: supr_status 0x%x\n",
 						  __func__, supr_status);
 			}
 			/* no need to retry for badch; will fail again */
@@ -988,9 +983,8 @@ brcms_c_ampdu_dotxstatus_complete(struct ampdu_info *ampdu, struct scb *scb,
 			}
 		} else if (txs->phyerr) {
 			update_rate = false;
-			wiphy_err(wiphy, "wl%d: ampdu tx phy "
-				  "error (0x%x)\n", wlc->pub->unit,
-				  txs->phyerr);
+			wiphy_err(wiphy, "%s: ampdu tx phy error (0x%x)\n",
+				  __func__, txs->phyerr);
 
 			if (brcm_msg_level & LOG_ERROR_VAL) {
 				brcmu_prpkt("txpkt (AMPDU)", p);
@@ -1018,10 +1012,10 @@ brcms_c_ampdu_dotxstatus_complete(struct ampdu_info *ampdu, struct scb *scb,
 		ack_recd = false;
 		if (ba_recd) {
 			bindex = MODSUB_POW2(seq, start_seq, SEQNUM_MAX);
-			BCMMSG(wlc->wiphy, "tid %d seq %d,"
-				" start_seq %d, bindex %d set %d, index %d\n",
-				tid, seq, start_seq, bindex,
-				isset(bitmap, bindex), index);
+			BCMMSG(wiphy,
+			       "tid %d seq %d, start_seq %d, bindex %d set %d, index %d\n",
+			       tid, seq, start_seq, bindex,
+			       isset(bitmap, bindex), index);
 			/* if acked then clear bit and free packet */
 			if ((bindex < AMPDU_TX_BA_MAX_WSIZE)
 			    && isset(bitmap, bindex)) {
@@ -1198,8 +1192,8 @@ static bool cb_del_ampdu_pkt(struct sk_buff *mpdu, void *arg_a)
 	bool rc;
 
 	rc = tx_info->flags & IEEE80211_TX_CTL_AMPDU ? true : false;
-	rc = rc && (tx_info->control.sta == NULL || ampdu_pars->sta == NULL ||
-		    tx_info->control.sta == ampdu_pars->sta);
+	rc = rc && (tx_info->rate_driver_data[0] == NULL || ampdu_pars->sta == NULL ||
+		    tx_info->rate_driver_data[0] == ampdu_pars->sta);
 	rc = rc && ((u8)(mpdu->priority) == ampdu_pars->tid);
 	return rc;
 }
@@ -1213,8 +1207,8 @@ static void dma_cb_fn_ampdu(void *txi, void *arg_a)
 	struct ieee80211_tx_info *tx_info = (struct ieee80211_tx_info *)txi;
 
 	if ((tx_info->flags & IEEE80211_TX_CTL_AMPDU) &&
-	    (tx_info->control.sta == sta || sta == NULL))
-		tx_info->control.sta = NULL;
+	    (tx_info->rate_driver_data[0] == sta || sta == NULL))
+		tx_info->rate_driver_data[0] = NULL;
 }
 
 /*

@@ -14,6 +14,18 @@
 
 #include <linux/perf_event.h>
 
+#if 0
+#undef wrmsrl
+#define wrmsrl(msr, val) 						\
+do {									\
+	unsigned int _msr = (msr);					\
+	u64 _val = (val);						\
+	trace_printk("wrmsrl(%x, %Lx)\n", (unsigned int)(_msr),		\
+			(unsigned long long)(_val));			\
+	native_write_msr((_msr), (u32)(_val), (u32)(_val >> 32));	\
+} while (0)
+#endif
+
 /*
  *          |   NHM/WSM    |      SNB     |
  * register -------------------------------
@@ -33,6 +45,7 @@ enum extra_reg_type {
 
 	EXTRA_REG_RSP_0 = 0,	/* offcore_response_0 */
 	EXTRA_REG_RSP_1 = 1,	/* offcore_response_1 */
+	EXTRA_REG_LBR   = 2,	/* lbr_select */
 
 	EXTRA_REG_MAX		/* number of entries needed */
 };
@@ -56,7 +69,7 @@ struct amd_nb {
 };
 
 /* The maximal number of PEBS events: */
-#define MAX_PEBS_EVENTS		4
+#define MAX_PEBS_EVENTS		8
 
 /*
  * A debug store configuration.
@@ -116,6 +129,7 @@ struct cpu_hw_events {
 	struct perf_event	*event_list[X86_PMC_IDX_MAX]; /* in enabled order */
 
 	unsigned int		group_flag;
+	int			is_fake;
 
 	/*
 	 * Intel DebugStore bits
@@ -130,6 +144,8 @@ struct cpu_hw_events {
 	void				*lbr_context;
 	struct perf_branch_stack	lbr_stack;
 	struct perf_branch_entry	lbr_entries[MAX_LBR_ENTRIES];
+	struct er_account		*lbr_sel;
+	u64				br_sel;
 
 	/*
 	 * Intel host/guest exclude bits
@@ -268,6 +284,29 @@ struct x86_pmu_quirk {
 	void (*func)(void);
 };
 
+union x86_pmu_config {
+	struct {
+		u64 event:8,
+		    umask:8,
+		    usr:1,
+		    os:1,
+		    edge:1,
+		    pc:1,
+		    interrupt:1,
+		    __reserved1:1,
+		    en:1,
+		    inv:1,
+		    cmask:8,
+		    event2:4,
+		    __reserved2:4,
+		    go:1,
+		    ho:1;
+	} bits;
+	u64 value;
+};
+
+#define X86_CONFIG(args...) ((union x86_pmu_config){.bits = {args}}).value
+
 /*
  * struct x86_pmu - generic x86 pmu
  */
@@ -309,10 +348,22 @@ struct x86_pmu {
 	struct x86_pmu_quirk *quirks;
 	int		perfctr_second_write;
 
+	/*
+	 * sysfs attrs
+	 */
+	int		attr_rdpmc;
+	struct attribute **format_attrs;
+
+	/*
+	 * CPU Hotplug hooks
+	 */
 	int		(*cpu_prepare)(int cpu);
 	void		(*cpu_starting)(int cpu);
 	void		(*cpu_dying)(int cpu);
 	void		(*cpu_dead)(int cpu);
+
+	void		(*check_microcode)(void);
+	void		(*flush_branch_stack)(void);
 
 	/*
 	 * Intel Arch Perfmon v2+
@@ -323,17 +374,24 @@ struct x86_pmu {
 	/*
 	 * Intel DebugStore bits
 	 */
-	int		bts, pebs;
-	int		bts_active, pebs_active;
+	unsigned int	bts		:1,
+			bts_active	:1,
+			pebs		:1,
+			pebs_active	:1,
+			pebs_broken	:1;
 	int		pebs_record_size;
 	void		(*drain_pebs)(struct pt_regs *regs);
 	struct event_constraint *pebs_constraints;
+	void		(*pebs_aliases)(struct perf_event *event);
+	int 		max_pebs_events;
 
 	/*
 	 * Intel LBR
 	 */
 	unsigned long	lbr_tos, lbr_from, lbr_to; /* MSR base regs       */
 	int		lbr_nr;			   /* hardware stack size */
+	u64		lbr_sel_mask;		   /* LBR_SELECT valid bits */
+	const int	*lbr_sel_map;		   /* lbr_select mappings */
 
 	/*
 	 * Extra registers for events
@@ -428,6 +486,8 @@ static inline void __x86_pmu_enable_event(struct hw_perf_event *hwc,
 
 void x86_pmu_enable_all(int added);
 
+int perf_assign_events(struct event_constraint **constraints, int n,
+			int wmin, int wmax, int *assign);
 int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign);
 
 void x86_pmu_stop(struct perf_event *event, int flags);
@@ -446,6 +506,35 @@ int x86_pmu_handle_irq(struct pt_regs *regs);
 extern struct event_constraint emptyconstraint;
 
 extern struct event_constraint unconstrained;
+
+static inline bool kernel_ip(unsigned long ip)
+{
+#ifdef CONFIG_X86_32
+	return ip > PAGE_OFFSET;
+#else
+	return (long)ip < 0;
+#endif
+}
+
+/*
+ * Not all PMUs provide the right context information to place the reported IP
+ * into full context. Specifically segment registers are typically not
+ * supplied.
+ *
+ * Assuming the address is a linear address (it is for IBS), we fake the CS and
+ * vm86 mode using the known zero-based code segment and 'fix up' the registers
+ * to reflect this.
+ *
+ * Intel PEBS/LBR appear to typically provide the effective address, nothing
+ * much we can do about that but pray and treat it like a linear address.
+ */
+static inline void set_linear_ip(struct pt_regs *regs, unsigned long ip)
+{
+	regs->cs = kernel_ip(ip) ? __KERNEL_CS : __USER_CS;
+	if (regs->flags & X86_VM_MASK)
+		regs->flags ^= (PERF_EFLAGS_VM | X86_VM_MASK);
+	regs->ip = ip;
+}
 
 #ifdef CONFIG_CPU_SUP_AMD
 
@@ -497,6 +586,8 @@ extern struct event_constraint intel_westmere_pebs_event_constraints[];
 
 extern struct event_constraint intel_snb_pebs_event_constraints[];
 
+extern struct event_constraint intel_ivb_pebs_event_constraints[];
+
 struct event_constraint *intel_pebs_constraints(struct perf_event *event);
 
 void intel_pmu_pebs_enable(struct perf_event *event);
@@ -526,6 +617,10 @@ void intel_pmu_lbr_init_core(void);
 void intel_pmu_lbr_init_nhm(void);
 
 void intel_pmu_lbr_init_atom(void);
+
+void intel_pmu_lbr_init_snb(void);
+
+int intel_pmu_setup_lbr_filter(struct perf_event *event);
 
 int p4_pmu_init(void);
 

@@ -71,7 +71,7 @@ struct regulator_state {
  * @uV_offset: Offset applied to voltages from consumer to compensate for
  *             voltage drops.
  *
- * @min_uA: Smallest consumers consumers may set.
+ * @min_uA: Smallest current consumers may set.
  * @max_uA: Largest current consumers may set.
  *
  * @valid_modes_mask: Mask of modes which may be configured by consumers.
@@ -92,6 +92,7 @@ struct regulator_state {
  *                 mode.
  * @initial_state: Suspend state to set by default.
  * @initial_mode: Mode to set at startup.
+ * @ramp_delay: Time to settle down after voltage change (unit: uV/us)
  */
 struct regulation_constraints {
 
@@ -125,6 +126,8 @@ struct regulation_constraints {
 	/* mode to set on startup */
 	unsigned int initial_mode;
 
+	unsigned int ramp_delay;
+
 	/* constraint flags */
 	unsigned always_on:1;	/* regulator never off when system is on */
 	unsigned boot_on:1;	/* bootloader/firmware enabled regulator */
@@ -134,17 +137,13 @@ struct regulation_constraints {
 /**
  * struct regulator_consumer_supply - supply -> device mapping
  *
- * This maps a supply name to a device.  Only one of dev or dev_name
- * can be specified.  Use of dev_name allows support for buses which
- * make struct device available late such as I2C and is the preferred
- * form.
+ * This maps a supply name to a device. Use of dev_name allows support for
+ * buses which make struct device available late such as I2C.
  *
- * @dev: Device structure for the consumer.
  * @dev_name: Result of dev_name() for the consumer.
  * @supply: Name for the supply.
  */
 struct regulator_consumer_supply {
-	struct device *dev;	/* consumer */
 	const char *dev_name;   /* dev_name() for consumer */
 	const char *supply;	/* consumer supply - e.g. "vcc" */
 };

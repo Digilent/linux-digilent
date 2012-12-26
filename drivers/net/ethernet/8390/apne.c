@@ -39,7 +39,6 @@
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
 
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/setup.h>
 #include <asm/amigaints.h>
@@ -455,7 +454,7 @@ apne_block_input(struct net_device *dev, int count, struct sk_buff *skb, int rin
 	buf[count-1] = inb(NE_BASE + NE_DATAPORT);
       }
     } else {
-      ptrc = (char*)buf;
+      ptrc = buf;
       for (cnt = 0; cnt < count; cnt++)
         *ptrc++ = inb(NE_BASE + NE_DATAPORT);
     }

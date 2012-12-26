@@ -21,20 +21,21 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
 #include <plat/mux.h>
-#include <plat/usb.h>
 #include <plat/board.h>
 #include <plat/keypad.h>
-#include "common.h"
-#include <plat/hwa742.h>
 #include <plat/lcd_mipid.h>
 #include <plat/mmc.h>
 #include <plat/clock.h>
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
 
 #define ADS7846_PENDOWN_GPIO	15
 
@@ -99,15 +100,16 @@ static struct mipid_platform_data nokia770_mipid_platform_data = {
 	.shutdown = mipid_shutdown,
 };
 
+static struct omap_lcd_config nokia770_lcd_config __initdata = {
+	.ctrl_name	= "hwa742",
+};
+
 static void __init mipid_dev_init(void)
 {
-	const struct omap_lcd_config *conf;
+	nokia770_mipid_platform_data.nreset_gpio = 13;
+	nokia770_mipid_platform_data.data_lines = 16;
 
-	conf = omap_get_config(OMAP_TAG_LCD, struct omap_lcd_config);
-	if (conf != NULL) {
-		nokia770_mipid_platform_data.nreset_gpio = conf->nreset_gpio;
-		nokia770_mipid_platform_data.data_lines = conf->data_lines;
-	}
+	omapfb_set_lcd_config(&nokia770_lcd_config);
 }
 
 static void __init ads7846_dev_init(void)
@@ -145,19 +147,13 @@ static struct spi_board_info nokia770_spi_board_info[] __initdata = {
 		.bus_num        = 2,
 		.chip_select    = 0,
 		.max_speed_hz   = 2500000,
-		.irq		= OMAP_GPIO_IRQ(15),
 		.platform_data	= &nokia770_ads7846_platform_data,
 	},
-};
-
-static struct hwa742_platform_data nokia770_hwa742_platform_data = {
-	.te_connected		= 1,
 };
 
 static void __init hwa742_dev_init(void)
 {
 	clk_add_alias("hwa_sys_ck", NULL, "bclk", NULL);
-	omapfb_set_ctrl_platform_data(&nokia770_hwa742_platform_data);
 }
 
 /* assume no Mini-AB port */
@@ -189,7 +185,6 @@ static int nokia770_mmc_get_cover_state(struct device *dev, int slot)
 
 static struct omap_mmc_platform_data nokia770_mmc2_data = {
 	.nr_slots                       = 1,
-	.dma_mask			= 0xffffffff,
 	.max_freq                       = 12000000,
 	.slots[0]       = {
 		.set_power		= nokia770_mmc_set_power,
@@ -240,6 +235,7 @@ static void __init omap_nokia770_init(void)
 	omap_writew((omap_readw(0xfffb5004) & ~2), 0xfffb5004);
 
 	platform_add_devices(nokia770_devices, ARRAY_SIZE(nokia770_devices));
+	nokia770_spi_board_info[1].irq = gpio_to_irq(15);
 	spi_register_board_info(nokia770_spi_board_info,
 				ARRAY_SIZE(nokia770_spi_board_info));
 	omap_serial_init();
@@ -258,6 +254,7 @@ MACHINE_START(NOKIA770, "Nokia 770")
 	.reserve	= omap_reserve,
 	.init_irq	= omap1_init_irq,
 	.init_machine	= omap_nokia770_init,
+	.init_late	= omap1_init_late,
 	.timer		= &omap1_timer,
 	.restart	= omap1_restart,
 MACHINE_END

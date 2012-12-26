@@ -232,8 +232,17 @@ static int __devinit sch_gpio_probe(struct platform_device *pdev)
 			sch_gpio_resume.ngpio = 9;
 			break;
 
+		case PCI_DEVICE_ID_INTEL_CENTERTON_ILB:
+			sch_gpio_core.base = 0;
+			sch_gpio_core.ngpio = 21;
+
+			sch_gpio_resume.base = 21;
+			sch_gpio_resume.ngpio = 9;
+			break;
+
 		default:
-			return -ENODEV;
+			err = -ENODEV;
+			goto err_sch_gpio_core;
 	}
 
 	sch_gpio_core.dev = &pdev->dev;

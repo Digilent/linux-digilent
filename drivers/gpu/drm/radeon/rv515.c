@@ -53,9 +53,8 @@ void rv515_debugfs(struct radeon_device *rdev)
 	}
 }
 
-void rv515_ring_start(struct radeon_device *rdev)
+void rv515_ring_start(struct radeon_device *rdev, struct radeon_ring *ring)
 {
-	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 	int r;
 
 	r = radeon_ring_lock(rdev, ring, 64);
@@ -150,7 +149,7 @@ void rv515_gpu_init(struct radeon_device *rdev)
 
 	if (r100_gui_wait_for_idle(rdev)) {
 		printk(KERN_WARNING "Failed to wait GUI idle while "
-		       "reseting GPU. Bad things might happen.\n");
+		       "resetting GPU. Bad things might happen.\n");
 	}
 	rv515_vga_render_disable(rdev);
 	r420_pipes_init(rdev);
@@ -162,7 +161,7 @@ void rv515_gpu_init(struct radeon_device *rdev)
 	WREG32_PLL(0x000D, tmp);
 	if (r100_gui_wait_for_idle(rdev)) {
 		printk(KERN_WARNING "Failed to wait GUI idle while "
-		       "reseting GPU. Bad things might happen.\n");
+		       "resetting GPU. Bad things might happen.\n");
 	}
 	if (rv515_mc_wait_for_idle(rdev)) {
 		printk(KERN_WARNING "Failed to wait MC idle while "
@@ -282,12 +281,8 @@ int rv515_debugfs_ga_info_init(struct radeon_device *rdev)
 
 void rv515_mc_stop(struct radeon_device *rdev, struct rv515_mc_save *save)
 {
-	save->d1vga_control = RREG32(R_000330_D1VGA_CONTROL);
-	save->d2vga_control = RREG32(R_000338_D2VGA_CONTROL);
 	save->vga_render_control = RREG32(R_000300_VGA_RENDER_CONTROL);
 	save->vga_hdp_control = RREG32(R_000328_VGA_HDP_CONTROL);
-	save->d1crtc_control = RREG32(R_006080_D1CRTC_CONTROL);
-	save->d2crtc_control = RREG32(R_006880_D2CRTC_CONTROL);
 
 	/* Stop all video */
 	WREG32(R_0068E8_D2CRTC_UPDATE_LOCK, 0);
@@ -312,15 +307,6 @@ void rv515_mc_resume(struct radeon_device *rdev, struct rv515_mc_save *save)
 	/* Unlock host access */
 	WREG32(R_000328_VGA_HDP_CONTROL, save->vga_hdp_control);
 	mdelay(1);
-	/* Restore video state */
-	WREG32(R_000330_D1VGA_CONTROL, save->d1vga_control);
-	WREG32(R_000338_D2VGA_CONTROL, save->d2vga_control);
-	WREG32(R_0060E8_D1CRTC_UPDATE_LOCK, 1);
-	WREG32(R_0068E8_D2CRTC_UPDATE_LOCK, 1);
-	WREG32(R_006080_D1CRTC_CONTROL, save->d1crtc_control);
-	WREG32(R_006880_D2CRTC_CONTROL, save->d2crtc_control);
-	WREG32(R_0060E8_D1CRTC_UPDATE_LOCK, 0);
-	WREG32(R_0068E8_D2CRTC_UPDATE_LOCK, 0);
 	WREG32(R_000300_VGA_RENDER_CONTROL, save->vga_render_control);
 }
 
@@ -409,16 +395,12 @@ static int rv515_startup(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = radeon_ib_pool_start(rdev);
-	if (r)
-		return r;
-
-	r = r100_ib_test(rdev);
+	r = radeon_ib_pool_init(rdev);
 	if (r) {
-		dev_err(rdev->dev, "failed testing IB (%d).\n", r);
-		rdev->accel_working = false;
+		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
 		return r;
 	}
+
 	return 0;
 }
 
@@ -472,7 +454,7 @@ void rv515_fini(struct radeon_device *rdev)
 {
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
-	r100_ib_fini(rdev);
+	radeon_ib_pool_fini(rdev);
 	radeon_gem_fini(rdev);
 	rv370_pcie_gart_fini(rdev);
 	radeon_agp_fini(rdev);
@@ -546,20 +528,14 @@ int rv515_init(struct radeon_device *rdev)
 		return r;
 	rv515_set_safe_registers(rdev);
 
-	r = radeon_ib_pool_init(rdev);
 	rdev->accel_working = true;
-	if (r) {
-		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
-		rdev->accel_working = false;
-	}
-
 	r = rv515_startup(rdev);
 	if (r) {
 		/* Somethings want wront with the accel init stop accel */
 		dev_err(rdev->dev, "Disabling GPU acceleration\n");
 		r100_cp_fini(rdev);
 		radeon_wb_fini(rdev);
-		r100_ib_fini(rdev);
+		radeon_ib_pool_fini(rdev);
 		radeon_irq_kms_fini(rdev);
 		rv370_pcie_gart_fini(rdev);
 		radeon_agp_fini(rdev);

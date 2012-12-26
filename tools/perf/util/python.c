@@ -425,14 +425,14 @@ struct pyrf_thread_map {
 static int pyrf_thread_map__init(struct pyrf_thread_map *pthreads,
 				 PyObject *args, PyObject *kwargs)
 {
-	static char *kwlist[] = { "pid", "tid", NULL };
-	int pid = -1, tid = -1;
+	static char *kwlist[] = { "pid", "tid", "uid", NULL };
+	int pid = -1, tid = -1, uid = UINT_MAX;
 
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|ii",
-					 kwlist, &pid, &tid))
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|iii",
+					 kwlist, &pid, &tid, &uid))
 		return -1;
 
-	pthreads->threads = thread_map__new(pid, tid);
+	pthreads->threads = thread_map__new(pid, tid, uid);
 	if (pthreads->threads == NULL)
 		return -1;
 	return 0;
@@ -797,17 +797,13 @@ static PyObject *pyrf_evlist__read_on_cpu(struct pyrf_evlist *pevlist,
 
 	event = perf_evlist__mmap_read(evlist, cpu);
 	if (event != NULL) {
-		struct perf_evsel *first;
 		PyObject *pyevent = pyrf_event__new(event);
 		struct pyrf_event *pevent = (struct pyrf_event *)pyevent;
 
 		if (pyevent == NULL)
 			return PyErr_NoMemory();
 
-		first = list_entry(evlist->entries.next, struct perf_evsel, node);
-		err = perf_event__parse_sample(event, first->attr.sample_type,
-					       perf_evsel__sample_size(first),
-					       sample_id_all, &pevent->sample, false);
+		err = perf_evlist__parse_sample(evlist, event, &pevent->sample, false);
 		if (err)
 			return PyErr_Format(PyExc_OSError,
 					    "perf: can't parse sample, err=%d", err);

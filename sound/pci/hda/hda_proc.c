@@ -412,7 +412,7 @@ static void print_digital_conv(struct snd_info_buffer *buffer,
 	if (digi1 & AC_DIG1_EMPHASIS)
 		snd_iprintf(buffer, " Preemphasis");
 	if (digi1 & AC_DIG1_COPYRIGHT)
-		snd_iprintf(buffer, " Copyright");
+		snd_iprintf(buffer, " Non-Copyright");
 	if (digi1 & AC_DIG1_NONAUDIO)
 		snd_iprintf(buffer, " Non-Audio");
 	if (digi1 & AC_DIG1_PROFESSIONAL)
@@ -426,10 +426,10 @@ static void print_digital_conv(struct snd_info_buffer *buffer,
 
 static const char *get_pwr_state(u32 state)
 {
-	static const char * const buf[4] = {
-		"D0", "D1", "D2", "D3"
+	static const char * const buf[] = {
+		"D0", "D1", "D2", "D3", "D3cold"
 	};
-	if (state < 4)
+	if (state < ARRAY_SIZE(buf))
 		return buf[state];
 	return "UNKNOWN";
 }
@@ -451,14 +451,21 @@ static void print_power_state(struct snd_info_buffer *buffer,
 	int sup = snd_hda_param_read(codec, nid, AC_PAR_POWER_STATE);
 	int pwr = snd_hda_codec_read(codec, nid, 0,
 				     AC_VERB_GET_POWER_STATE, 0);
-	if (sup)
+	if (sup != -1)
 		snd_iprintf(buffer, "  Power states: %s\n",
 			    bits_names(sup, names, ARRAY_SIZE(names)));
 
-	snd_iprintf(buffer, "  Power: setting=%s, actual=%s\n",
+	snd_iprintf(buffer, "  Power: setting=%s, actual=%s",
 		    get_pwr_state(pwr & AC_PWRST_SETTING),
 		    get_pwr_state((pwr & AC_PWRST_ACTUAL) >>
 				  AC_PWRST_ACTUAL_SHIFT));
+	if (pwr & AC_PWRST_ERROR)
+		snd_iprintf(buffer, ", Error");
+	if (pwr & AC_PWRST_CLK_STOP_OK)
+		snd_iprintf(buffer, ", Clock-stop-OK");
+	if (pwr & AC_PWRST_SETTING_RESET)
+		snd_iprintf(buffer, ", Setting-reset");
+	snd_iprintf(buffer, "\n");
 }
 
 static void print_unsol_cap(struct snd_info_buffer *buffer,
@@ -651,9 +658,16 @@ static void print_codec_info(struct snd_info_entry *entry,
 			snd_iprintf(buffer, "  Amp-In caps: ");
 			print_amp_caps(buffer, codec, nid, HDA_INPUT);
 			snd_iprintf(buffer, "  Amp-In vals: ");
-			print_amp_vals(buffer, codec, nid, HDA_INPUT,
-				       wid_caps & AC_WCAP_STEREO,
-				       wid_type == AC_WID_PIN ? 1 : conn_len);
+			if (wid_type == AC_WID_PIN ||
+			    (codec->single_adc_amp &&
+			     wid_type == AC_WID_AUD_IN))
+				print_amp_vals(buffer, codec, nid, HDA_INPUT,
+					       wid_caps & AC_WCAP_STEREO,
+					       1);
+			else
+				print_amp_vals(buffer, codec, nid, HDA_INPUT,
+					       wid_caps & AC_WCAP_STEREO,
+					       conn_len);
 		}
 		if (wid_caps & AC_WCAP_OUT_AMP) {
 			snd_iprintf(buffer, "  Amp-Out caps: ");

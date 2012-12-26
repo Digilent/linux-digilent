@@ -285,7 +285,7 @@ static void rt2x00usb_interrupt_txdone(struct urb *urb)
 		queue_work(rt2x00dev->workqueue, &rt2x00dev->txdone_work);
 }
 
-static bool rt2x00usb_kick_tx_entry(struct queue_entry *entry, void* data)
+static bool rt2x00usb_kick_tx_entry(struct queue_entry *entry)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
 	struct usb_device *usb_dev = to_usb_device_intf(rt2x00dev->dev);
@@ -358,7 +358,7 @@ static void rt2x00usb_work_rxdone(struct work_struct *work)
 		/*
 		 * Send the frame to rt2x00lib for further processing.
 		 */
-		rt2x00lib_rxdone(entry);
+		rt2x00lib_rxdone(entry, GFP_KERNEL);
 	}
 }
 
@@ -390,7 +390,7 @@ static void rt2x00usb_interrupt_rxdone(struct urb *urb)
 	queue_work(rt2x00dev->workqueue, &rt2x00dev->rxdone_work);
 }
 
-static bool rt2x00usb_kick_rx_entry(struct queue_entry *entry, void* data)
+static bool rt2x00usb_kick_rx_entry(struct queue_entry *entry)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
 	struct usb_device *usb_dev = to_usb_device_intf(rt2x00dev->dev);
@@ -427,18 +427,12 @@ void rt2x00usb_kick_queue(struct data_queue *queue)
 	case QID_AC_BE:
 	case QID_AC_BK:
 		if (!rt2x00queue_empty(queue))
-			rt2x00queue_for_each_entry(queue,
-						   Q_INDEX_DONE,
-						   Q_INDEX,
-						   NULL,
+			rt2x00queue_for_each_entry(queue, Q_INDEX_DONE, Q_INDEX,
 						   rt2x00usb_kick_tx_entry);
 		break;
 	case QID_RX:
 		if (!rt2x00queue_full(queue))
-			rt2x00queue_for_each_entry(queue,
-						   Q_INDEX_DONE,
-						   Q_INDEX,
-						   NULL,
+			rt2x00queue_for_each_entry(queue, Q_INDEX, Q_INDEX_DONE,
 						   rt2x00usb_kick_rx_entry);
 		break;
 	default:
@@ -447,7 +441,7 @@ void rt2x00usb_kick_queue(struct data_queue *queue)
 }
 EXPORT_SYMBOL_GPL(rt2x00usb_kick_queue);
 
-static bool rt2x00usb_flush_entry(struct queue_entry *entry, void* data)
+static bool rt2x00usb_flush_entry(struct queue_entry *entry)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
 	struct queue_entry_priv_usb *entry_priv = entry->priv_data;
@@ -474,7 +468,7 @@ void rt2x00usb_flush_queue(struct data_queue *queue, bool drop)
 	unsigned int i;
 
 	if (drop)
-		rt2x00queue_for_each_entry(queue, Q_INDEX_DONE, Q_INDEX, NULL,
+		rt2x00queue_for_each_entry(queue, Q_INDEX_DONE, Q_INDEX,
 					   rt2x00usb_flush_entry);
 
 	/*
@@ -526,22 +520,6 @@ static void rt2x00usb_watchdog_tx_dma(struct data_queue *queue)
 	rt2x00queue_flush_queue(queue, true);
 }
 
-static void rt2x00usb_watchdog_tx_status(struct data_queue *queue)
-{
-	WARNING(queue->rt2x00dev, "TX queue %d status timed out,"
-		" invoke forced tx handler\n", queue->qid);
-
-	queue_work(queue->rt2x00dev->workqueue, &queue->rt2x00dev->txdone_work);
-}
-
-static int rt2x00usb_status_timeout(struct data_queue *queue)
-{
-	struct queue_entry *entry;
-
-	entry = rt2x00queue_get_entry(queue, Q_INDEX_DONE);
-	return rt2x00queue_status_timeout(entry);
-}
-
 static int rt2x00usb_dma_timeout(struct data_queue *queue)
 {
 	struct queue_entry *entry;
@@ -558,8 +536,6 @@ void rt2x00usb_watchdog(struct rt2x00_dev *rt2x00dev)
 		if (!rt2x00queue_empty(queue)) {
 			if (rt2x00usb_dma_timeout(queue))
 				rt2x00usb_watchdog_tx_dma(queue);
-			if (rt2x00usb_status_timeout(queue))
-				rt2x00usb_watchdog_tx_status(queue);
 		}
 	}
 }
@@ -583,7 +559,7 @@ void rt2x00usb_clear_entry(struct queue_entry *entry)
 	entry->flags = 0;
 
 	if (entry->queue->qid == QID_RX)
-		rt2x00usb_kick_rx_entry(entry, NULL);
+		rt2x00usb_kick_rx_entry(entry);
 }
 EXPORT_SYMBOL_GPL(rt2x00usb_clear_entry);
 
@@ -829,7 +805,8 @@ int rt2x00usb_probe(struct usb_interface *usb_intf,
 
 	INIT_WORK(&rt2x00dev->rxdone_work, rt2x00usb_work_rxdone);
 	INIT_WORK(&rt2x00dev->txdone_work, rt2x00usb_work_txdone);
-	init_timer(&rt2x00dev->txstatus_timer);
+	hrtimer_init(&rt2x00dev->txstatus_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL);
 
 	retval = rt2x00usb_alloc_reg(rt2x00dev);
 	if (retval)

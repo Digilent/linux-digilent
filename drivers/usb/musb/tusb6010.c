@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/err.h>
 #include <linux/init.h>
 #include <linux/prefetch.h>
 #include <linux/usb.h>
@@ -277,7 +278,7 @@ static struct musb *the_musb;
  * mode), or low power Default-B sessions, something else supplies power.
  * Caller must take care of locking.
  */
-static int tusb_draw_power(struct otg_transceiver *x, unsigned mA)
+static int tusb_draw_power(struct usb_phy *x, unsigned mA)
 {
 	struct musb	*musb = the_musb;
 	void __iomem	*tbase = musb->ctrl_base;
@@ -293,7 +294,7 @@ static int tusb_draw_power(struct otg_transceiver *x, unsigned mA)
 	 * The actual current usage would be very board-specific.  For now,
 	 * it's simpler to just use an aggregate (also board-specific).
 	 */
-	if (x->default_a || mA < (musb->min_power << 1))
+	if (x->otg->default_a || mA < (musb->min_power << 1))
 		mA = 0;
 
 	reg = musb_readl(tbase, TUSB_PRCM_MNGMT);
@@ -510,6 +511,7 @@ static void tusb_musb_set_vbus(struct musb *musb, int is_on)
 	void __iomem	*tbase = musb->ctrl_base;
 	u32		conf, prcm, timer;
 	u8		devctl;
+	struct usb_otg	*otg = musb->xceiv->otg;
 
 	/* HDRC controls CPEN, but beware current surges during device
 	 * connect.  They can trigger transient overcurrent conditions
@@ -522,7 +524,7 @@ static void tusb_musb_set_vbus(struct musb *musb, int is_on)
 
 	if (is_on) {
 		timer = OTG_TIMER_MS(OTG_TIME_A_WAIT_VRISE);
-		musb->xceiv->default_a = 1;
+		otg->default_a = 1;
 		musb->xceiv->state = OTG_STATE_A_WAIT_VRISE;
 		devctl |= MUSB_DEVCTL_SESSION;
 
@@ -548,11 +550,11 @@ static void tusb_musb_set_vbus(struct musb *musb, int is_on)
 				musb->xceiv->state = OTG_STATE_A_IDLE;
 			}
 			musb->is_active = 0;
-			musb->xceiv->default_a = 1;
+			otg->default_a = 1;
 			MUSB_HST_MODE(musb);
 		} else {
 			musb->is_active = 0;
-			musb->xceiv->default_a = 0;
+			otg->default_a = 0;
 			musb->xceiv->state = OTG_STATE_B_IDLE;
 			MUSB_DEV_MODE(musb);
 		}
@@ -644,6 +646,7 @@ tusb_otg_ints(struct musb *musb, u32 int_src, void __iomem *tbase)
 {
 	u32		otg_stat = musb_readl(tbase, TUSB_DEV_OTG_STAT);
 	unsigned long	idle_timeout = 0;
+	struct usb_otg	*otg = musb->xceiv->otg;
 
 	/* ID pin */
 	if ((int_src & TUSB_INT_SRC_ID_STATUS_CHNG)) {
@@ -654,7 +657,7 @@ tusb_otg_ints(struct musb *musb, u32 int_src, void __iomem *tbase)
 		else
 			default_a = is_host_enabled(musb);
 		dev_dbg(musb->controller, "Default-%c\n", default_a ? 'A' : 'B');
-		musb->xceiv->default_a = default_a;
+		otg->default_a = default_a;
 		tusb_musb_set_vbus(musb, default_a);
 
 		/* Don't allow idling immediately */
@@ -666,7 +669,7 @@ tusb_otg_ints(struct musb *musb, u32 int_src, void __iomem *tbase)
 	if (int_src & TUSB_INT_SRC_VBUS_SENSE_CHNG) {
 
 		/* B-dev state machine:  no vbus ~= disconnect */
-		if ((is_otg_enabled(musb) && !musb->xceiv->default_a)
+		if ((is_otg_enabled(musb) && !otg->default_a)
 				|| !is_host_enabled(musb)) {
 			/* ? musb_root_disconnect(musb); */
 			musb->port1_status &=
@@ -1076,8 +1079,8 @@ static int tusb_musb_init(struct musb *musb)
 	int			ret;
 
 	usb_nop_xceiv_register();
-	musb->xceiv = otg_get_transceiver();
-	if (!musb->xceiv)
+	musb->xceiv = usb_get_phy(USB_PHY_TYPE_USB2);
+	if (IS_ERR_OR_NULL(musb->xceiv))
 		return -ENODEV;
 
 	pdev = to_platform_device(musb->controller);
@@ -1128,7 +1131,7 @@ done:
 		if (sync)
 			iounmap(sync);
 
-		otg_put_transceiver(musb->xceiv);
+		usb_put_phy(musb->xceiv);
 		usb_nop_xceiv_unregister();
 	}
 	return ret;
@@ -1144,7 +1147,7 @@ static int tusb_musb_exit(struct musb *musb)
 
 	iounmap(musb->sync_va);
 
-	otg_put_transceiver(musb->xceiv);
+	usb_put_phy(musb->xceiv);
 	usb_nop_xceiv_unregister();
 	return 0;
 }
@@ -1165,7 +1168,7 @@ static const struct musb_platform_ops tusb_ops = {
 
 static u64 tusb_dmamask = DMA_BIT_MASK(32);
 
-static int __init tusb_probe(struct platform_device *pdev)
+static int __devinit tusb_probe(struct platform_device *pdev)
 {
 	struct musb_hdrc_platform_data	*pdata = pdev->dev.platform_data;
 	struct platform_device		*musb;
@@ -1212,7 +1215,7 @@ static int __init tusb_probe(struct platform_device *pdev)
 	ret = platform_device_add(musb);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register musb device\n");
-		goto err1;
+		goto err2;
 	}
 
 	return 0;
@@ -1227,7 +1230,7 @@ err0:
 	return ret;
 }
 
-static int __exit tusb_remove(struct platform_device *pdev)
+static int __devexit tusb_remove(struct platform_device *pdev)
 {
 	struct tusb6010_glue		*glue = platform_get_drvdata(pdev);
 
@@ -1239,7 +1242,8 @@ static int __exit tusb_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver tusb_driver = {
-	.remove		= __exit_p(tusb_remove),
+	.probe		= tusb_probe,
+	.remove		= __devexit_p(tusb_remove),
 	.driver		= {
 		.name	= "musb-tusb",
 	},
@@ -1251,9 +1255,9 @@ MODULE_LICENSE("GPL v2");
 
 static int __init tusb_init(void)
 {
-	return platform_driver_probe(&tusb_driver, tusb_probe);
+	return platform_driver_register(&tusb_driver);
 }
-subsys_initcall(tusb_init);
+module_init(tusb_init);
 
 static void __exit tusb_exit(void)
 {

@@ -40,6 +40,10 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/if_vlan.h>
+#ifdef CONFIG_MLX4_EN_DCB
+#include <linux/dcbnl.h>
+#endif
+#include <linux/cpu_rmap.h>
 
 #include <linux/mlx4/device.h>
 #include <linux/mlx4/qp.h>
@@ -72,6 +76,10 @@
 #define STAMP_SHIFT		31
 #define STAMP_VAL		0x7fffffff
 #define STATS_DELAY		(HZ / 4)
+#define MAX_NUM_OF_FS_RULES	256
+
+#define MLX4_EN_FILTER_HASH_SHIFT 4
+#define MLX4_EN_FILTER_EXPIRY_QUOTA 60
 
 /* Typical TSO descriptor with 16 gather entries is 352 bytes... */
 #define MAX_DESC_SIZE		512
@@ -83,8 +91,9 @@
 
 #define MLX4_EN_WATCHDOG_TIMEOUT	(15 * HZ)
 
-#define MLX4_EN_ALLOC_ORDER	2
-#define MLX4_EN_ALLOC_SIZE	(PAGE_SIZE << MLX4_EN_ALLOC_ORDER)
+/* Use the maximum between 16384 and a single page */
+#define MLX4_EN_ALLOC_SIZE	PAGE_ALIGN(16384)
+#define MLX4_EN_ALLOC_ORDER	get_order(MLX4_EN_ALLOC_SIZE)
 
 #define MLX4_EN_MAX_LRO_DESCRIPTORS	32
 
@@ -102,14 +111,13 @@ enum {
 #define MLX4_EN_MAX_TX_SIZE	8192
 #define MLX4_EN_MAX_RX_SIZE	8192
 
-/* Minimum ring size for our page-allocation sceme to work */
+/* Minimum ring size for our page-allocation scheme to work */
 #define MLX4_EN_MIN_RX_SIZE	(MLX4_EN_ALLOC_SIZE / SMP_CACHE_BYTES)
 #define MLX4_EN_MIN_TX_SIZE	(4096 / TXBB_SIZE)
 
 #define MLX4_EN_SMALL_PKT_SIZE		64
-#define MLX4_EN_NUM_TX_RINGS		8
-#define MLX4_EN_NUM_PPP_RINGS		8
-#define MAX_TX_RINGS			(MLX4_EN_NUM_TX_RINGS + MLX4_EN_NUM_PPP_RINGS)
+#define MLX4_EN_MAX_TX_RING_P_UP	32
+#define MLX4_EN_NUM_UP			8
 #define MLX4_EN_DEF_TX_RING_SIZE	512
 #define MLX4_EN_DEF_RX_RING_SIZE  	1024
 
@@ -117,7 +125,7 @@ enum {
 #define MLX4_EN_RX_COAL_TARGET	44
 #define MLX4_EN_RX_COAL_TIME	0x10
 
-#define MLX4_EN_TX_COAL_PKTS	5
+#define MLX4_EN_TX_COAL_PKTS	16
 #define MLX4_EN_TX_COAL_TIME	0x80
 
 #define MLX4_EN_RX_RATE_LOW		400000
@@ -195,6 +203,7 @@ enum cq_type {
 struct mlx4_en_tx_info {
 	struct sk_buff *skb;
 	u32 nr_txbb;
+	u32 nr_bytes;
 	u8 linear;
 	u8 data_offset;
 	u8 inl;
@@ -223,6 +232,7 @@ struct mlx4_en_tx_desc {
 
 struct mlx4_en_rx_alloc {
 	struct page *page;
+	dma_addr_t dma;
 	u16 offset;
 };
 
@@ -238,7 +248,6 @@ struct mlx4_en_tx_ring {
 	u32 doorbell_qpn;
 	void *buf;
 	u16 poll_cnt;
-	int blocked;
 	struct mlx4_en_tx_info *tx_info;
 	u8 *bounce_buf;
 	u32 last_nr_txbb;
@@ -250,9 +259,9 @@ struct mlx4_en_tx_ring {
 	unsigned long bytes;
 	unsigned long packets;
 	unsigned long tx_csum;
-	spinlock_t comp_lock;
 	struct mlx4_bf bf;
 	bool bf_enabled;
+	struct netdev_queue *tx_queue;
 };
 
 struct mlx4_en_rx_desc {
@@ -303,8 +312,6 @@ struct mlx4_en_cq {
 	spinlock_t              lock;
 	struct net_device      *dev;
 	struct napi_struct	napi;
-	/* Per-core Tx cq processing support */
-	struct timer_list timer;
 	int size;
 	int buf_size;
 	unsigned vector;
@@ -335,6 +342,7 @@ struct mlx4_en_profile {
 	u32 active_ports;
 	u32 small_pkt_int;
 	u8 no_reset;
+	u8 num_tx_rings_p_up;
 	struct mlx4_en_port_profile prof[MLX4_MAX_PORTS + 1];
 };
 
@@ -401,6 +409,19 @@ struct mlx4_en_perf_stats {
 #define NUM_PERF_COUNTERS		6
 };
 
+enum mlx4_en_mclist_act {
+	MCLIST_NONE,
+	MCLIST_REM,
+	MCLIST_ADD,
+};
+
+struct mlx4_en_mc_list {
+	struct list_head	list;
+	enum mlx4_en_mclist_act	action;
+	u8			addr[ETH_ALEN];
+	u64			reg_id;
+};
+
 struct mlx4_en_frag_info {
 	u16 frag_size;
 	u16 frag_prefix_size;
@@ -408,6 +429,20 @@ struct mlx4_en_frag_info {
 	u16 frag_align;
 	u16 last_offset;
 
+};
+
+#ifdef CONFIG_MLX4_EN_DCB
+/* Minimal TC BW - setting to 0 will block traffic */
+#define MLX4_EN_BW_MIN 1
+#define MLX4_EN_BW_MAX 100 /* Utilize 100% of the line */
+
+#define MLX4_EN_TC_ETS 7
+
+#endif
+
+struct ethtool_flow_id {
+	struct ethtool_rx_flow_spec flow_spec;
+	u64 id;
 };
 
 struct mlx4_en_priv {
@@ -419,6 +454,7 @@ struct mlx4_en_priv {
 	struct net_device_stats ret_stats;
 	struct mlx4_en_port_state port_state;
 	spinlock_t stats_lock;
+	struct ethtool_flow_id ethtool_rules[MAX_NUM_OF_FS_RULES];
 
 	unsigned long last_moder_packets[MAX_RX_RINGS];
 	unsigned long last_moder_tx_packets;
@@ -453,7 +489,7 @@ struct mlx4_en_priv {
 	int base_qpn;
 
 	struct mlx4_en_rss_map rss_map;
-	u32 ctrl_flags;
+	__be32 ctrl_flags;
 	u32 flags;
 #define MLX4_EN_FLAG_PROMISC	0x1
 #define MLX4_EN_FLAG_MC_PROMISC	0x2
@@ -464,10 +500,11 @@ struct mlx4_en_priv {
 	u16 num_frags;
 	u16 log_rx_info;
 
-	struct mlx4_en_tx_ring tx_ring[MAX_TX_RINGS];
+	struct mlx4_en_tx_ring *tx_ring;
 	struct mlx4_en_rx_ring rx_ring[MAX_RX_RINGS];
-	struct mlx4_en_cq tx_cq[MAX_TX_RINGS];
+	struct mlx4_en_cq *tx_cq;
 	struct mlx4_en_cq rx_cq[MAX_RX_RINGS];
+	struct mlx4_qp drop_qp;
 	struct work_struct mcast_task;
 	struct work_struct mac_task;
 	struct work_struct watchdog_task;
@@ -477,11 +514,26 @@ struct mlx4_en_priv {
 	struct mlx4_en_pkt_stats pkstats;
 	struct mlx4_en_port_stats port_stats;
 	u64 stats_bitmap;
-	char *mc_addrs;
-	int mc_addrs_cnt;
+	struct list_head mc_list;
+	struct list_head curr_list;
+	u64 broadcast_id;
 	struct mlx4_en_stat_out_mbox hw_stats;
 	int vids[128];
 	bool wol;
+	struct device *ddev;
+	int base_tx_qpn;
+
+#ifdef CONFIG_MLX4_EN_DCB
+	struct ieee_ets ets;
+	u16 maxrate[IEEE_8021QAZ_MAX_TCS];
+#endif
+#ifdef CONFIG_RFS_ACCEL
+	spinlock_t filters_lock;
+	int last_filter_id;
+	struct list_head filters;
+	struct hlist_head filter_hash[1 << MLX4_EN_FILTER_HASH_SHIFT];
+#endif
+
 };
 
 enum mlx4_en_wol {
@@ -510,7 +562,6 @@ void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
 int mlx4_en_set_cq_moder(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
 int mlx4_en_arm_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
 
-void mlx4_en_poll_tx_cq(unsigned long data);
 void mlx4_en_tx_irq(struct mlx4_cq *mcq);
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb);
 netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev);
@@ -520,7 +571,7 @@ int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv, struct mlx4_en_tx_ring *ri
 void mlx4_en_destroy_tx_ring(struct mlx4_en_priv *priv, struct mlx4_en_tx_ring *ring);
 int mlx4_en_activate_tx_ring(struct mlx4_en_priv *priv,
 			     struct mlx4_en_tx_ring *ring,
-			     int cq);
+			     int cq, int user_prio);
 void mlx4_en_deactivate_tx_ring(struct mlx4_en_priv *priv,
 				struct mlx4_en_tx_ring *ring);
 
@@ -538,8 +589,8 @@ int mlx4_en_process_rx_cq(struct net_device *dev,
 			  int budget);
 int mlx4_en_poll_rx_cq(struct napi_struct *napi, int budget);
 void mlx4_en_fill_qp_context(struct mlx4_en_priv *priv, int size, int stride,
-			     int is_tx, int rss, int qpn, int cqn,
-			     struct mlx4_qp_context *context);
+		int is_tx, int rss, int qpn, int cqn, int user_prio,
+		struct mlx4_qp_context *context);
 void mlx4_en_sqp_event(struct mlx4_qp *qp, enum mlx4_event event);
 int mlx4_en_map_buffer(struct mlx4_buf *buf);
 void mlx4_en_unmap_buffer(struct mlx4_buf *buf);
@@ -547,18 +598,25 @@ void mlx4_en_unmap_buffer(struct mlx4_buf *buf);
 void mlx4_en_calc_rx_buf(struct net_device *dev);
 int mlx4_en_config_rss_steer(struct mlx4_en_priv *priv);
 void mlx4_en_release_rss_steer(struct mlx4_en_priv *priv);
+int mlx4_en_create_drop_qp(struct mlx4_en_priv *priv);
+void mlx4_en_destroy_drop_qp(struct mlx4_en_priv *priv);
 int mlx4_en_free_tx_buf(struct net_device *dev, struct mlx4_en_tx_ring *ring);
 void mlx4_en_rx_irq(struct mlx4_cq *mcq);
 
 int mlx4_SET_MCAST_FLTR(struct mlx4_dev *dev, u8 port, u64 mac, u64 clear, u8 mode);
 int mlx4_SET_VLAN_FLTR(struct mlx4_dev *dev, struct mlx4_en_priv *priv);
-int mlx4_SET_PORT_general(struct mlx4_dev *dev, u8 port, int mtu,
-			  u8 pptx, u8 pfctx, u8 pprx, u8 pfcrx);
-int mlx4_SET_PORT_qpn_calc(struct mlx4_dev *dev, u8 port, u32 base_qpn,
-			   u8 promisc);
 
 int mlx4_en_DUMP_ETH_STATS(struct mlx4_en_dev *mdev, u8 port, u8 reset);
 int mlx4_en_QUERY_PORT(struct mlx4_en_dev *mdev, u8 port);
+
+#ifdef CONFIG_MLX4_EN_DCB
+extern const struct dcbnl_rtnl_ops mlx4_en_dcbnl_ops;
+#endif
+
+#ifdef CONFIG_RFS_ACCEL
+void mlx4_en_cleanup_filters(struct mlx4_en_priv *priv,
+			     struct mlx4_en_rx_ring *rx_ring);
+#endif
 
 #define MLX4_EN_NUM_SELF_TEST	5
 void mlx4_en_ex_selftest(struct net_device *dev, u32 *flags, u64 *buf);

@@ -39,7 +39,8 @@
 #define SKE_KPRISA	(0x1 << 2)
 
 #define SKE_KEYPAD_ROW_SHIFT	3
-#define SKE_KPD_KEYMAP_SIZE	(8 * 8)
+#define SKE_KPD_NUM_ROWS	8
+#define SKE_KPD_NUM_COLS	8
 
 /* keypad auto scan registers */
 #define SKE_ASR0	0x20
@@ -48,6 +49,7 @@
 #define SKE_ASR3	0x2C
 
 #define SKE_NUM_ASRX_REGISTERS	(4)
+#define	KEY_PRESSED_DELAY	10
 
 /**
  * struct ske_keypad  - data structure used by keypad driver
@@ -63,7 +65,7 @@ struct ske_keypad {
 	void __iomem *reg_base;
 	struct input_dev *input;
 	const struct ske_keypad_platform_data *board;
-	unsigned short keymap[SKE_KPD_KEYMAP_SIZE];
+	unsigned short keymap[SKE_KPD_NUM_ROWS * SKE_KPD_NUM_COLS];
 	struct clk *clk;
 	spinlock_t ske_keypad_lock;
 };
@@ -88,10 +90,10 @@ static void ske_keypad_set_bits(struct ske_keypad *keypad, u16 addr,
  *
  * Enable Multi key press detection, auto scan mode
  */
-static int __devinit ske_keypad_chip_init(struct ske_keypad *keypad)
+static int __init ske_keypad_chip_init(struct ske_keypad *keypad)
 {
 	u32 value;
-	int timeout = 50;
+	int timeout = keypad->board->debounce_ms;
 
 	/* check SKE_RIS to be 0 */
 	while ((readl(keypad->reg_base + SKE_RIS) != 0x00000000) && timeout--)
@@ -134,12 +136,37 @@ static int __devinit ske_keypad_chip_init(struct ske_keypad *keypad)
 	return 0;
 }
 
+static void ske_keypad_report(struct ske_keypad *keypad, u8 status, int col)
+{
+	int row = 0, code, pos;
+	struct input_dev *input = keypad->input;
+	u32 ske_ris;
+	int key_pressed;
+	int num_of_rows;
+
+	/* find out the row */
+	num_of_rows = hweight8(status);
+	do {
+		pos = __ffs(status);
+		row = pos;
+		status &= ~(1 << pos);
+
+		code = MATRIX_SCAN_CODE(row, col, SKE_KEYPAD_ROW_SHIFT);
+		ske_ris = readl(keypad->reg_base + SKE_RIS);
+		key_pressed = ske_ris & SKE_KPRISA;
+
+		input_event(input, EV_MSC, MSC_SCAN, code);
+		input_report_key(input, keypad->keymap[code], key_pressed);
+		input_sync(input);
+		num_of_rows--;
+	} while (num_of_rows);
+}
+
 static void ske_keypad_read_data(struct ske_keypad *keypad)
 {
-	struct input_dev *input = keypad->input;
-	u16 status;
-	int col = 0, row = 0, code;
-	int ske_asr, ske_ris, key_pressed, i;
+	u8 status;
+	int col = 0;
+	int ske_asr, i;
 
 	/*
 	 * Read the auto scan registers
@@ -153,44 +180,38 @@ static void ske_keypad_read_data(struct ske_keypad *keypad)
 		if (!ske_asr)
 			continue;
 
-		/* now that ASRx is zero, find out the column x and row y*/
-		if (ske_asr & 0xff) {
+		/* now that ASRx is zero, find out the coloumn x and row y */
+		status = ske_asr & 0xff;
+		if (status) {
 			col = i * 2;
-			status = ske_asr & 0xff;
-		} else {
-			col = (i * 2) + 1;
-			status = (ske_asr & 0xff00) >> 8;
+			ske_keypad_report(keypad, status, col);
 		}
-
-		/* find out the row */
-		row = __ffs(status);
-
-		code = MATRIX_SCAN_CODE(row, col, SKE_KEYPAD_ROW_SHIFT);
-		ske_ris = readl(keypad->reg_base + SKE_RIS);
-		key_pressed = ske_ris & SKE_KPRISA;
-
-		input_event(input, EV_MSC, MSC_SCAN, code);
-		input_report_key(input, keypad->keymap[code], key_pressed);
-		input_sync(input);
+		status = (ske_asr & 0xff00) >> 8;
+		if (status) {
+			col = (i * 2) + 1;
+			ske_keypad_report(keypad, status, col);
+		}
 	}
 }
 
 static irqreturn_t ske_keypad_irq(int irq, void *dev_id)
 {
 	struct ske_keypad *keypad = dev_id;
-	int retries = 20;
+	int timeout = keypad->board->debounce_ms;
 
 	/* disable auto scan interrupt; mask the interrupt generated */
 	ske_keypad_set_bits(keypad, SKE_IMSC, ~SKE_KPIMA, 0x0);
 	ske_keypad_set_bits(keypad, SKE_ICR, 0x0, SKE_KPICA);
 
-	while ((readl(keypad->reg_base + SKE_CR) & SKE_KPASON) && --retries)
-		msleep(5);
+	while ((readl(keypad->reg_base + SKE_CR) & SKE_KPASON) && --timeout)
+		cpu_relax();
 
-	if (retries) {
-		/* SKEx registers are stable and can be read */
-		ske_keypad_read_data(keypad);
-	}
+	/* SKEx registers are stable and can be read */
+	ske_keypad_read_data(keypad);
+
+	/* wait until raw interrupt is clear */
+	while ((readl(keypad->reg_base + SKE_RIS)) && --timeout)
+		msleep(KEY_PRESSED_DELAY);
 
 	/* enable auto scan interrupts */
 	ske_keypad_set_bits(keypad, SKE_IMSC, 0x0, SKE_KPIMA);
@@ -198,7 +219,7 @@ static irqreturn_t ske_keypad_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int __devinit ske_keypad_probe(struct platform_device *pdev)
+static int __init ske_keypad_probe(struct platform_device *pdev)
 {
 	const struct ske_keypad_platform_data *plat = pdev->dev.platform_data;
 	struct ske_keypad *keypad;
@@ -261,18 +282,17 @@ static int __devinit ske_keypad_probe(struct platform_device *pdev)
 	input->name = "ux500-ske-keypad";
 	input->dev.parent = &pdev->dev;
 
-	input->keycode = keypad->keymap;
-	input->keycodesize = sizeof(keypad->keymap[0]);
-	input->keycodemax = ARRAY_SIZE(keypad->keymap);
+	error = matrix_keypad_build_keymap(plat->keymap_data, NULL,
+					   SKE_KPD_NUM_ROWS, SKE_KPD_NUM_COLS,
+					   keypad->keymap, input);
+	if (error) {
+		dev_err(&pdev->dev, "Failed to build keymap\n");
+		goto err_iounmap;
+	}
 
 	input_set_capability(input, EV_MSC, MSC_SCAN);
-
-	__set_bit(EV_KEY, input->evbit);
 	if (!plat->no_autorepeat)
 		__set_bit(EV_REP, input->evbit);
-
-	matrix_keypad_build_keymap(plat->keymap_data, SKE_KEYPAD_ROW_SHIFT,
-			input->keycode, input->keybit);
 
 	clk_enable(keypad->clk);
 
@@ -344,7 +364,7 @@ static int __devexit ske_keypad_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int ske_keypad_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -372,22 +392,17 @@ static int ske_keypad_resume(struct device *dev)
 
 	return 0;
 }
-
-static const struct dev_pm_ops ske_keypad_dev_pm_ops = {
-	.suspend = ske_keypad_suspend,
-	.resume = ske_keypad_resume,
-};
 #endif
+
+static SIMPLE_DEV_PM_OPS(ske_keypad_dev_pm_ops,
+			 ske_keypad_suspend, ske_keypad_resume);
 
 static struct platform_driver ske_keypad_driver = {
 	.driver = {
 		.name = "nmk-ske-keypad",
 		.owner  = THIS_MODULE,
-#ifdef CONFIG_PM
 		.pm = &ske_keypad_dev_pm_ops,
-#endif
 	},
-	.probe = ske_keypad_probe,
 	.remove = __devexit_p(ske_keypad_remove),
 };
 

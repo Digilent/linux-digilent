@@ -83,7 +83,7 @@ static void __init ppc47x_init_irq(void)
 		 * device-tree, just pass 0 to all arguments
 		 */
 		struct mpic *mpic =
-			mpic_alloc(np, 0, 0, 0, 0, " MPIC     ");
+			mpic_alloc(np, 0, MPIC_NO_RESET, 0, 0, " MPIC     ");
 		BUG_ON(mpic == NULL);
 		mpic_init(mpic);
 		ppc_md.get_irq = mpic_get_irq;
@@ -160,7 +160,7 @@ static void __init ppc47x_setup_arch(void)
 	/* No need to check the DMA config as we /know/ our windows are all of
  	 * RAM.  Lets hope that doesn't change */
 #ifdef CONFIG_SWIOTLB
-	if (memblock_end_of_DRAM() > 0xffffffff) {
+	if ((memblock_end_of_DRAM() - 1) > 0xffffffff) {
 		ppc_swiotlb_enable = 1;
 		set_pci_dma_ops(&swiotlb_dma_ops);
 		ppc_md.pci_dma_dev_setup = pci_dma_dev_setup_swiotlb;

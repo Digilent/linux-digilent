@@ -62,8 +62,18 @@ static int exynos_target(struct cpufreq_policy *policy,
 		goto out;
 	}
 
-	if (cpufreq_frequency_table_target(policy, freq_table,
-					   freqs.old, relation, &old_index)) {
+	/*
+	 * The policy max have been changed so that we cannot get proper
+	 * old_index with cpufreq_frequency_table_target(). Thus, ignore
+	 * policy and get the index from the raw freqeuncy table.
+	 */
+	for (old_index = 0;
+		freq_table[old_index].frequency != CPUFREQ_TABLE_END;
+		old_index++)
+		if (freq_table[old_index].frequency == freqs.old)
+			break;
+
+	if (freq_table[old_index].frequency == CPUFREQ_TABLE_END) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -210,6 +220,8 @@ static int exynos_cpufreq_cpu_init(struct cpufreq_policy *policy)
 
 	cpufreq_frequency_table_get_attr(exynos_info->freq_table, policy->cpu);
 
+	locking_frequency = exynos_getspeed(0);
+
 	/* set the transition latency value */
 	policy->cpuinfo.transition_latency = 100000;
 
@@ -252,6 +264,10 @@ static int __init exynos_cpufreq_init(void)
 
 	if (soc_is_exynos4210())
 		ret = exynos4210_cpufreq_init(exynos_info);
+	else if (soc_is_exynos4212() || soc_is_exynos4412())
+		ret = exynos4x12_cpufreq_init(exynos_info);
+	else if (soc_is_exynos5250())
+		ret = exynos5250_cpufreq_init(exynos_info);
 	else
 		pr_err("%s: CPU type not found\n", __func__);
 

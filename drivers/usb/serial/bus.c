@@ -60,21 +60,24 @@ static int usb_serial_device_probe(struct device *dev)
 		retval = -ENODEV;
 		goto exit;
 	}
-	if (port->dev_state != PORT_REGISTERING)
+
+	/* make sure suspend/resume doesn't race against port_probe */
+	retval = usb_autopm_get_interface(port->serial->interface);
+	if (retval)
 		goto exit;
 
 	driver = port->serial->type;
 	if (driver->port_probe) {
 		retval = driver->port_probe(port);
 		if (retval)
-			goto exit;
+			goto exit_with_autopm;
 	}
 
 	retval = device_create_file(dev, &dev_attr_port_number);
 	if (retval) {
 		if (driver->port_remove)
 			retval = driver->port_remove(port);
-		goto exit;
+		goto exit_with_autopm;
 	}
 
 	minor = port->number;
@@ -83,6 +86,8 @@ static int usb_serial_device_probe(struct device *dev)
 		 "%s converter now attached to ttyUSB%d\n",
 		 driver->description, minor);
 
+exit_with_autopm:
+	usb_autopm_put_interface(port->serial->interface);
 exit:
 	return retval;
 }
@@ -98,8 +103,8 @@ static int usb_serial_device_remove(struct device *dev)
 	if (!port)
 		return -ENODEV;
 
-	if (port->dev_state != PORT_UNREGISTERING)
-		return retval;
+	/* make sure suspend/resume doesn't race against port_remove */
+	usb_autopm_get_interface(port->serial->interface);
 
 	device_remove_file(&port->dev, &dev_attr_port_number);
 
@@ -112,6 +117,7 @@ static int usb_serial_device_remove(struct device *dev)
 	dev_info(dev, "%s converter now disconnected from ttyUSB%d\n",
 		 driver->description, minor);
 
+	usb_autopm_put_interface(port->serial->interface);
 	return retval;
 }
 
@@ -129,8 +135,15 @@ static ssize_t store_new_id(struct device_driver *driver,
 	return retval;
 }
 
+static ssize_t show_dynids(struct device_driver *driver, char *buf)
+{
+	struct usb_serial_driver *usb_drv = to_usb_serial_driver(driver);
+
+	return usb_show_dynids(&usb_drv->dynids, buf);
+}
+
 static struct driver_attribute drv_attrs[] = {
-	__ATTR(new_id, S_IWUSR, NULL, store_new_id),
+	__ATTR(new_id, S_IRUGO | S_IWUSR, show_dynids, store_new_id),
 	__ATTR_NULL,
 };
 

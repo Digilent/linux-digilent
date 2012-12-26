@@ -30,6 +30,8 @@
 void pci_update_resource(struct pci_dev *dev, int resno)
 {
 	struct pci_bus_region region;
+	bool disable;
+	u16 cmd;
 	u32 new, check, mask;
 	int reg;
 	enum pci_bar_type type;
@@ -67,6 +69,18 @@ void pci_update_resource(struct pci_dev *dev, int resno)
 		new |= PCI_ROM_ADDRESS_ENABLE;
 	}
 
+	/*
+	 * We can't update a 64-bit BAR atomically, so when possible,
+	 * disable decoding so that a half-updated BAR won't conflict
+	 * with another device.
+	 */
+	disable = (res->flags & IORESOURCE_MEM_64) && !dev->mmio_always_on;
+	if (disable) {
+		pci_read_config_word(dev, PCI_COMMAND, &cmd);
+		pci_write_config_word(dev, PCI_COMMAND,
+				      cmd & ~PCI_COMMAND_MEMORY);
+	}
+
 	pci_write_config_dword(dev, reg, new);
 	pci_read_config_dword(dev, reg, &check);
 
@@ -84,6 +98,10 @@ void pci_update_resource(struct pci_dev *dev, int resno)
 			       "(high %#08x != %#08x)\n", resno, new, check);
 		}
 	}
+
+	if (disable)
+		pci_write_config_word(dev, PCI_COMMAND, cmd);
+
 	res->flags &= ~IORESOURCE_UNSET;
 	dev_dbg(&dev->dev, "BAR %d: set to %pR (PCI address [%#llx-%#llx])\n",
 		resno, res, (unsigned long long)region.start,
@@ -114,7 +132,6 @@ int pci_claim_resource(struct pci_dev *dev, int resource)
 }
 EXPORT_SYMBOL(pci_claim_resource);
 
-#ifdef CONFIG_PCI_QUIRKS
 void pci_disable_bridge_window(struct pci_dev *dev)
 {
 	dev_info(&dev->dev, "disabling bridge mem windows\n");
@@ -127,9 +144,58 @@ void pci_disable_bridge_window(struct pci_dev *dev)
 	pci_write_config_dword(dev, PCI_PREF_MEMORY_BASE, 0x0000fff0);
 	pci_write_config_dword(dev, PCI_PREF_BASE_UPPER32, 0xffffffff);
 }
-#endif	/* CONFIG_PCI_QUIRKS */
 
+/*
+ * Generic function that returns a value indicating that the device's
+ * original BIOS BAR address was not saved and so is not available for
+ * reinstatement.
+ *
+ * Can be over-ridden by architecture specific code that implements
+ * reinstatement functionality rather than leaving it disabled when
+ * normal allocation attempts fail.
+ */
+resource_size_t __weak pcibios_retrieve_fw_addr(struct pci_dev *dev, int idx)
+{
+	return 0;
+}
 
+static int pci_revert_fw_address(struct resource *res, struct pci_dev *dev, 
+		int resno, resource_size_t size)
+{
+	struct resource *root, *conflict;
+	resource_size_t fw_addr, start, end;
+	int ret = 0;
+
+	fw_addr = pcibios_retrieve_fw_addr(dev, resno);
+	if (!fw_addr)
+		return 1;
+
+	start = res->start;
+	end = res->end;
+	res->start = fw_addr;
+	res->end = res->start + size - 1;
+
+	root = pci_find_parent_resource(dev, res);
+	if (!root) {
+		if (res->flags & IORESOURCE_IO)
+			root = &ioport_resource;
+		else
+			root = &iomem_resource;
+	}
+
+	dev_info(&dev->dev, "BAR %d: trying firmware assignment %pR\n",
+		 resno, res);
+	conflict = request_resource_conflict(root, res);
+	if (conflict) {
+		dev_info(&dev->dev,
+			 "BAR %d: %pR conflicts with %s %pR\n", resno,
+			 res, conflict->name, conflict);
+		res->start = start;
+		res->end = end;
+		ret = 1;
+	}
+	return ret;
+}
 
 static int __pci_assign_resource(struct pci_bus *bus, struct pci_dev *dev,
 		int resno, resource_size_t size, resource_size_t align)
@@ -158,37 +224,8 @@ static int __pci_assign_resource(struct pci_bus *bus, struct pci_dev *dev,
 	return ret;
 }
 
-static int pci_revert_fw_address(struct resource *res, struct pci_dev *dev, 
-		int resno, resource_size_t size)
-{
-	struct resource *root, *conflict;
-	resource_size_t start, end;
-	int ret = 0;
-
-	if (res->flags & IORESOURCE_IO)
-		root = &ioport_resource;
-	else
-		root = &iomem_resource;
-
-	start = res->start;
-	end = res->end;
-	res->start = dev->fw_addr[resno];
-	res->end = res->start + size - 1;
-	dev_info(&dev->dev, "BAR %d: trying firmware assignment %pR\n",
-		 resno, res);
-	conflict = request_resource_conflict(root, res);
-	if (conflict) {
-		dev_info(&dev->dev,
-			 "BAR %d: %pR conflicts with %s %pR\n", resno,
-			 res, conflict->name, conflict);
-		res->start = start;
-		res->end = end;
-		ret = 1;
-	}
-	return ret;
-}
-
-static int _pci_assign_resource(struct pci_dev *dev, int resno, int size, resource_size_t min_align)
+static int _pci_assign_resource(struct pci_dev *dev, int resno,
+				resource_size_t size, resource_size_t min_align)
 {
 	struct resource *res = dev->resource + resno;
 	struct pci_bus *bus;
@@ -220,30 +257,6 @@ static int _pci_assign_resource(struct pci_dev *dev, int resno, int size, resour
 	return ret;
 }
 
-int pci_reassign_resource(struct pci_dev *dev, int resno, resource_size_t addsize,
-			resource_size_t min_align)
-{
-	struct resource *res = dev->resource + resno;
-	resource_size_t new_size;
-	int ret;
-
-	if (!res->parent) {
-		dev_info(&dev->dev, "BAR %d: can't reassign an unassigned resouce %pR "
-			 "\n", resno, res);
-		return -EINVAL;
-	}
-
-	new_size = resource_size(res) + addsize + min_align;
-	ret = _pci_assign_resource(dev, resno, new_size, min_align);
-	if (!ret) {
-		res->flags &= ~IORESOURCE_STARTALIGN;
-		dev_info(&dev->dev, "BAR %d: assigned %pR\n", resno, res);
-		if (resno < PCI_BRIDGE_RESOURCES)
-			pci_update_resource(dev, resno);
-	}
-	return ret;
-}
-
 int pci_assign_resource(struct pci_dev *dev, int resno)
 {
 	struct resource *res = dev->resource + resno;
@@ -267,7 +280,7 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 	 * where firmware left it.  That at least has a chance of
 	 * working, which is better than just leaving it disabled.
 	 */
-	if (ret < 0 && dev->fw_addr[resno])
+	if (ret < 0)
 		ret = pci_revert_fw_address(res, dev, resno, size);
 
 	if (!ret) {
@@ -279,51 +292,29 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 	return ret;
 }
 
-
-/* Sort resources by alignment */
-void pdev_sort_resources(struct pci_dev *dev, struct resource_list *head)
+int pci_reassign_resource(struct pci_dev *dev, int resno, resource_size_t addsize,
+			resource_size_t min_align)
 {
-	int i;
+	struct resource *res = dev->resource + resno;
+	resource_size_t new_size;
+	int ret;
 
-	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-		struct resource *r;
-		struct resource_list *list, *tmp;
-		resource_size_t r_align;
-
-		r = &dev->resource[i];
-
-		if (r->flags & IORESOURCE_PCI_FIXED)
-			continue;
-
-		if (!(r->flags) || r->parent)
-			continue;
-
-		r_align = pci_resource_alignment(dev, r);
-		if (!r_align) {
-			dev_warn(&dev->dev, "BAR %d: %pR has bogus alignment\n",
-				 i, r);
-			continue;
-		}
-		for (list = head; ; list = list->next) {
-			resource_size_t align = 0;
-			struct resource_list *ln = list->next;
-
-			if (ln)
-				align = pci_resource_alignment(ln->dev, ln->res);
-
-			if (r_align > align) {
-				tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
-				if (!tmp)
-					panic("pdev_sort_resources(): "
-					      "kmalloc() failed!\n");
-				tmp->next = ln;
-				tmp->res = r;
-				tmp->dev = dev;
-				list->next = tmp;
-				break;
-			}
-		}
+	if (!res->parent) {
+		dev_info(&dev->dev, "BAR %d: can't reassign an unassigned resource %pR "
+			 "\n", resno, res);
+		return -EINVAL;
 	}
+
+	/* already aligned with min_align */
+	new_size = resource_size(res) + addsize;
+	ret = _pci_assign_resource(dev, resno, new_size, min_align);
+	if (!ret) {
+		res->flags &= ~IORESOURCE_STARTALIGN;
+		dev_info(&dev->dev, "BAR %d: reassigned %pR\n", resno, res);
+		if (resno < PCI_BRIDGE_RESOURCES)
+			pci_update_resource(dev, resno);
+	}
+	return ret;
 }
 
 int pci_enable_resources(struct pci_dev *dev, int mask)

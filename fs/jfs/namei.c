@@ -73,7 +73,7 @@ static inline void free_ea_wmap(struct inode *inode)
  *
  */
 static int jfs_create(struct inode *dip, struct dentry *dentry, umode_t mode,
-		struct nameidata *nd)
+		bool excl)
 {
 	int rc = 0;
 	tid_t tid;		/* transaction id */
@@ -176,8 +176,8 @@ static int jfs_create(struct inode *dip, struct dentry *dentry, umode_t mode,
 		unlock_new_inode(ip);
 		iput(ip);
 	} else {
-		d_instantiate(dentry, ip);
 		unlock_new_inode(ip);
+		d_instantiate(dentry, ip);
 	}
 
       out2:
@@ -219,12 +219,6 @@ static int jfs_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 	jfs_info("jfs_mkdir: dip:0x%p name:%s", dip, dentry->d_name.name);
 
 	dquot_initialize(dip);
-
-	/* link count overflow on parent directory ? */
-	if (dip->i_nlink == JFS_LINK_MAX) {
-		rc = -EMLINK;
-		goto out1;
-	}
 
 	/*
 	 * search parent directory for entry/freespace
@@ -315,8 +309,8 @@ static int jfs_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 		unlock_new_inode(ip);
 		iput(ip);
 	} else {
-		d_instantiate(dentry, ip);
 		unlock_new_inode(ip);
+		d_instantiate(dentry, ip);
 	}
 
       out2:
@@ -806,9 +800,6 @@ static int jfs_link(struct dentry *old_dentry,
 	jfs_info("jfs_link: %s %s", old_dentry->d_name.name,
 		 dentry->d_name.name);
 
-	if (ip->i_nlink == JFS_LINK_MAX)
-		return -EMLINK;
-
 	dquot_initialize(dir);
 
 	tid = txBegin(ip->i_sb, 0);
@@ -1052,8 +1043,8 @@ static int jfs_symlink(struct inode *dip, struct dentry *dentry,
 		unlock_new_inode(ip);
 		iput(ip);
 	} else {
-		d_instantiate(dentry, ip);
 		unlock_new_inode(ip);
+		d_instantiate(dentry, ip);
 	}
 
       out2:
@@ -1138,10 +1129,6 @@ static int jfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 				rc = -ENOTEMPTY;
 				goto out3;
 			}
-		} else if ((new_dir != old_dir) &&
-			   (new_dir->i_nlink == JFS_LINK_MAX)) {
-			rc = -EMLINK;
-			goto out3;
 		}
 	} else if (new_ip) {
 		IWRITE_LOCK(new_ip, RDWRLOCK_NORMAL);
@@ -1437,8 +1424,8 @@ static int jfs_mknod(struct inode *dir, struct dentry *dentry,
 		unlock_new_inode(ip);
 		iput(ip);
 	} else {
-		d_instantiate(dentry, ip);
 		unlock_new_inode(ip);
+		d_instantiate(dentry, ip);
 	}
 
       out1:
@@ -1449,7 +1436,7 @@ static int jfs_mknod(struct inode *dir, struct dentry *dentry,
 	return rc;
 }
 
-static struct dentry *jfs_lookup(struct inode *dip, struct dentry *dentry, struct nameidata *nd)
+static struct dentry *jfs_lookup(struct inode *dip, struct dentry *dentry, unsigned int flags)
 {
 	struct btstack btstack;
 	ino_t inum;
@@ -1583,7 +1570,7 @@ out:
 	return result;
 }
 
-static int jfs_ci_revalidate(struct dentry *dentry, struct nameidata *nd)
+static int jfs_ci_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	/*
 	 * This is not negative dentry. Always valid.
@@ -1602,7 +1589,7 @@ static int jfs_ci_revalidate(struct dentry *dentry, struct nameidata *nd)
 	 * This may be nfsd (or something), anyway, we can't see the
 	 * intent of this. So, since this can be for creation, drop it.
 	 */
-	if (!nd)
+	if (!flags)
 		return 0;
 
 	/*
@@ -1610,7 +1597,7 @@ static int jfs_ci_revalidate(struct dentry *dentry, struct nameidata *nd)
 	 * case sensitive name which is specified by user if this is
 	 * for creation.
 	 */
-	if (nd->flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
+	if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
 		return 0;
 	return 1;
 }

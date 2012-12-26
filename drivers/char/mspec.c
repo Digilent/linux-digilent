@@ -44,7 +44,6 @@
 #include <linux/slab.h>
 #include <linux/numa.h>
 #include <asm/page.h>
-#include <asm/system.h>
 #include <asm/pgtable.h>
 #include <linux/atomic.h>
 #include <asm/tlbflush.h>
@@ -284,7 +283,7 @@ mspec_mmap(struct file *file, struct vm_area_struct *vma,
 	vdata->flags = flags;
 	vdata->type = type;
 	spin_lock_init(&vdata->lock);
-	vdata->refcnt = ATOMIC_INIT(1);
+	atomic_set(&vdata->refcnt, 1);
 	vma->vm_private_data = vdata;
 
 	vma->vm_flags |= (VM_IO | VM_RESERVED | VM_PFNMAP | VM_DONTEXPAND);

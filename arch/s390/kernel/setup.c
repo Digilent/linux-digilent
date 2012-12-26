@@ -1,8 +1,6 @@
 /*
- *  arch/s390/kernel/setup.c
- *
  *  S390 version
- *    Copyright (C) IBM Corp. 1999,2010
+ *    Copyright IBM Corp. 1999, 2012
  *    Author(s): Hartmut Penner (hp@de.ibm.com),
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  *
@@ -50,7 +48,7 @@
 
 #include <asm/ipl.h>
 #include <asm/uaccess.h>
-#include <asm/system.h>
+#include <asm/facility.h>
 #include <asm/smp.h>
 #include <asm/mmu_context.h>
 #include <asm/cpcmd.h>
@@ -62,6 +60,9 @@
 #include <asm/ebcdic.h>
 #include <asm/kvm_virtio.h>
 #include <asm/diag.h>
+#include <asm/os_info.h>
+#include <asm/sclp.h>
+#include "entry.h"
 
 long psw_kernel_bits	= PSW_DEFAULT_KEY | PSW_MASK_BASE | PSW_ASC_PRIMARY |
 			  PSW_MASK_EA | PSW_MASK_BA;
@@ -136,9 +137,14 @@ __setup("condev=", condev_setup);
 
 static void __init set_preferred_console(void)
 {
-	if (MACHINE_IS_KVM)
-		add_preferred_console("hvc", 0, NULL);
-	else if (CONSOLE_IS_3215 || CONSOLE_IS_SCLP)
+	if (MACHINE_IS_KVM) {
+		if (sclp_has_vt220())
+			add_preferred_console("ttyS", 1, NULL);
+		else if (sclp_has_linemode())
+			add_preferred_console("ttyS", 0, NULL);
+		else
+			add_preferred_console("hvc", 0, NULL);
+	} else if (CONSOLE_IS_3215 || CONSOLE_IS_SCLP)
 		add_preferred_console("ttyS", 0, NULL);
 	else if (CONSOLE_IS_3270)
 		add_preferred_console("tty3270", 0, NULL);
@@ -296,8 +302,8 @@ static int __init parse_vmalloc(char *arg)
 }
 early_param("vmalloc", parse_vmalloc);
 
-unsigned int user_mode = HOME_SPACE_MODE;
-EXPORT_SYMBOL_GPL(user_mode);
+unsigned int addressing_mode = HOME_SPACE_MODE;
+EXPORT_SYMBOL_GPL(addressing_mode);
 
 static int set_amode_primary(void)
 {
@@ -322,7 +328,7 @@ static int set_amode_primary(void)
  */
 static int __init early_parse_switch_amode(char *p)
 {
-	user_mode = PRIMARY_SPACE_MODE;
+	addressing_mode = PRIMARY_SPACE_MODE;
 	return 0;
 }
 early_param("switch_amode", early_parse_switch_amode);
@@ -330,9 +336,9 @@ early_param("switch_amode", early_parse_switch_amode);
 static int __init early_parse_user_mode(char *p)
 {
 	if (p && strcmp(p, "primary") == 0)
-		user_mode = PRIMARY_SPACE_MODE;
+		addressing_mode = PRIMARY_SPACE_MODE;
 	else if (!p || strcmp(p, "home") == 0)
-		user_mode = HOME_SPACE_MODE;
+		addressing_mode = HOME_SPACE_MODE;
 	else
 		return 1;
 	return 0;
@@ -341,7 +347,7 @@ early_param("user_mode", early_parse_user_mode);
 
 static void setup_addressing_mode(void)
 {
-	if (user_mode == PRIMARY_SPACE_MODE) {
+	if (addressing_mode == PRIMARY_SPACE_MODE) {
 		if (set_amode_primary())
 			pr_info("Address spaces switched, "
 				"mvcos available\n");
@@ -351,8 +357,9 @@ static void setup_addressing_mode(void)
 	}
 }
 
-static void __init
-setup_lowcore(void)
+void *restart_stack __attribute__((__section__(".data")));
+
+static void __init setup_lowcore(void)
 {
 	struct _lowcore *lc;
 
@@ -363,7 +370,7 @@ setup_lowcore(void)
 	lc = __alloc_bootmem_low(LC_PAGES * PAGE_SIZE, LC_PAGES * PAGE_SIZE, 0);
 	lc->restart_psw.mask = psw_kernel_bits;
 	lc->restart_psw.addr =
-		PSW_ADDR_AMODE | (unsigned long) psw_restart_int_handler;
+		PSW_ADDR_AMODE | (unsigned long) restart_int_handler;
 	lc->external_new_psw.mask = psw_kernel_bits |
 		PSW_MASK_DAT | PSW_MASK_MCHECK;
 	lc->external_new_psw.addr =
@@ -412,6 +419,27 @@ setup_lowcore(void)
 	lc->last_update_timer = S390_lowcore.last_update_timer;
 	lc->last_update_clock = S390_lowcore.last_update_clock;
 	lc->ftrace_func = S390_lowcore.ftrace_func;
+
+	restart_stack = __alloc_bootmem(ASYNC_SIZE, ASYNC_SIZE, 0);
+	restart_stack += ASYNC_SIZE;
+
+	/*
+	 * Set up PSW restart to call ipl.c:do_restart(). Copy the relevant
+	 * restart data to the absolute zero lowcore. This is necesary if
+	 * PSW restart is done on an offline CPU that has lowcore zero.
+	 */
+	lc->restart_stack = (unsigned long) restart_stack;
+	lc->restart_fn = (unsigned long) do_restart;
+	lc->restart_data = 0;
+	lc->restart_source = -1UL;
+
+	/* Setup absolute zero lowcore */
+	mem_assign_absolute(S390_lowcore.restart_stack, lc->restart_stack);
+	mem_assign_absolute(S390_lowcore.restart_fn, lc->restart_fn);
+	mem_assign_absolute(S390_lowcore.restart_data, lc->restart_data);
+	mem_assign_absolute(S390_lowcore.restart_source, lc->restart_source);
+	mem_assign_absolute(S390_lowcore.restart_psw, lc->restart_psw);
+
 	set_prefix((u32)(unsigned long) lc);
 	lowcore_ptr[0] = lc;
 }
@@ -572,33 +600,10 @@ static void __init setup_memory_end(void)
 	}
 }
 
-void *restart_stack __attribute__((__section__(".data")));
-
-/*
- * Setup new PSW and allocate stack for PSW restart interrupt
- */
-static void __init setup_restart_psw(void)
-{
-	psw_t psw;
-
-	restart_stack = __alloc_bootmem(ASYNC_SIZE, ASYNC_SIZE, 0);
-	restart_stack += ASYNC_SIZE;
-
-	/*
-	 * Setup restart PSW for absolute zero lowcore. This is necesary
-	 * if PSW restart is done on an offline CPU that has lowcore zero
-	 */
-	psw.mask = PSW_DEFAULT_KEY | PSW_MASK_BASE | PSW_MASK_EA | PSW_MASK_BA;
-	psw.addr = PSW_ADDR_AMODE | (unsigned long) psw_restart_int_handler;
-	copy_to_absolute_zero(&S390_lowcore.restart_psw, &psw, sizeof(psw));
-}
-
 static void __init setup_vmcoreinfo(void)
 {
 #ifdef CONFIG_KEXEC
-	unsigned long ptr = paddr_vmcoreinfo_note();
-
-	copy_to_absolute_zero(&S390_lowcore.vmcore_info, &ptr, sizeof(ptr));
+	mem_assign_absolute(S390_lowcore.vmcore_info, paddr_vmcoreinfo_note());
 #endif
 }
 
@@ -747,7 +752,7 @@ static void __init reserve_crashkernel(void)
 {
 #ifdef CONFIG_CRASH_DUMP
 	unsigned long long crash_base, crash_size;
-	char *msg;
+	char *msg = NULL;
 	int rc;
 
 	rc = parse_crashkernel(boot_command_line, memory_end, &crash_size,
@@ -779,11 +784,11 @@ static void __init reserve_crashkernel(void)
 	pr_info("Reserving %lluMB of memory at %lluMB "
 		"for crashkernel (System RAM: %luMB)\n",
 		crash_size >> 20, crash_base >> 20, memory_end >> 20);
+	os_info_crashkernel_add(crash_base, crash_size);
 #endif
 }
 
-static void __init
-setup_memory(void)
+static void __init setup_memory(void)
 {
         unsigned long bootmap_size;
 	unsigned long start_pfn, end_pfn;
@@ -969,11 +974,13 @@ static void __init setup_hwcaps(void)
 	if (MACHINE_HAS_HPAGE)
 		elf_hwcap |= HWCAP_S390_HPAGE;
 
+#if defined(CONFIG_64BIT)
 	/*
 	 * 64-bit register support for 31-bit processes
 	 * HWCAP_S390_HIGH_GPRS is bit 9.
 	 */
 	elf_hwcap |= HWCAP_S390_HIGH_GPRS;
+#endif
 
 	get_cpu_id(&cpu_id);
 	switch (cpu_id.machine) {
@@ -1014,8 +1021,7 @@ static void __init setup_hwcaps(void)
  * was printed.
  */
 
-void __init
-setup_arch(char **cmdline_p)
+void __init setup_arch(char **cmdline_p)
 {
         /*
          * print what head.S has found out about the machine
@@ -1060,6 +1066,7 @@ setup_arch(char **cmdline_p)
 
 	parse_early_param();
 
+	os_info_init();
 	setup_ipl();
 	setup_memory_end();
 	setup_addressing_mode();
@@ -1068,7 +1075,6 @@ setup_arch(char **cmdline_p)
 	setup_memory();
 	setup_resources();
 	setup_vmcoreinfo();
-	setup_restart_psw();
 	setup_lowcore();
 
         cpu_init();

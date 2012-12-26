@@ -448,7 +448,7 @@ struct xusbps_udc {
 
 	struct usb_ctrlrequest local_setup_buff;
 	spinlock_t lock;
-	struct otg_transceiver *transceiver;
+	struct usb_phy *transceiver;
 	unsigned softconnect:1;
 	unsigned vbus_active:1;
 	unsigned stopped:1;
@@ -481,7 +481,7 @@ struct xusbps_udc {
 #endif
 
 #if 0
-static void dump_msg(const char *label, const u8 * buf, unsigned int length)
+static void dump_msg(const char *label, const u8 *buf, unsigned int length)
 {
 	unsigned int start, num, i;
 	char line[52], *p;

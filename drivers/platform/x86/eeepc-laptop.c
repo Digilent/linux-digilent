@@ -610,12 +610,12 @@ static void eeepc_rfkill_hotplug(struct eeepc_laptop *eeepc, acpi_handle handle)
 
 		if (!bus) {
 			pr_warn("Unable to find PCI bus 1?\n");
-			goto out_unlock;
+			goto out_put_dev;
 		}
 
 		if (pci_bus_read_config_dword(bus, 0, PCI_VENDOR_ID, &l)) {
 			pr_err("Unable to read PCI config space?\n");
-			goto out_unlock;
+			goto out_put_dev;
 		}
 
 		absent = (l == 0xffffffff);
@@ -627,7 +627,7 @@ static void eeepc_rfkill_hotplug(struct eeepc_laptop *eeepc, acpi_handle handle)
 				absent ? "absent" : "present");
 			pr_warn("skipped wireless hotplug as probably "
 				"inappropriate for this model\n");
-			goto out_unlock;
+			goto out_put_dev;
 		}
 
 		if (!blocked) {
@@ -635,7 +635,7 @@ static void eeepc_rfkill_hotplug(struct eeepc_laptop *eeepc, acpi_handle handle)
 			if (dev) {
 				/* Device already present */
 				pci_dev_put(dev);
-				goto out_unlock;
+				goto out_put_dev;
 			}
 			dev = pci_scan_single_device(bus, 0);
 			if (dev) {
@@ -646,10 +646,12 @@ static void eeepc_rfkill_hotplug(struct eeepc_laptop *eeepc, acpi_handle handle)
 		} else {
 			dev = pci_get_slot(bus, 0);
 			if (dev) {
-				pci_remove_bus_device(dev);
+				pci_stop_and_remove_bus_device(dev);
 				pci_dev_put(dev);
 			}
 		}
+out_put_dev:
+		pci_dev_put(port);
 	}
 
 out_unlock:
@@ -1251,6 +1253,14 @@ static void eeepc_input_exit(struct eeepc_laptop *eeepc)
 /*
  * ACPI driver
  */
+static void eeepc_input_notify(struct eeepc_laptop *eeepc, int event)
+{
+	if (!eeepc->inputdev)
+		return ;
+	if (!sparse_keymap_report_event(eeepc->inputdev, event, 1, true))
+		pr_info("Unknown key %x pressed\n", event);
+}
+
 static void eeepc_acpi_notify(struct acpi_device *device, u32 event)
 {
 	struct eeepc_laptop *eeepc = acpi_driver_data(device);
@@ -1287,12 +1297,11 @@ static void eeepc_acpi_notify(struct acpi_device *device, u32 event)
 				* event will be desired value (or else ignored)
 				*/
 			}
-			sparse_keymap_report_event(eeepc->inputdev, event,
-						   1, true);
+			eeepc_input_notify(eeepc, event);
 		}
 	} else {
 		/* Everything else is a bona-fide keypress event */
-		sparse_keymap_report_event(eeepc->inputdev, event, 1, true);
+		eeepc_input_notify(eeepc, event);
 	}
 }
 

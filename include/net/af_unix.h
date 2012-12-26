@@ -14,15 +14,16 @@ extern struct sock *unix_get_socket(struct file *filp);
 extern struct sock *unix_peer_get(struct sock *);
 
 #define UNIX_HASH_SIZE	256
+#define UNIX_HASH_BITS	8
 
 extern unsigned int unix_tot_inflight;
 extern spinlock_t unix_table_lock;
-extern struct hlist_head unix_socket_table[UNIX_HASH_SIZE + 1];
+extern struct hlist_head unix_socket_table[2 * UNIX_HASH_SIZE];
 
 struct unix_address {
 	atomic_t	refcnt;
 	int		len;
-	unsigned	hash;
+	unsigned int	hash;
 	struct sockaddr_un name[0];
 };
 
@@ -49,8 +50,7 @@ struct unix_sock {
 	/* WARNING: sk has to be the first member */
 	struct sock		sk;
 	struct unix_address     *addr;
-	struct dentry		*dentry;
-	struct vfsmount		*mnt;
+	struct path		path;
 	struct mutex		readlock;
 	struct sock		*peer;
 	struct sock		*other;

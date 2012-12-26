@@ -34,9 +34,11 @@
 #define REG_SER_CONTROL 24 /*Serial Interface Control Register*/
 #define REG_ID		31 /*ID Register*/
 
-/*From figure 17 in the datasheet
-* These bits get ORed with the address to form
-* the instruction byte */
+/*
+ * From figure 17 in the datasheet
+ * These bits get ORed with the address to form
+ * the instruction byte
+ */
 /*Instruction Bit masks*/
 #define INST_MODE_bm	(1<<7)
 #define INST_READ_bm	(1<<6)
@@ -105,8 +107,10 @@ static ssize_t show_voltage(struct device *dev,
 	uint8_t channel, mux_cnv;
 
 	channel = attr->index;
-	/*TODO: add support for conversions
-	 *other than single ended with a gain of 1*/
+	/*
+	 * TODO: add support for conversions
+	 * other than single ended with a gain of 1
+	 */
 	/*MUX_M3_bm forces single ended*/
 	/*This is also where the gain of the PGA would be set*/
 	ads7871_write_reg8(spi, REG_GAIN_MUX,
@@ -114,8 +118,10 @@ static ssize_t show_voltage(struct device *dev,
 
 	ret = ads7871_read_reg8(spi, REG_GAIN_MUX);
 	mux_cnv = ((ret & MUX_CNV_bm)>>MUX_CNV_bv);
-	/*on 400MHz arm9 platform the conversion
-	 *is already done when we do this test*/
+	/*
+	 * on 400MHz arm9 platform the conversion
+	 * is already done when we do this test
+	 */
 	while ((i < 2) && mux_cnv) {
 		i++;
 		ret = ads7871_read_reg8(spi, REG_GAIN_MUX);
@@ -133,6 +139,12 @@ static ssize_t show_voltage(struct device *dev,
 	}
 }
 
+static ssize_t ads7871_show_name(struct device *dev,
+				 struct device_attribute *devattr, char *buf)
+{
+	return sprintf(buf, "%s\n", to_spi_device(dev)->modalias);
+}
+
 static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, show_voltage, NULL, 0);
 static SENSOR_DEVICE_ATTR(in1_input, S_IRUGO, show_voltage, NULL, 1);
 static SENSOR_DEVICE_ATTR(in2_input, S_IRUGO, show_voltage, NULL, 2);
@@ -141,6 +153,8 @@ static SENSOR_DEVICE_ATTR(in4_input, S_IRUGO, show_voltage, NULL, 4);
 static SENSOR_DEVICE_ATTR(in5_input, S_IRUGO, show_voltage, NULL, 5);
 static SENSOR_DEVICE_ATTR(in6_input, S_IRUGO, show_voltage, NULL, 6);
 static SENSOR_DEVICE_ATTR(in7_input, S_IRUGO, show_voltage, NULL, 7);
+
+static DEVICE_ATTR(name, S_IRUGO, ads7871_show_name, NULL);
 
 static struct attribute *ads7871_attributes[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
@@ -151,6 +165,7 @@ static struct attribute *ads7871_attributes[] = {
 	&sensor_dev_attr_in5_input.dev_attr.attr,
 	&sensor_dev_attr_in6_input.dev_attr.attr,
 	&sensor_dev_attr_in7_input.dev_attr.attr,
+	&dev_attr_name.attr,
 	NULL
 };
 
@@ -179,8 +194,10 @@ static int __devinit ads7871_probe(struct spi_device *spi)
 	ret = ads7871_read_reg8(spi, REG_OSC_CONTROL);
 
 	dev_dbg(&spi->dev, "REG_OSC_CONTROL write:%x, read:%x\n", val, ret);
-	/*because there is no other error checking on an SPI bus
-	we need to make sure we really have a chip*/
+	/*
+	 * because there is no other error checking on an SPI bus
+	 * we need to make sure we really have a chip
+	 */
 	if (val != ret) {
 		err = -ENODEV;
 		goto exit;
@@ -234,18 +251,7 @@ static struct spi_driver ads7871_driver = {
 	.remove = __devexit_p(ads7871_remove),
 };
 
-static int __init ads7871_init(void)
-{
-	return spi_register_driver(&ads7871_driver);
-}
-
-static void __exit ads7871_exit(void)
-{
-	spi_unregister_driver(&ads7871_driver);
-}
-
-module_init(ads7871_init);
-module_exit(ads7871_exit);
+module_spi_driver(ads7871_driver);
 
 MODULE_AUTHOR("Paul Thomas <pthomas8589@gmail.com>");
 MODULE_DESCRIPTION("TI ADS7871 A/D driver");

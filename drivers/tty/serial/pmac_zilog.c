@@ -469,7 +469,7 @@ static irqreturn_t pmz_interrupt(int irq, void *dev_id)
 	tty = NULL;
 	if (r3 & (CHAEXT | CHATxIP | CHARxIP)) {
 		if (!ZS_IS_OPEN(uap_a)) {
-			pmz_debug("ChanA interrupt while open !\n");
+			pmz_debug("ChanA interrupt while not open !\n");
 			goto skip_a;
 		}
 		write_zsreg(uap_a, R0, RES_H_IUS);
@@ -493,8 +493,8 @@ static irqreturn_t pmz_interrupt(int irq, void *dev_id)
 	spin_lock(&uap_b->port.lock);
 	tty = NULL;
 	if (r3 & (CHBEXT | CHBTxIP | CHBRxIP)) {
-		if (!ZS_IS_OPEN(uap_a)) {
-			pmz_debug("ChanB interrupt while open !\n");
+		if (!ZS_IS_OPEN(uap_b)) {
+			pmz_debug("ChanB interrupt while not open !\n");
 			goto skip_b;
 		}
 		write_zsreg(uap_b, R0, RES_H_IUS);
@@ -1348,10 +1348,16 @@ static int pmz_verify_port(struct uart_port *port, struct serial_struct *ser)
 static int pmz_poll_get_char(struct uart_port *port)
 {
 	struct uart_pmac_port *uap = (struct uart_pmac_port *)port;
+	int tries = 2;
 
-	while ((read_zsreg(uap, R0) & Rx_CH_AV) == 0)
-		udelay(5);
-	return read_zsdata(uap);
+	while (tries) {
+		if ((read_zsreg(uap, R0) & Rx_CH_AV) != 0)
+			return read_zsdata(uap);
+		if (tries--)
+			udelay(5);
+	}
+
+	return NO_POLL_CHAR;
 }
 
 static void pmz_poll_put_char(struct uart_port *port, unsigned char c)
@@ -1506,7 +1512,7 @@ no_dma:
 	 * fixed up interrupt info, but we use the device-tree directly
 	 * here due to early probing so we need the fixup too.
 	 */
-	if (uap->port.irq == NO_IRQ &&
+	if (uap->port.irq == 0 &&
 	    np->parent && np->parent->parent &&
 	    of_device_is_compatible(np->parent->parent, "gatwick")) {
 		/* IRQs on gatwick are offset by 64 */

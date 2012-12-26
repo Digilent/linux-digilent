@@ -50,7 +50,6 @@
 #include <linux/timer.h>
 #include <asm/byteorder.h>
 #include <asm/io.h>
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
@@ -1533,10 +1532,9 @@ struct net_device *init_atmel_card(unsigned short irq, unsigned long port,
 
 	/* Create the network device object. */
 	dev = alloc_etherdev(sizeof(*priv));
-	if (!dev) {
-		printk(KERN_ERR "atmel: Couldn't alloc_etherdev\n");
+	if (!dev)
 		return NULL;
-	}
+
 	if (dev_alloc_name(dev, dev->name) < 0) {
 		printk(KERN_ERR "atmel: Couldn't get name!\n");
 		goto err_out_free;
@@ -2954,10 +2952,10 @@ static void send_association_request(struct atmel_private *priv, int is_reassoc)
 	/* current AP address - only in reassoc frame */
 	if (is_reassoc) {
 		memcpy(body.ap, priv->CurrentBSSID, 6);
-		ssid_el_p = (u8 *)&body.ssid_el_id;
+		ssid_el_p = &body.ssid_el_id;
 		bodysize = 18 + priv->SSID_size;
 	} else {
-		ssid_el_p = (u8 *)&body.ap[0];
+		ssid_el_p = &body.ap[0];
 		bodysize = 12 + priv->SSID_size;
 	}
 
@@ -3991,8 +3989,7 @@ static int reset_atmel_card(struct net_device *dev)
 			atmel_copy_to_card(priv->dev, 0x8000, &fw[0x6000], len - 0x6000);
 		}
 
-		if (fw_entry)
-			release_firmware(fw_entry);
+		release_firmware(fw_entry);
 	}
 
 	err = atmel_wakeup_firmware(priv);

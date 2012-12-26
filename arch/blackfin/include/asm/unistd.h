@@ -11,7 +11,7 @@
  */
 #define __NR_restart_syscall	  0
 #define __NR_exit		  1
-#define __NR_fork		  2
+				/* 2 __NR_fork not supported on nommu */
 #define __NR_read		  3
 #define __NR_write		  4
 #define __NR_open		  5
@@ -399,8 +399,10 @@
 #define __NR_syncfs		378
 #define __NR_setns		379
 #define __NR_sendmmsg		380
+#define __NR_process_vm_readv	381
+#define __NR_process_vm_writev	382
 
-#define __NR_syscall		381
+#define __NR_syscall		383
 #define NR_syscalls		__NR_syscall
 
 /* Old optional stuff no one actually uses */
@@ -432,7 +434,6 @@
 #define __IGNORE_getcpu
 
 #ifdef __KERNEL__
-#define __ARCH_WANT_IPC_PARSE_VERSION
 #define __ARCH_WANT_STAT64
 #define __ARCH_WANT_SYS_ALARM
 #define __ARCH_WANT_SYS_GETHOSTNAME

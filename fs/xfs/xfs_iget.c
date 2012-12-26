@@ -19,7 +19,6 @@
 #include "xfs_fs.h"
 #include "xfs_types.h"
 #include "xfs_acl.h"
-#include "xfs_bit.h"
 #include "xfs_log.h"
 #include "xfs_inum.h"
 #include "xfs_trans.h"
@@ -40,17 +39,6 @@
 #include "xfs_bmap.h"
 #include "xfs_trace.h"
 
-
-/*
- * Define xfs inode iolock lockdep classes. We need to ensure that all active
- * inodes are considered the same for lockdep purposes, including inodes that
- * are recycled through the XFS_IRECLAIMABLE state. This is the the only way to
- * guarantee the locks are considered the same when there are multiple lock
- * initialisation siteѕ. Also, define a reclaimable inode class so it is
- * obvious in lockdep reports which class the report is against.
- */
-static struct lock_class_key xfs_iolock_active;
-struct lock_class_key xfs_iolock_reclaimable;
 
 /*
  * Allocate and initialise an xfs_inode.
@@ -81,8 +69,6 @@ xfs_inode_alloc(
 	ASSERT(ip->i_ino == 0);
 
 	mrlock_init(&ip->i_iolock, MRLOCK_BARRIER, "xfsio", ip->i_ino);
-	lockdep_set_class_and_name(&ip->i_iolock.mr_lock,
-			&xfs_iolock_active, "xfs_iolock_active");
 
 	/* initialise the xfs inode */
 	ip->i_ino = ino;
@@ -91,7 +77,6 @@ xfs_inode_alloc(
 	ip->i_afp = NULL;
 	memset(&ip->i_df, 0, sizeof(xfs_ifork_t));
 	ip->i_flags = 0;
-	ip->i_update_core = 0;
 	ip->i_delayed_blks = 0;
 	memset(&ip->i_d, 0, sizeof(xfs_icdinode_t));
 
@@ -124,23 +109,7 @@ xfs_inode_free(
 		xfs_idestroy_fork(ip, XFS_ATTR_FORK);
 
 	if (ip->i_itemp) {
-		/*
-		 * Only if we are shutting down the fs will we see an
-		 * inode still in the AIL. If it is there, we should remove
-		 * it to prevent a use-after-free from occurring.
-		 */
-		xfs_log_item_t	*lip = &ip->i_itemp->ili_item;
-		struct xfs_ail	*ailp = lip->li_ailp;
-
-		ASSERT(((lip->li_flags & XFS_LI_IN_AIL) == 0) ||
-				       XFS_FORCED_SHUTDOWN(ip->i_mount));
-		if (lip->li_flags & XFS_LI_IN_AIL) {
-			spin_lock(&ailp->xa_lock);
-			if (lip->li_flags & XFS_LI_IN_AIL)
-				xfs_trans_ail_delete(ailp, lip);
-			else
-				spin_unlock(&ailp->xa_lock);
-		}
+		ASSERT(!(ip->i_itemp->ili_item.li_flags & XFS_LI_IN_AIL));
 		xfs_inode_item_destroy(ip);
 		ip->i_itemp = NULL;
 	}
@@ -268,8 +237,6 @@ xfs_iget_cache_hit(
 
 		ASSERT(!rwsem_is_locked(&ip->i_iolock.mr_lock));
 		mrlock_init(&ip->i_iolock, MRLOCK_BARRIER, "xfsio", ip->i_ino);
-		lockdep_set_class_and_name(&ip->i_iolock.mr_lock,
-				&xfs_iolock_active, "xfs_iolock_active");
 
 		spin_unlock(&ip->i_flags_lock);
 		spin_unlock(&pag->pag_ici_lock);
@@ -290,7 +257,7 @@ xfs_iget_cache_hit(
 	if (lock_flags != 0)
 		xfs_ilock(ip, lock_flags);
 
-	xfs_iflags_clear(ip, XFS_ISTALE);
+	xfs_iflags_clear(ip, XFS_ISTALE | XFS_IDONTCACHE);
 	XFS_STATS_INC(xs_ig_found);
 
 	return 0;
@@ -315,6 +282,7 @@ xfs_iget_cache_miss(
 	struct xfs_inode	*ip;
 	int			error;
 	xfs_agino_t		agino = XFS_INO_TO_AGINO(mp, ino);
+	int			iflags;
 
 	ip = xfs_inode_alloc(mp, ino);
 	if (!ip)
@@ -334,9 +302,10 @@ xfs_iget_cache_miss(
 	/*
 	 * Preload the radix tree so we can insert safely under the
 	 * write spinlock. Note that we cannot sleep inside the preload
-	 * region.
+	 * region. Since we can be called from transaction context, don't
+	 * recurse into the file system.
 	 */
-	if (radix_tree_preload(GFP_KERNEL)) {
+	if (radix_tree_preload(GFP_NOFS)) {
 		error = EAGAIN;
 		goto out_destroy;
 	}
@@ -350,9 +319,23 @@ xfs_iget_cache_miss(
 			BUG();
 	}
 
-	spin_lock(&pag->pag_ici_lock);
+	/*
+	 * These values must be set before inserting the inode into the radix
+	 * tree as the moment it is inserted a concurrent lookup (allowed by the
+	 * RCU locking mechanism) can find it and that lookup must see that this
+	 * is an inode currently under construction (i.e. that XFS_INEW is set).
+	 * The ip->i_flags_lock that protects the XFS_INEW flag forms the
+	 * memory barrier that ensures this detection works correctly at lookup
+	 * time.
+	 */
+	iflags = XFS_INEW;
+	if (flags & XFS_IGET_DONTCACHE)
+		iflags |= XFS_IDONTCACHE;
+	ip->i_udquot = ip->i_gdquot = NULL;
+	xfs_iflags_set(ip, iflags);
 
 	/* insert the new inode */
+	spin_lock(&pag->pag_ici_lock);
 	error = radix_tree_insert(&pag->pag_ici_root, agino, ip);
 	if (unlikely(error)) {
 		WARN_ON(error != -EEXIST);
@@ -360,11 +343,6 @@ xfs_iget_cache_miss(
 		error = EAGAIN;
 		goto out_preload_end;
 	}
-
-	/* These values _must_ be set before releasing the radix tree lock! */
-	ip->i_udquot = ip->i_gdquot = NULL;
-	xfs_iflags_set(ip, XFS_INEW);
-
 	spin_unlock(&pag->pag_ici_lock);
 	radix_tree_preload_end();
 
@@ -417,6 +395,15 @@ xfs_iget(
 	int		error;
 	xfs_perag_t	*pag;
 	xfs_agino_t	agino;
+
+	/*
+	 * xfs_reclaim_inode() uses the ILOCK to ensure an inode
+	 * doesn't get freed while it's being referenced during a
+	 * radix tree traversal here.  It assumes this function
+	 * aqcuires only the ILOCK (and therefore it has no need to
+	 * involve the IOLOCK in this synchronization).
+	 */
+	ASSERT((lock_flags & (XFS_IOLOCK_EXCL | XFS_IOLOCK_SHARED)) == 0);
 
 	/* reject inode numbers outside existing AGs */
 	if (!ino || XFS_INO_TO_AGNO(mp, ino) >= mp->m_sb.sb_agcount)
@@ -642,8 +629,7 @@ xfs_iunlock(
 	       (XFS_IOLOCK_SHARED | XFS_IOLOCK_EXCL));
 	ASSERT((lock_flags & (XFS_ILOCK_SHARED | XFS_ILOCK_EXCL)) !=
 	       (XFS_ILOCK_SHARED | XFS_ILOCK_EXCL));
-	ASSERT((lock_flags & ~(XFS_LOCK_MASK | XFS_IUNLOCK_NONOTIFY |
-			XFS_LOCK_DEP_MASK)) == 0);
+	ASSERT((lock_flags & ~(XFS_LOCK_MASK | XFS_LOCK_DEP_MASK)) == 0);
 	ASSERT(lock_flags != 0);
 
 	if (lock_flags & XFS_IOLOCK_EXCL)
@@ -656,16 +642,6 @@ xfs_iunlock(
 	else if (lock_flags & XFS_ILOCK_SHARED)
 		mrunlock_shared(&ip->i_lock);
 
-	if ((lock_flags & (XFS_ILOCK_SHARED | XFS_ILOCK_EXCL)) &&
-	    !(lock_flags & XFS_IUNLOCK_NONOTIFY) && ip->i_itemp) {
-		/*
-		 * Let the AIL know that this item has been unlocked in case
-		 * it is in the AIL and anyone is waiting on it.  Don't do
-		 * this if the caller has asked us not to.
-		 */
-		xfs_trans_unlocked_item(ip->i_itemp->ili_item.li_ailp,
-					(xfs_log_item_t*)(ip->i_itemp));
-	}
 	trace_xfs_iunlock(ip, lock_flags, _RET_IP_);
 }
 

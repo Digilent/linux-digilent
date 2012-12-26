@@ -24,7 +24,6 @@
 
 #include <asm/machvec.h>
 #include <asm/page.h>
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/sal.h>
 #include <asm/smp.h>
@@ -320,7 +319,8 @@ static __devinit acpi_status add_window(struct acpi_resource *res, void *data)
 	 * Ignore these tiny memory ranges */
 	if (!((window->resource.flags & IORESOURCE_MEM) &&
 	      (window->resource.end - window->resource.start < 16)))
-		pci_add_resource(&info->resources, &window->resource);
+		pci_add_resource_offset(&info->resources, &window->resource,
+					window->offset);
 
 	return AE_OK;
 }
@@ -351,6 +351,8 @@ pci_acpi_scan_root(struct acpi_pci_root *root)
 #endif
 
 	INIT_LIST_HEAD(&info.resources);
+	/* insert busn resource at first */
+	pci_add_resource(&info.resources, &root->secondary);
 	acpi_walk_resources(device->handle, METHOD_NAME__CRS, count_window,
 			&windows);
 	if (windows) {
@@ -384,7 +386,7 @@ pci_acpi_scan_root(struct acpi_pci_root *root)
 		return NULL;
 	}
 
-	pbus->subordinate = pci_scan_child_bus(pbus);
+	pci_scan_child_bus(pbus);
 	return pbus;
 
 out3:
@@ -394,54 +396,6 @@ out2:
 out1:
 	return NULL;
 }
-
-void pcibios_resource_to_bus(struct pci_dev *dev,
-		struct pci_bus_region *region, struct resource *res)
-{
-	struct pci_controller *controller = PCI_CONTROLLER(dev);
-	unsigned long offset = 0;
-	int i;
-
-	for (i = 0; i < controller->windows; i++) {
-		struct pci_window *window = &controller->window[i];
-		if (!(window->resource.flags & res->flags))
-			continue;
-		if (window->resource.start > res->start)
-			continue;
-		if (window->resource.end < res->end)
-			continue;
-		offset = window->offset;
-		break;
-	}
-
-	region->start = res->start - offset;
-	region->end = res->end - offset;
-}
-EXPORT_SYMBOL(pcibios_resource_to_bus);
-
-void pcibios_bus_to_resource(struct pci_dev *dev,
-		struct resource *res, struct pci_bus_region *region)
-{
-	struct pci_controller *controller = PCI_CONTROLLER(dev);
-	unsigned long offset = 0;
-	int i;
-
-	for (i = 0; i < controller->windows; i++) {
-		struct pci_window *window = &controller->window[i];
-		if (!(window->resource.flags & res->flags))
-			continue;
-		if (window->resource.start - window->offset > region->start)
-			continue;
-		if (window->resource.end - window->offset < region->end)
-			continue;
-		offset = window->offset;
-		break;
-	}
-
-	res->start = region->start + offset;
-	res->end = region->end + offset;
-}
-EXPORT_SYMBOL(pcibios_bus_to_resource);
 
 static int __devinit is_valid_resource(struct pci_dev *dev, int idx)
 {
@@ -464,15 +418,11 @@ static int __devinit is_valid_resource(struct pci_dev *dev, int idx)
 static void __devinit
 pcibios_fixup_resources(struct pci_dev *dev, int start, int limit)
 {
-	struct pci_bus_region region;
 	int i;
 
 	for (i = start; i < limit; i++) {
 		if (!dev->resource[i].flags)
 			continue;
-		region.start = dev->resource[i].start;
-		region.end = dev->resource[i].end;
-		pcibios_bus_to_resource(dev, &dev->resource[i], &region);
 		if ((is_valid_resource(dev, i)))
 			pci_claim_resource(dev, i);
 	}
@@ -546,15 +496,6 @@ pcibios_align_resource (void *data, const struct resource *res,
 		        resource_size_t size, resource_size_t align)
 {
 	return res->start;
-}
-
-/*
- * PCI BIOS setup, always defaults to SAL interface
- */
-char * __init
-pcibios_setup (char *str)
-{
-	return str;
 }
 
 int

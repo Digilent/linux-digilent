@@ -11,7 +11,9 @@
 #define LINUX_MMC_HOST_H
 
 #include <linux/leds.h>
+#include <linux/mutex.h>
 #include <linux/sched.h>
+#include <linux/device.h>
 #include <linux/fault-inject.h>
 
 #include <linux/mmc/core.h>
@@ -80,34 +82,11 @@ struct mmc_ios {
 
 struct mmc_host_ops {
 	/*
-	 * Hosts that support power saving can use the 'enable' and 'disable'
-	 * methods to exit and enter power saving states. 'enable' is called
-	 * when the host is claimed and 'disable' is called (or scheduled with
-	 * a delay) when the host is released. The 'disable' is scheduled if
-	 * the disable delay set by 'mmc_set_disable_delay()' is non-zero,
-	 * otherwise 'disable' is called immediately. 'disable' may be
-	 * scheduled repeatedly, to permit ever greater power saving at the
-	 * expense of ever greater latency to re-enable. Rescheduling is
-	 * determined by the return value of the 'disable' method. A positive
-	 * value gives the delay in milliseconds.
-	 *
-	 * In the case where a host function (like set_ios) may be called
-	 * with or without the host claimed, enabling and disabling can be
-	 * done directly and will nest correctly. Call 'mmc_host_enable()' and
-	 * 'mmc_host_lazy_disable()' for this purpose, but note that these
-	 * functions must be paired.
-	 *
-	 * Alternatively, 'mmc_host_enable()' may be paired with
-	 * 'mmc_host_disable()' which calls 'disable' immediately.  In this
-	 * case the 'disable' method will be called with 'lazy' set to 0.
-	 * This is mainly useful for error paths.
-	 *
-	 * Because lazy disable may be called from a work queue, the 'disable'
-	 * method must claim the host when 'lazy' != 0, which will work
-	 * correctly because recursion is detected and handled.
+	 * 'enable' is called when the host is claimed and 'disable' is called
+	 * when the host is released. 'enable' and 'disable' are deprecated.
 	 */
 	int (*enable)(struct mmc_host *host);
-	int (*disable)(struct mmc_host *host, int lazy);
+	int (*disable)(struct mmc_host *host);
 	/*
 	 * It is optional for the host to implement pre_req and post_req in
 	 * order to support double buffering of requests (prepare one
@@ -172,9 +151,29 @@ struct mmc_async_req {
 	int (*err_check) (struct mmc_card *, struct mmc_async_req *);
 };
 
-struct mmc_hotplug {
-	unsigned int irq;
+/**
+ * struct mmc_slot - MMC slot functions
+ *
+ * @cd_irq:		MMC/SD-card slot hotplug detection IRQ or -EINVAL
+ * @lock:		protect the @handler_priv pointer
+ * @handler_priv:	MMC/SD-card slot context
+ *
+ * Some MMC/SD host controllers implement slot-functions like card and
+ * write-protect detection natively. However, a large number of controllers
+ * leave these functions to the CPU. This struct provides a hook to attach
+ * such slot-function drivers.
+ */
+struct mmc_slot {
+	int cd_irq;
+	struct mutex lock;
 	void *handler_priv;
+};
+
+struct regulator;
+
+struct mmc_supply {
+	struct regulator *vmmc;		/* Card power supply */
+	struct regulator *vqmmc;	/* Optional Vccq supply */
 };
 
 struct mmc_host {
@@ -190,6 +189,9 @@ struct mmc_host {
 	u32			ocr_avail_sd;	/* SD-specific OCR */
 	u32			ocr_avail_mmc;	/* MMC-specific OCR */
 	struct notifier_block	pm_notify;
+	u32			max_current_330;
+	u32			max_current_300;
+	u32			max_current_180;
 
 #define MMC_VDD_165_195		0x00000080	/* VDD voltage 1.65 - 1.95 */
 #define MMC_VDD_20_21		0x00000100	/* VDD voltage 2.0 ~ 2.1 */
@@ -218,7 +220,7 @@ struct mmc_host {
 #define MMC_CAP_SPI		(1 << 4)	/* Talks only SPI protocols */
 #define MMC_CAP_NEEDS_POLL	(1 << 5)	/* Needs polling for card-detection */
 #define MMC_CAP_8_BIT_DATA	(1 << 6)	/* Can the host do 8 bit transfers */
-#define MMC_CAP_DISABLE		(1 << 7)	/* Can the host be disabled */
+
 #define MMC_CAP_NONREMOVABLE	(1 << 8)	/* Nonremovable e.g. eMMC */
 #define MMC_CAP_WAIT_WHILE_BUSY	(1 << 9)	/* Waits while card is busy */
 #define MMC_CAP_ERASE		(1 << 10)	/* Allow erase/trim commands */
@@ -233,16 +235,9 @@ struct mmc_host {
 #define MMC_CAP_UHS_SDR50	(1 << 17)	/* Host supports UHS SDR50 mode */
 #define MMC_CAP_UHS_SDR104	(1 << 18)	/* Host supports UHS SDR104 mode */
 #define MMC_CAP_UHS_DDR50	(1 << 19)	/* Host supports UHS DDR50 mode */
-#define MMC_CAP_SET_XPC_330	(1 << 20)	/* Host supports >150mA current at 3.3V */
-#define MMC_CAP_SET_XPC_300	(1 << 21)	/* Host supports >150mA current at 3.0V */
-#define MMC_CAP_SET_XPC_180	(1 << 22)	/* Host supports >150mA current at 1.8V */
 #define MMC_CAP_DRIVER_TYPE_A	(1 << 23)	/* Host supports Driver Type A */
 #define MMC_CAP_DRIVER_TYPE_C	(1 << 24)	/* Host supports Driver Type C */
 #define MMC_CAP_DRIVER_TYPE_D	(1 << 25)	/* Host supports Driver Type D */
-#define MMC_CAP_MAX_CURRENT_200	(1 << 26)	/* Host max current limit is 200mA */
-#define MMC_CAP_MAX_CURRENT_400	(1 << 27)	/* Host max current limit is 400mA */
-#define MMC_CAP_MAX_CURRENT_600	(1 << 28)	/* Host max current limit is 600mA */
-#define MMC_CAP_MAX_CURRENT_800	(1 << 29)	/* Host max current limit is 800mA */
 #define MMC_CAP_CMD23		(1 << 30)	/* CMD23 supported. */
 #define MMC_CAP_HW_RESET	(1 << 31)	/* Hardware reset */
 
@@ -258,6 +253,10 @@ struct mmc_host {
 #define MMC_CAP2_HS200		(MMC_CAP2_HS200_1_8V_SDR | \
 				 MMC_CAP2_HS200_1_2V_SDR)
 #define MMC_CAP2_BROKEN_VOLTAGE	(1 << 7)	/* Use the broken voltage */
+#define MMC_CAP2_DETECT_ON_ERR	(1 << 8)	/* On I/O err check card removal */
+#define MMC_CAP2_HC_ERASE_SZ	(1 << 9)	/* High-capacity erase size */
+#define MMC_CAP2_CD_ACTIVE_HIGH	(1 << 10)	/* Card-detect signal active high */
+#define MMC_CAP2_RO_ACTIVE_HIGH	(1 << 11)	/* Write-protect signal active high */
 
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
 	unsigned int        power_notify_type;
@@ -300,13 +299,7 @@ struct mmc_host {
 	unsigned int		removed:1;	/* host is being removed */
 #endif
 
-	/* Only used with MMC_CAP_DISABLE */
-	int			enabled;	/* host is enabled */
 	int			rescan_disable;	/* disable card detection */
-	int			nesting_cnt;	/* "enable" nesting count */
-	int			en_dis_recurs;	/* detect recursion */
-	unsigned int		disable_delay;	/* disable delay in msecs */
-	struct delayed_work	disable;	/* disabling work */
 
 	struct mmc_card		*card;		/* device attached to this host */
 
@@ -316,13 +309,14 @@ struct mmc_host {
 
 	struct delayed_work	detect;
 	int			detect_change;	/* card detect flag */
-	struct mmc_hotplug	hotplug;
+	struct mmc_slot		slot;
 
 	const struct mmc_bus_ops *bus_ops;	/* current bus driver */
 	unsigned int		bus_refs;	/* reference counter */
 
 	unsigned int		sdio_irqs;
 	struct task_struct	*sdio_irq_thread;
+	bool			sdio_irq_pending;
 	atomic_t		sdio_irq_thread_abort;
 
 	mmc_pm_flag_t		pm_flags;	/* requested pm features */
@@ -334,6 +328,7 @@ struct mmc_host {
 #ifdef CONFIG_REGULATOR
 	bool			regulator_enabled; /* regulator state */
 #endif
+	struct mmc_supply	supply;
 
 	struct dentry		*debugfs_root;
 
@@ -378,16 +373,16 @@ extern int mmc_cache_ctrl(struct mmc_host *, u8);
 static inline void mmc_signal_sdio_irq(struct mmc_host *host)
 {
 	host->ops->enable_sdio_irq(host, 0);
+	host->sdio_irq_pending = true;
 	wake_up_process(host->sdio_irq_thread);
 }
-
-struct regulator;
 
 #ifdef CONFIG_REGULATOR
 int mmc_regulator_get_ocrmask(struct regulator *supply);
 int mmc_regulator_set_ocr(struct mmc_host *mmc,
 			struct regulator *supply,
 			unsigned short vdd_bit);
+int mmc_regulator_get_supply(struct mmc_host *mmc);
 #else
 static inline int mmc_regulator_get_ocrmask(struct regulator *supply)
 {
@@ -400,22 +395,18 @@ static inline int mmc_regulator_set_ocr(struct mmc_host *mmc,
 {
 	return 0;
 }
+
+static inline int mmc_regulator_get_supply(struct mmc_host *mmc)
+{
+	return 0;
+}
 #endif
 
 int mmc_card_awake(struct mmc_host *host);
 int mmc_card_sleep(struct mmc_host *host);
 int mmc_card_can_sleep(struct mmc_host *host);
 
-int mmc_host_enable(struct mmc_host *host);
-int mmc_host_disable(struct mmc_host *host);
-int mmc_host_lazy_disable(struct mmc_host *host);
 int mmc_pm_notify(struct notifier_block *notify_block, unsigned long, void *);
-
-static inline void mmc_set_disable_delay(struct mmc_host *host,
-					 unsigned int disable_delay)
-{
-	host->disable_delay = disable_delay;
-}
 
 /* Module parameter */
 extern bool mmc_assume_removable;

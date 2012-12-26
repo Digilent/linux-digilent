@@ -81,6 +81,8 @@ int ft_queue_data_in(struct se_cmd *se_cmd)
 	void *from;
 	void *to = NULL;
 
+	if (cmd->aborted)
+		return 0;
 	ep = fc_seq_exch(cmd->seq);
 	lport = ep->lp;
 	cmd->seq = lport->tt.seq_start_next(cmd->seq);
@@ -146,14 +148,13 @@ int ft_queue_data_in(struct se_cmd *se_cmd)
 					PAGE_SIZE << compound_order(page);
 		} else {
 			BUG_ON(!page);
-			from = kmap_atomic(page + (mem_off >> PAGE_SHIFT),
-					   KM_SOFTIRQ0);
+			from = kmap_atomic(page + (mem_off >> PAGE_SHIFT));
 			page_addr = from;
 			from += mem_off & ~PAGE_MASK;
 			tlen = min(tlen, (size_t)(PAGE_SIZE -
 						(mem_off & ~PAGE_MASK)));
 			memcpy(to, from, tlen);
-			kunmap_atomic(page_addr, KM_SOFTIRQ0);
+			kunmap_atomic(page_addr);
 			to += tlen;
 		}
 
@@ -180,6 +181,13 @@ int ft_queue_data_in(struct se_cmd *se_cmd)
 		}
 	}
 	return ft_queue_status(se_cmd);
+}
+
+static void ft_execute_work(struct work_struct *work)
+{
+	struct ft_cmd *cmd = container_of(work, struct ft_cmd, work);
+
+	target_execute_cmd(&cmd->se_cmd);
 }
 
 /*
@@ -227,7 +235,7 @@ void ft_recv_write_data(struct ft_cmd *cmd, struct fc_frame *fp)
 				"payload, Frame will be dropped if"
 				"'Sequence Initiative' bit in f_ctl is"
 				"not set\n", __func__, ep->xid, f_ctl,
-				cmd->sg, cmd->sg_cnt);
+				se_cmd->t_data_sg, se_cmd->t_data_nents);
 		/*
 		 * Invalidate HW DDP context if it was setup for respective
 		 * command. Invalidation of HW DDP context is requited in both
@@ -291,14 +299,13 @@ void ft_recv_write_data(struct ft_cmd *cmd, struct fc_frame *fp)
 
 		tlen = min(mem_len, frame_len);
 
-		to = kmap_atomic(page + (mem_off >> PAGE_SHIFT),
-				 KM_SOFTIRQ0);
+		to = kmap_atomic(page + (mem_off >> PAGE_SHIFT));
 		page_addr = to;
 		to += mem_off & ~PAGE_MASK;
 		tlen = min(tlen, (size_t)(PAGE_SIZE -
 					  (mem_off & ~PAGE_MASK)));
 		memcpy(to, from, tlen);
-		kunmap_atomic(page_addr, KM_SOFTIRQ0);
+		kunmap_atomic(page_addr);
 
 		from += tlen;
 		frame_len -= tlen;
@@ -307,8 +314,10 @@ void ft_recv_write_data(struct ft_cmd *cmd, struct fc_frame *fp)
 		cmd->write_data_len += tlen;
 	}
 last_frame:
-	if (cmd->write_data_len == se_cmd->data_length)
-		transport_generic_handle_data(se_cmd);
+	if (cmd->write_data_len == se_cmd->data_length) {
+		INIT_WORK(&cmd->work, ft_execute_work);
+		queue_work(cmd->sess->tport->tpg->workqueue, &cmd->work);
+	}
 drop:
 	fc_frame_free(fp);
 }

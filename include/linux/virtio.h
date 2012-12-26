@@ -92,11 +92,11 @@ struct virtio_driver {
 	const unsigned int *feature_table;
 	unsigned int feature_table_size;
 	int (*probe)(struct virtio_device *dev);
+	void (*scan)(struct virtio_device *dev);
 	void (*remove)(struct virtio_device *dev);
 	void (*config_changed)(struct virtio_device *dev);
 #ifdef CONFIG_PM
 	int (*freeze)(struct virtio_device *dev);
-	int (*thaw)(struct virtio_device *dev);
 	int (*restore)(struct virtio_device *dev);
 #endif
 };

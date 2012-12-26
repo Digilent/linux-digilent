@@ -486,7 +486,7 @@ static void __devinit velocity_get_options(struct velocity_opt *opts, int index,
 	velocity_set_bool_opt(&opts->flags, IP_byte_align[index], IP_ALIG_DEF, VELOCITY_FLAGS_IP_ALIGN, "IP_byte_align", devname);
 	velocity_set_bool_opt(&opts->flags, ValPktLen[index], VAL_PKT_LEN_DEF, VELOCITY_FLAGS_VAL_PKT_LEN, "ValPktLen", devname);
 	velocity_set_int_opt((int *) &opts->spd_dpx, speed_duplex[index], MED_LNK_MIN, MED_LNK_MAX, MED_LNK_DEF, "Media link mode", devname);
-	velocity_set_int_opt((int *) &opts->wol_opts, wol_opts[index], WOL_OPT_MIN, WOL_OPT_MAX, WOL_OPT_DEF, "Wake On Lan options", devname);
+	velocity_set_int_opt(&opts->wol_opts, wol_opts[index], WOL_OPT_MIN, WOL_OPT_MAX, WOL_OPT_DEF, "Wake On Lan options", devname);
 	opts->numrx = (opts->numrx & ~3);
 }
 
@@ -1509,7 +1509,7 @@ static int velocity_alloc_rx_buf(struct velocity_info *vptr, int idx)
 	struct rx_desc *rd = &(vptr->rx.ring[idx]);
 	struct velocity_rd_info *rd_info = &(vptr->rx.info[idx]);
 
-	rd_info->skb = dev_alloc_skb(vptr->rx.buf_sz + 64);
+	rd_info->skb = netdev_alloc_skb(vptr->dev, vptr->rx.buf_sz + 64);
 	if (rd_info->skb == NULL)
 		return -ENOMEM;
 
@@ -2488,8 +2488,8 @@ static int velocity_close(struct net_device *dev)
 
 	if (vptr->flags & VELOCITY_FLAGS_WOL_ENABLED)
 		velocity_get_ip(vptr);
-	if (dev->irq != 0)
-		free_irq(dev->irq, dev);
+
+	free_irq(vptr->pdev->irq, dev);
 
 	velocity_free_rings(vptr);
 
@@ -2730,10 +2730,8 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	}
 
 	dev = alloc_etherdev(sizeof(struct velocity_info));
-	if (!dev) {
-		dev_err(&pdev->dev, "allocate net device failed.\n");
+	if (!dev)
 		goto out;
-	}
 
 	/* Chain it all together */
 
@@ -2757,8 +2755,6 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	if (ret < 0)
 		goto err_free_dev;
 
-	dev->irq = pdev->irq;
-
 	ret = velocity_get_pci_info(vptr, pdev);
 	if (ret < 0) {
 		/* error message already printed */
@@ -2780,8 +2776,6 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	vptr->mac_regs = regs;
 
 	mac_wol_reset(regs);
-
-	dev->base_addr = vptr->ioaddr;
 
 	for (i = 0; i < 6; i++)
 		dev->dev_addr[i] = readb(&regs->PAR[i]);
@@ -2808,7 +2802,6 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 
 	vptr->phy_id = MII_GET_PHY_ID(vptr->mac_regs);
 
-	dev->irq = pdev->irq;
 	dev->netdev_ops = &velocity_netdev_ops;
 	dev->ethtool_ops = &velocity_ethtool_ops;
 	netif_napi_add(dev, &vptr->napi, velocity_poll, VELOCITY_NAPI_WEIGHT);

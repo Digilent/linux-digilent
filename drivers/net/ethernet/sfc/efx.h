@@ -30,6 +30,7 @@ extern netdev_tx_t
 efx_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb);
 extern void efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index);
 extern int efx_setup_tc(struct net_device *net_dev, u8 num_tc);
+extern unsigned int efx_tx_max_skb_descs(struct efx_nic *efx);
 
 /* RX */
 extern int efx_probe_rx_queue(struct efx_rx_queue *rx_queue);
@@ -40,9 +41,9 @@ extern void efx_rx_strategy(struct efx_channel *channel);
 extern void efx_fast_push_rx_descriptors(struct efx_rx_queue *rx_queue);
 extern void efx_rx_slow_fill(unsigned long context);
 extern void __efx_rx_packet(struct efx_channel *channel,
-			    struct efx_rx_buffer *rx_buf, bool checksummed);
+			    struct efx_rx_buffer *rx_buf);
 extern void efx_rx_packet(struct efx_rx_queue *rx_queue, unsigned int index,
-			  unsigned int len, bool checksummed, bool discard);
+			  unsigned int len, u16 flags);
 extern void efx_schedule_slow_fill(struct efx_rx_queue *rx_queue);
 
 #define EFX_MAX_DMAQ_SIZE 4096UL
@@ -52,10 +53,15 @@ extern void efx_schedule_slow_fill(struct efx_rx_queue *rx_queue);
 #define EFX_MAX_EVQ_SIZE 16384UL
 #define EFX_MIN_EVQ_SIZE 512UL
 
-/* The smallest [rt]xq_entries that the driver supports. Callers of
- * efx_wake_queue() assume that they can subsequently send at least one
- * skb. Falcon/A1 may require up to three descriptors per skb_frag. */
-#define EFX_MIN_RING_SIZE (roundup_pow_of_two(2 * 3 * MAX_SKB_FRAGS))
+/* Maximum number of TCP segments we support for soft-TSO */
+#define EFX_TSO_MAX_SEGS	100
+
+/* The smallest [rt]xq_entries that the driver supports.  RX minimum
+ * is a bit arbitrary.  For TX, we must have space for at least 2
+ * TSO skbs.
+ */
+#define EFX_RXQ_MIN_ENT		128U
+#define EFX_TXQ_MIN_ENT(efx)	(2 * efx_tx_max_skb_descs(efx))
 
 /* Filters */
 extern int efx_probe_filters(struct efx_nic *efx);
@@ -95,6 +101,7 @@ static inline void efx_filter_rfs_expire(struct efx_channel *channel) {}
 #endif
 
 /* Channels */
+extern int efx_channel_dummy_op_int(struct efx_channel *channel);
 extern void efx_process_channel_now(struct efx_channel *channel);
 extern int
 efx_realloc_channels(struct efx_nic *efx, u32 rxq_entries, u32 txq_entries);
@@ -143,6 +150,12 @@ static inline void efx_schedule_channel(struct efx_channel *channel)
 	channel->work_pending = true;
 
 	napi_schedule(&channel->napi_str);
+}
+
+static inline void efx_schedule_channel_irq(struct efx_channel *channel)
+{
+	channel->event_test_cpu = raw_smp_processor_id();
+	efx_schedule_channel(channel);
 }
 
 extern void efx_link_status_changed(struct efx_nic *efx);

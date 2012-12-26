@@ -26,7 +26,6 @@
 #include <linux/seq_file.h>
 #include <linux/of_platform.h>
 
-#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
@@ -47,7 +46,7 @@
 static void __init tqm85xx_pic_init(void)
 {
 	struct mpic *mpic = mpic_alloc(NULL, 0,
-			MPIC_WANTS_RESET | MPIC_BIG_ENDIAN,
+			MPIC_BIG_ENDIAN,
 			0, 256, " OpenPIC  ");
 	BUG_ON(mpic == NULL);
 	mpic_init(mpic);
@@ -103,7 +102,7 @@ static void tqm85xx_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "PLL setting\t: 0x%x\n", ((phid1 >> 24) & 0x3f));
 }
 
-static void __init tqm85xx_ti1520_fixup(struct pci_dev *pdev)
+static void __devinit tqm85xx_ti1520_fixup(struct pci_dev *pdev)
 {
 	unsigned int val;
 

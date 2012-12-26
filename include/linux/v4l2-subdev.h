@@ -25,6 +25,7 @@
 
 #include <linux/ioctl.h>
 #include <linux/types.h>
+#include <linux/v4l2-common.h>
 #include <linux/v4l2-mediabus.h>
 
 /**
@@ -123,6 +124,30 @@ struct v4l2_subdev_frame_interval_enum {
 	__u32 reserved[9];
 };
 
+/**
+ * struct v4l2_subdev_selection - selection info
+ *
+ * @which: either V4L2_SUBDEV_FORMAT_ACTIVE or V4L2_SUBDEV_FORMAT_TRY
+ * @pad: pad number, as reported by the media API
+ * @target: Selection target, used to choose one of possible rectangles,
+ *	    defined in v4l2-common.h; V4L2_SEL_TGT_* .
+ * @flags: constraint flags, defined in v4l2-common.h; V4L2_SEL_FLAG_*.
+ * @r: coordinates of the selection window
+ * @reserved: for future use, set to zero for now
+ *
+ * Hardware may use multiple helper windows to process a video stream.
+ * The structure is used to exchange this selection areas between
+ * an application and a driver.
+ */
+struct v4l2_subdev_selection {
+	__u32 which;
+	__u32 pad;
+	__u32 target;
+	__u32 flags;
+	struct v4l2_rect r;
+	__u32 reserved[8];
+};
+
 #define VIDIOC_SUBDEV_G_FMT	_IOWR('V',  4, struct v4l2_subdev_format)
 #define VIDIOC_SUBDEV_S_FMT	_IOWR('V',  5, struct v4l2_subdev_format)
 #define VIDIOC_SUBDEV_G_FRAME_INTERVAL \
@@ -137,5 +162,9 @@ struct v4l2_subdev_frame_interval_enum {
 			_IOWR('V', 75, struct v4l2_subdev_frame_interval_enum)
 #define VIDIOC_SUBDEV_G_CROP	_IOWR('V', 59, struct v4l2_subdev_crop)
 #define VIDIOC_SUBDEV_S_CROP	_IOWR('V', 60, struct v4l2_subdev_crop)
+#define VIDIOC_SUBDEV_G_SELECTION \
+	_IOWR('V', 61, struct v4l2_subdev_selection)
+#define VIDIOC_SUBDEV_S_SELECTION \
+	_IOWR('V', 62, struct v4l2_subdev_selection)
 
 #endif

@@ -112,7 +112,7 @@ err_free_addr:
 	return err;
 }
 
-static void __devexit gpio_ext_free(struct netxbig_gpio_ext *gpio_ext)
+static void gpio_ext_free(struct netxbig_gpio_ext *gpio_ext)
 {
 	int i;
 
@@ -294,7 +294,7 @@ static ssize_t netxbig_led_sata_show(struct device *dev,
 
 static DEVICE_ATTR(sata, 0644, netxbig_led_sata_show, netxbig_led_sata_store);
 
-static void __devexit delete_netxbig_led(struct netxbig_led_data *led_dat)
+static void delete_netxbig_led(struct netxbig_led_data *led_dat)
 {
 	if (led_dat->mode_val[NETXBIG_LED_SATA] != NETXBIG_LED_INVALID_MODE)
 		device_remove_file(led_dat->cdev.dev, &dev_attr_sata);
@@ -362,14 +362,14 @@ static int __devinit netxbig_led_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -EINVAL;
 
-	leds_data = kzalloc(sizeof(struct netxbig_led_data) * pdata->num_leds,
-			    GFP_KERNEL);
+	leds_data = devm_kzalloc(&pdev->dev,
+		sizeof(struct netxbig_led_data) * pdata->num_leds, GFP_KERNEL);
 	if (!leds_data)
 		return -ENOMEM;
 
 	ret = gpio_ext_init(pdata->gpio_ext);
 	if (ret < 0)
-		goto err_free_data;
+		return ret;
 
 	for (i = 0; i < pdata->num_leds; i++) {
 		ret = create_netxbig_led(pdev, &leds_data[i], &pdata->leds[i]);
@@ -386,9 +386,6 @@ err_free_leds:
 		delete_netxbig_led(&leds_data[i]);
 
 	gpio_ext_free(pdata->gpio_ext);
-err_free_data:
-	kfree(leds_data);
-
 	return ret;
 }
 
@@ -404,7 +401,6 @@ static int __devexit netxbig_led_remove(struct platform_device *pdev)
 		delete_netxbig_led(&leds_data[i]);
 
 	gpio_ext_free(pdata->gpio_ext);
-	kfree(leds_data);
 
 	return 0;
 }

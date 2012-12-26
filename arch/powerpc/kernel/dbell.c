@@ -28,6 +28,8 @@ void doorbell_setup_this_cpu(void)
 
 void doorbell_cause_ipi(int cpu, unsigned long data)
 {
+	/* Order previous accesses vs. msgsnd, which is treated as a store */
+	mb();
 	ppc_msgsnd(PPC_DBELL, 0, data);
 }
 
@@ -36,6 +38,8 @@ void doorbell_exception(struct pt_regs *regs)
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
 	irq_enter();
+
+	may_hard_irq_enable();
 
 	smp_ipi_demux();
 

@@ -5,6 +5,7 @@
 #include <linux/mm.h>
 
 #include <linux/io.h>
+#include <linux/sched.h>
 #include <asm/processor.h>
 #include <asm/apic.h>
 #include <asm/cpu.h>
@@ -18,6 +19,39 @@
 
 #include "cpu.h"
 
+static inline int rdmsrl_amd_safe(unsigned msr, unsigned long long *p)
+{
+	struct cpuinfo_x86 *c = &cpu_data(smp_processor_id());
+	u32 gprs[8] = { 0 };
+	int err;
+
+	WARN_ONCE((c->x86 != 0xf), "%s should only be used on K8!\n", __func__);
+
+	gprs[1] = msr;
+	gprs[7] = 0x9c5a203a;
+
+	err = rdmsr_safe_regs(gprs);
+
+	*p = gprs[0] | ((u64)gprs[2] << 32);
+
+	return err;
+}
+
+static inline int wrmsrl_amd_safe(unsigned msr, unsigned long long val)
+{
+	struct cpuinfo_x86 *c = &cpu_data(smp_processor_id());
+	u32 gprs[8] = { 0 };
+
+	WARN_ONCE((c->x86 != 0xf), "%s should only be used on K8!\n", __func__);
+
+	gprs[0] = (u32)val;
+	gprs[1] = msr;
+	gprs[2] = val >> 32;
+	gprs[7] = 0x9c5a203a;
+
+	return wrmsr_safe_regs(gprs);
+}
+
 #ifdef CONFIG_X86_32
 /*
  *	B step AMD K6 before B 9730xxxx have hardware bugs that can cause
@@ -25,7 +59,8 @@
  *	contact AMD for precise details and a CPU swap.
  *
  *	See	http://www.multimania.com/poulot/k6bug.html
- *		http://www.amd.com/K6/k6docs/revgd.html
+ *	and	section 2.6.2 of "AMD-K6 Processor Revision Guide - Model 6"
+ *		(Publication # 21266  Issue Date: August 1998)
  *
  *	The following test is erm.. interesting. AMD neglected to up
  *	the chip setting when fixing the bug but they also tweaked some
@@ -93,7 +128,6 @@ static void __cpuinit init_amd_k6(struct cpuinfo_x86 *c)
 				"system stability may be impaired when more than 32 MB are used.\n");
 		else
 			printk(KERN_CONT "probably OK (after B9730xxxx).\n");
-		printk(KERN_INFO "Please see http://membres.lycos.fr/poulot/k6bug.html\n");
 	}
 
 	/* K6 with old style WHCR */
@@ -352,10 +386,11 @@ static void __cpuinit srat_detect_node(struct cpuinfo_x86 *c)
 		node = per_cpu(cpu_llc_id, cpu);
 
 	/*
-	 * If core numbers are inconsistent, it's likely a multi-fabric platform,
-	 * so invoke platform-specific handler
+	 * On multi-fabric platform (e.g. Numascale NumaChip) a
+	 * platform-specific handler needs to be called to fixup some
+	 * IDs of the CPU.
 	 */
-	if (c->phys_proc_id != node)
+	if (x86_cpuinit.fixup_cpu_id)
 		x86_cpuinit.fixup_cpu_id(c, node);
 
 	if (!node_online(node)) {
@@ -456,6 +491,8 @@ static void __cpuinit early_init_amd(struct cpuinfo_x86 *c)
 	if (c->x86_power & (1 << 8)) {
 		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
 		set_cpu_cap(c, X86_FEATURE_NONSTOP_TSC);
+		if (!check_tsc_unstable())
+			sched_clock_stable = 1;
 	}
 
 #ifdef CONFIG_X86_64
@@ -576,6 +613,24 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 		}
 	}
 
+	/* re-enable TopologyExtensions if switched off by BIOS */
+	if ((c->x86 == 0x15) &&
+	    (c->x86_model >= 0x10) && (c->x86_model <= 0x1f) &&
+	    !cpu_has(c, X86_FEATURE_TOPOEXT)) {
+		u64 val;
+
+		if (!rdmsrl_safe(0xc0011005, &val)) {
+			val |= 1ULL << 54;
+			wrmsrl_safe(0xc0011005, val);
+			rdmsrl(0xc0011005, val);
+			if (val & (1ULL << 54)) {
+				set_cpu_cap(c, X86_FEATURE_TOPOEXT);
+				printk(KERN_INFO FW_INFO "CPU: Re-enabling "
+				  "disabled Topology Extensions Support\n");
+			}
+		}
+	}
+
 	cpu_detect_cache_sizes(c);
 
 	/* Multi core CPU? */
@@ -657,7 +712,7 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 		err = rdmsrl_safe(MSR_AMD64_MCx_MASK(4), &mask);
 		if (err == 0) {
 			mask |= (1 << 10);
-			checking_wrmsrl(MSR_AMD64_MCx_MASK(4), mask);
+			wrmsrl_safe(MSR_AMD64_MCx_MASK(4), mask);
 		}
 	}
 

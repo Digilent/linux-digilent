@@ -34,7 +34,7 @@ static int do_synth_init(struct spk_synth *in_synth);
 
 int serial_synth_probe(struct spk_synth *synth)
 {
-	struct serial_state *ser;
+	const struct old_serial_port *ser;
 	int failed = 0;
 
 	if ((synth->ser >= SPK_LO_TTY) && (synth->ser <= SPK_HI_TTY)) {
@@ -64,7 +64,7 @@ EXPORT_SYMBOL_GPL(serial_synth_probe);
 /* Main loop of the progression thread: keep eating from the buffer
  * and push to the serial port, waiting as needed
  *
- * For devices that have a "full" notification mecanism, the driver can
+ * For devices that have a "full" notification mechanism, the driver can
  * adapt the loop the way they prefer.
  */
 void spk_do_catch_up(struct spk_synth *synth)

@@ -441,11 +441,14 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 	skb->len += length;
 	skb->data_len += length;
 
-	/* page might be freed in __pskb_pull_tail() */
-	if (length > 64)
+	if (length > 128) {
 		skb->truesize += PAGE_SIZE;
-	__pskb_pull_tail(skb, min(length, 64));
-
+		/* We pull the minimum amount into linear part */
+		__pskb_pull_tail(skb, ETH_HLEN);
+	} else {
+		/* Small frames are copied into linear part to free one page */
+		__pskb_pull_tail(skb, length);
+	}
 	ftmac100_alloc_rx_page(priv, rxdes, GFP_ATOMIC);
 
 	ftmac100_rx_pointer_advance(priv);
@@ -1133,7 +1136,7 @@ static int ftmac100_probe(struct platform_device *pdev)
 	netdev_info(netdev, "irq %d, mapped at %p\n", priv->irq, priv->base);
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
-		random_ether_addr(netdev->dev_addr);
+		eth_hw_addr_random(netdev);
 		netdev_info(netdev, "generated random MAC address %pM\n",
 			    netdev->dev_addr);
 	}

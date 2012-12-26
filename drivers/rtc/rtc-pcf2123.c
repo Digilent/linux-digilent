@@ -43,6 +43,7 @@
 #include <linux/rtc.h>
 #include <linux/spi/spi.h>
 #include <linux/module.h>
+#include <linux/sysfs.h>
 
 #define DRV_VERSION "0.6"
 
@@ -292,6 +293,7 @@ static int __devinit pcf2123_probe(struct spi_device *spi)
 	pdata->rtc = rtc;
 
 	for (i = 0; i < 16; i++) {
+		sysfs_attr_init(&pdata->regs[i].attr.attr);
 		sprintf(pdata->regs[i].name, "%1x", i);
 		pdata->regs[i].attr.attr.mode = S_IRUGO | S_IWUSR;
 		pdata->regs[i].attr.attr.name = pdata->regs[i].name;
@@ -346,20 +348,9 @@ static struct spi_driver pcf2123_driver = {
 	.remove	= __devexit_p(pcf2123_remove),
 };
 
-static int __init pcf2123_init(void)
-{
-	return spi_register_driver(&pcf2123_driver);
-}
-
-static void __exit pcf2123_exit(void)
-{
-	spi_unregister_driver(&pcf2123_driver);
-}
+module_spi_driver(pcf2123_driver);
 
 MODULE_AUTHOR("Chris Verges <chrisv@cyberswitching.com>");
 MODULE_DESCRIPTION("NXP PCF2123 RTC driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
-
-module_init(pcf2123_init);
-module_exit(pcf2123_exit);

@@ -1,9 +1,8 @@
 /*
- *  arch/s390/kernel/debug.c
  *   S/390 debug facility
  *
- *    Copyright (C) 1999, 2000 IBM Deutschland Entwicklung GmbH,
- *                             IBM Corporation
+ *    Copyright IBM Corp. 1999, 2012
+ *
  *    Author(s): Michael Holzheu (holzheu@de.ibm.com),
  *               Holger Smolinski (Holger.Smolinski@de.ibm.com)
  *
@@ -111,6 +110,7 @@ struct debug_view debug_raw_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_raw_view);
 
 struct debug_view debug_hex_ascii_view = {
 	"hex_ascii",
@@ -120,6 +120,7 @@ struct debug_view debug_hex_ascii_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_hex_ascii_view);
 
 static struct debug_view debug_level_view = {
 	"level",
@@ -156,6 +157,7 @@ struct debug_view debug_sprintf_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_sprintf_view);
 
 /* used by dump analysis tools to determine version of debug feature */
 static unsigned int __used debug_feature_version = __DEBUG_FEATURE_VERSION;
@@ -167,6 +169,7 @@ static debug_info_t *debug_area_last = NULL;
 static DEFINE_MUTEX(debug_mutex);
 
 static int initialized;
+static int debug_critical;
 
 static const struct file_operations debug_file_ops = {
 	.owner   = THIS_MODULE,
@@ -730,6 +733,7 @@ debug_info_t *debug_register(const char *name, int pages_per_area,
 	return debug_register_mode(name, pages_per_area, nr_areas, buf_size,
 				   S_IRUSR | S_IWUSR, 0, 0);
 }
+EXPORT_SYMBOL(debug_register);
 
 /*
  * debug_unregister:
@@ -748,6 +752,7 @@ debug_unregister(debug_info_t * id)
 out:
 	return;
 }
+EXPORT_SYMBOL(debug_unregister);
 
 /*
  * debug_set_size:
@@ -810,7 +815,7 @@ debug_set_level(debug_info_t* id, int new_level)
         }
 	spin_unlock_irqrestore(&id->lock,flags);
 }
-
+EXPORT_SYMBOL(debug_set_level);
 
 /*
  * proceed_active_entry:
@@ -930,7 +935,12 @@ debug_stop_all(void)
 	if (debug_stoppable)
 		debug_active = 0;
 }
+EXPORT_SYMBOL(debug_stop_all);
 
+void debug_set_critical(void)
+{
+	debug_critical = 1;
+}
 
 /*
  * debug_event_common:
@@ -945,7 +955,11 @@ debug_event_common(debug_info_t * id, int level, const void *buf, int len)
 
 	if (!debug_active || !id->areas)
 		return NULL;
-	spin_lock_irqsave(&id->lock, flags);
+	if (debug_critical) {
+		if (!spin_trylock_irqsave(&id->lock, flags))
+			return NULL;
+	} else
+		spin_lock_irqsave(&id->lock, flags);
 	active = get_active_entry(id);
 	memset(DEBUG_DATA(active), 0, id->buf_size);
 	memcpy(DEBUG_DATA(active), buf, min(len, id->buf_size));
@@ -954,6 +968,7 @@ debug_event_common(debug_info_t * id, int level, const void *buf, int len)
 
 	return active;
 }
+EXPORT_SYMBOL(debug_event_common);
 
 /*
  * debug_exception_common:
@@ -968,7 +983,11 @@ debug_entry_t
 
 	if (!debug_active || !id->areas)
 		return NULL;
-	spin_lock_irqsave(&id->lock, flags);
+	if (debug_critical) {
+		if (!spin_trylock_irqsave(&id->lock, flags))
+			return NULL;
+	} else
+		spin_lock_irqsave(&id->lock, flags);
 	active = get_active_entry(id);
 	memset(DEBUG_DATA(active), 0, id->buf_size);
 	memcpy(DEBUG_DATA(active), buf, min(len, id->buf_size));
@@ -977,6 +996,7 @@ debug_entry_t
 
 	return active;
 }
+EXPORT_SYMBOL(debug_exception_common);
 
 /*
  * counts arguments in format string for sprintf view
@@ -1013,7 +1033,11 @@ debug_sprintf_event(debug_info_t* id, int level,char *string,...)
 		return NULL;
 	numargs=debug_count_numargs(string);
 
-	spin_lock_irqsave(&id->lock, flags);
+	if (debug_critical) {
+		if (!spin_trylock_irqsave(&id->lock, flags))
+			return NULL;
+	} else
+		spin_lock_irqsave(&id->lock, flags);
 	active = get_active_entry(id);
 	curr_event=(debug_sprintf_entry_t *) DEBUG_DATA(active);
 	va_start(ap,string);
@@ -1026,6 +1050,7 @@ debug_sprintf_event(debug_info_t* id, int level,char *string,...)
 
 	return active;
 }
+EXPORT_SYMBOL(debug_sprintf_event);
 
 /*
  * debug_sprintf_exception:
@@ -1047,7 +1072,11 @@ debug_sprintf_exception(debug_info_t* id, int level,char *string,...)
 
 	numargs=debug_count_numargs(string);
 
-	spin_lock_irqsave(&id->lock, flags);
+	if (debug_critical) {
+		if (!spin_trylock_irqsave(&id->lock, flags))
+			return NULL;
+	} else
+		spin_lock_irqsave(&id->lock, flags);
 	active = get_active_entry(id);
 	curr_event=(debug_sprintf_entry_t *)DEBUG_DATA(active);
 	va_start(ap,string);
@@ -1060,25 +1089,7 @@ debug_sprintf_exception(debug_info_t* id, int level,char *string,...)
 
 	return active;
 }
-
-/*
- * debug_init:
- * - is called exactly once to initialize the debug feature
- */
-
-static int
-__init debug_init(void)
-{
-	int rc = 0;
-
-	s390dbf_sysctl_header = register_sysctl_table(s390dbf_dir_table);
-	mutex_lock(&debug_mutex);
-	debug_debugfs_root_entry = debugfs_create_dir(DEBUG_DIR_ROOT,NULL);
-	initialized = 1;
-	mutex_unlock(&debug_mutex);
-
-	return rc;
-}
+EXPORT_SYMBOL(debug_sprintf_exception);
 
 /*
  * debug_register_view:
@@ -1126,6 +1137,7 @@ debug_register_view(debug_info_t * id, struct debug_view *view)
 out:
 	return rc;
 }
+EXPORT_SYMBOL(debug_register_view);
 
 /*
  * debug_unregister_view:
@@ -1155,6 +1167,7 @@ debug_unregister_view(debug_info_t * id, struct debug_view *view)
 out:
 	return rc;
 }
+EXPORT_SYMBOL(debug_unregister_view);
 
 static inline char *
 debug_get_user_string(const char __user *user_buf, size_t user_len)
@@ -1428,10 +1441,10 @@ debug_hex_ascii_format_fn(debug_info_t * id, struct debug_view *view,
 	rc += sprintf(out_buf + rc, "| ");
 	for (i = 0; i < id->buf_size; i++) {
 		unsigned char c = in_buf[i];
-		if (!isprint(c))
-			rc += sprintf(out_buf + rc, ".");
-		else
+		if (isascii(c) && isprint(c))
 			rc += sprintf(out_buf + rc, "%c", c);
+		else
+			rc += sprintf(out_buf + rc, ".");
 	}
 	rc += sprintf(out_buf + rc, "\n");
 	return rc;
@@ -1464,6 +1477,7 @@ debug_dflt_header_fn(debug_info_t * id, struct debug_view *view,
 		      except_str, entry->id.fields.cpuid, (void *) caller);
 	return rc;
 }
+EXPORT_SYMBOL(debug_dflt_header_fn);
 
 /*
  * prints debug data sprintf-formated:
@@ -1512,33 +1526,16 @@ out:
 }
 
 /*
- * clean up module
+ * debug_init:
+ * - is called exactly once to initialize the debug feature
  */
-static void __exit debug_exit(void)
+static int __init debug_init(void)
 {
-	debugfs_remove(debug_debugfs_root_entry);
-	unregister_sysctl_table(s390dbf_sysctl_header);
-	return;
+	s390dbf_sysctl_header = register_sysctl_table(s390dbf_dir_table);
+	mutex_lock(&debug_mutex);
+	debug_debugfs_root_entry = debugfs_create_dir(DEBUG_DIR_ROOT, NULL);
+	initialized = 1;
+	mutex_unlock(&debug_mutex);
+	return 0;
 }
-
-/*
- * module definitions
- */
 postcore_initcall(debug_init);
-module_exit(debug_exit);
-MODULE_LICENSE("GPL");
-
-EXPORT_SYMBOL(debug_register);
-EXPORT_SYMBOL(debug_unregister); 
-EXPORT_SYMBOL(debug_set_level);
-EXPORT_SYMBOL(debug_stop_all);
-EXPORT_SYMBOL(debug_register_view);
-EXPORT_SYMBOL(debug_unregister_view);
-EXPORT_SYMBOL(debug_event_common);
-EXPORT_SYMBOL(debug_exception_common);
-EXPORT_SYMBOL(debug_hex_ascii_view);
-EXPORT_SYMBOL(debug_raw_view);
-EXPORT_SYMBOL(debug_dflt_header_fn);
-EXPORT_SYMBOL(debug_sprintf_view);
-EXPORT_SYMBOL(debug_sprintf_exception);
-EXPORT_SYMBOL(debug_sprintf_event);

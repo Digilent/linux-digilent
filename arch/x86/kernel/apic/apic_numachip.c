@@ -56,6 +56,12 @@ static unsigned int read_xapic_id(void)
 	return get_apic_id(apic_read(APIC_ID));
 }
 
+static int numachip_apic_id_valid(int apicid)
+{
+	/* Trust what bootloader passes in MADT */
+	return 1;
+}
+
 static int numachip_apic_id_registered(void)
 {
 	return physid_isset(read_xapic_id(), phys_cpu_present_map);
@@ -64,17 +70,6 @@ static int numachip_apic_id_registered(void)
 static int numachip_phys_pkg_id(int initial_apic_id, int index_msb)
 {
 	return initial_apic_id >> index_msb;
-}
-
-static const struct cpumask *numachip_target_cpus(void)
-{
-	return cpu_online_mask;
-}
-
-static void numachip_vector_allocation_domain(int cpu, struct cpumask *retmask)
-{
-	cpumask_clear(retmask);
-	cpumask_set_cpu(cpu, retmask);
 }
 
 static int __cpuinit numachip_wakeup_secondary(int phys_apicid, unsigned long start_rip)
@@ -151,38 +146,6 @@ static void numachip_send_IPI_self(int vector)
 	__default_send_IPI_shortcut(APIC_DEST_SELF, vector, APIC_DEST_PHYSICAL);
 }
 
-static unsigned int numachip_cpu_mask_to_apicid(const struct cpumask *cpumask)
-{
-	int cpu;
-
-	/*
-	 * We're using fixed IRQ delivery, can only return one phys APIC ID.
-	 * May as well be the first.
-	 */
-	cpu = cpumask_first(cpumask);
-	if (likely((unsigned)cpu < nr_cpu_ids))
-		return per_cpu(x86_cpu_to_apicid, cpu);
-
-	return BAD_APICID;
-}
-
-static unsigned int
-numachip_cpu_mask_to_apicid_and(const struct cpumask *cpumask,
-				const struct cpumask *andmask)
-{
-	int cpu;
-
-	/*
-	 * We're using fixed IRQ delivery, can only return one phys APIC ID.
-	 * May as well be the first.
-	 */
-	for_each_cpu_and(cpu, cpumask, andmask) {
-		if (cpumask_test_cpu(cpu, cpu_online_mask))
-			break;
-	}
-	return per_cpu(x86_cpu_to_apicid, cpu);
-}
-
 static int __init numachip_probe(void)
 {
 	return apic == &apic_numachip;
@@ -201,8 +164,11 @@ static void __init map_csrs(void)
 
 static void fixup_cpu_id(struct cpuinfo_x86 *c, int node)
 {
-	c->phys_proc_id = node;
-	per_cpu(cpu_llc_id, smp_processor_id()) = node;
+
+	if (c->phys_proc_id != node) {
+		c->phys_proc_id = node;
+		per_cpu(cpu_llc_id, smp_processor_id()) = node;
+	}
 }
 
 static int __init numachip_system_init(void)
@@ -238,18 +204,19 @@ static struct apic apic_numachip __refconst = {
 	.name				= "NumaConnect system",
 	.probe				= numachip_probe,
 	.acpi_madt_oem_check		= numachip_acpi_madt_oem_check,
+	.apic_id_valid			= numachip_apic_id_valid,
 	.apic_id_registered		= numachip_apic_id_registered,
 
 	.irq_delivery_mode		= dest_Fixed,
 	.irq_dest_mode			= 0, /* physical */
 
-	.target_cpus			= numachip_target_cpus,
+	.target_cpus			= online_target_cpus,
 	.disable_esr			= 0,
 	.dest_logical			= 0,
 	.check_apicid_used		= NULL,
 	.check_apicid_present		= NULL,
 
-	.vector_allocation_domain	= numachip_vector_allocation_domain,
+	.vector_allocation_domain	= default_vector_allocation_domain,
 	.init_apic_ldr			= flat_init_apic_ldr,
 
 	.ioapic_phys_id_map		= NULL,
@@ -267,8 +234,7 @@ static struct apic apic_numachip __refconst = {
 	.set_apic_id			= set_apic_id,
 	.apic_id_mask			= 0xffU << 24,
 
-	.cpu_mask_to_apicid		= numachip_cpu_mask_to_apicid,
-	.cpu_mask_to_apicid_and		= numachip_cpu_mask_to_apicid_and,
+	.cpu_mask_to_apicid_and		= default_cpu_mask_to_apicid_and,
 
 	.send_IPI_mask			= numachip_send_IPI_mask,
 	.send_IPI_mask_allbutself	= numachip_send_IPI_mask_allbutself,
@@ -285,6 +251,7 @@ static struct apic apic_numachip __refconst = {
 
 	.read				= native_apic_mem_read,
 	.write				= native_apic_mem_write,
+	.eoi_write			= native_apic_mem_write,
 	.icr_read			= native_apic_icr_read,
 	.icr_write			= native_apic_icr_write,
 	.wait_icr_idle			= native_apic_wait_icr_idle,

@@ -2,7 +2,6 @@ menu "Platform support"
 
 source "arch/powerpc/platforms/powernv/Kconfig"
 source "arch/powerpc/platforms/pseries/Kconfig"
-source "arch/powerpc/platforms/iseries/Kconfig"
 source "arch/powerpc/platforms/chrp/Kconfig"
 source "arch/powerpc/platforms/512x/Kconfig"
 source "arch/powerpc/platforms/52xx/Kconfig"
@@ -26,10 +25,19 @@ source "arch/powerpc/platforms/wsp/Kconfig"
 config KVM_GUEST
 	bool "KVM Guest support"
 	default n
+	select EPAPR_PARAVIRT
 	---help---
 	  This option enables various optimizations for running under the KVM
 	  hypervisor. Overhead for the kernel when not running inside KVM should
 	  be minimal.
+
+	  In case of doubt, say Y
+
+config EPAPR_PARAVIRT
+	bool "ePAPR para-virtualization support"
+	default n
+	help
+	  Enables ePAPR para-virtualization support for guests.
 
 	  In case of doubt, say Y
 
@@ -87,6 +95,14 @@ config MPIC_WEIRD
 	bool
 	default n
 
+config MPIC_MSGR
+	bool "MPIC message register support"
+	depends on MPIC
+	default n
+	help
+	  Enables support for the MPIC message registers.  These
+	  registers are used for inter-processor communication.
+
 config PPC_I8259
 	bool
 	default n
@@ -138,7 +154,7 @@ config MPIC_BROKEN_REGREAD
 	  of the register contents in software.
 
 config IBMVIO
-	depends on PPC_PSERIES || PPC_ISERIES
+	depends on PPC_PSERIES
 	bool
 	default y
 

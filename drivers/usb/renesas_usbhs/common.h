@@ -22,8 +22,8 @@
 
 struct usbhs_priv;
 
-#include "./mod.h"
-#include "./pipe.h"
+#include "mod.h"
+#include "pipe.h"
 
 /*
  *
@@ -242,6 +242,7 @@ struct usbhs_priv {
 
 	void __iomem *base;
 	unsigned int irq;
+	unsigned long irqflags;
 
 	struct renesas_usbhs_platform_callback	pfunc;
 	struct renesas_usbhs_driver_param	dparam;

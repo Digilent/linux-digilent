@@ -3,6 +3,7 @@
 
 #include <linux/types.h>
 #include <linux/string.h>
+#include <linux/bug.h>
 #include <linux/mutex.h>
 #include <linux/cpumask.h>
 #include <linux/nodemask.h>
@@ -85,6 +86,7 @@ int seq_puts(struct seq_file *m, const char *s);
 int seq_write(struct seq_file *seq, const void *data, size_t len);
 
 __printf(2, 3) int seq_printf(struct seq_file *, const char *, ...);
+__printf(2, 0) int seq_vprintf(struct seq_file *, const char *, va_list args);
 
 int seq_path(struct seq_file *, const struct path *, const char *);
 int seq_dentry(struct seq_file *, struct dentry *, const char *);
@@ -121,9 +123,12 @@ int single_release(struct inode *, struct file *);
 void *__seq_open_private(struct file *, const struct seq_operations *, int);
 int seq_open_private(struct file *, const struct seq_operations *, int);
 int seq_release_private(struct inode *, struct file *);
+int seq_put_decimal_ull(struct seq_file *m, char delimiter,
+			unsigned long long num);
+int seq_put_decimal_ll(struct seq_file *m, char delimiter,
+			long long num);
 
 #define SEQ_START_TOKEN ((void *)1)
-
 /*
  * Helpers for iteration over list_head-s in seq_files
  */

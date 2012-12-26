@@ -74,7 +74,7 @@ config SPI_ATMEL
 	  This selects a driver for the Atmel SPI Controller, present on
 	  many AT32 (AVR32) and AT91 (ARM) chips.
 
-config SPI_BFIN
+config SPI_BFIN5XX
 	tristate "SPI controller driver for ADI Blackfin5xx"
 	depends on BLACKFIN
 	help
@@ -93,6 +93,12 @@ config SPI_AU1550
 	help
 	  If you say yes to this option, support will be included for the
 	  PSC SPI controller found on Au1550, Au1200 and Au1300 series.
+
+config SPI_BCM63XX
+	tristate "Broadcom BCM63xx SPI controller"
+	depends on BCM63XX
+	help
+          Enable support for the SPI controller on the Broadcom BCM63xx SoCs.
 
 config SPI_BITBANG
 	tristate "Utilities for Bitbanging SPI masters"
@@ -119,14 +125,14 @@ config SPI_BUTTERFLY
 
 config SPI_COLDFIRE_QSPI
 	tristate "Freescale Coldfire QSPI controller"
-	depends on (M520x || M523x || M5249 || M527x || M528x || M532x)
+	depends on (M520x || M523x || M5249 || M525x || M527x || M528x || M532x)
 	help
 	  This enables support for the Coldfire QSPI controller in master
 	  mode.
 
 config SPI_DAVINCI
 	tristate "Texas Instruments DaVinci/DA8x/OMAP-L/AM1x SoC SPI controller"
-	depends on SPI_MASTER && ARCH_DAVINCI
+	depends on ARCH_DAVINCI
 	select SPI_BITBANG
 	help
 	  SPI master controller for DaVinci/DA8x/OMAP-L/AM1x SPI modules.
@@ -137,6 +143,15 @@ config SPI_EP93XX
 	help
 	  This enables using the Cirrus EP93xx SPI controller in master
 	  mode.
+
+config SPI_FALCON
+	tristate "Falcon SPI controller support"
+	depends on SOC_FALCON
+	help
+	  The external bus unit (EBU) found on the FALC-ON SoC has SPI
+	  emulation that is designed for serial flash access. This driver
+	  has only been tested with m25p80 type chips. The hardware has no
+	  support for other types of SPI peripherals.
 
 config SPI_GPIO
 	tristate "GPIO-based bitbanging SPI Master"
@@ -188,7 +203,7 @@ config SPI_MPC52xx_PSC
 
 config SPI_MPC512x_PSC
 	tristate "Freescale MPC512x PSC SPI controller"
-	depends on SPI_MASTER && PPC_MPC512x
+	depends on PPC_MPC512x
 	help
 	  This enables using the Freescale MPC5121 Programmable Serial
 	  Controller in SPI master mode.
@@ -238,7 +253,7 @@ config SPI_OMAP24XX
 
 config SPI_OMAP_100K
 	tristate "OMAP SPI 100K"
-	depends on SPI_MASTER && (ARCH_OMAP850 || ARCH_OMAP730)
+	depends on ARCH_OMAP850 || ARCH_OMAP730
 	help
 	  OMAP SPI 100K master controller for omap7xx boards.
 
@@ -262,7 +277,7 @@ config SPI_PL022
 
 config SPI_PPC4xx
 	tristate "PPC4xx SPI Controller"
-	depends on PPC32 && 4xx && SPI_MASTER
+	depends on PPC32 && 4xx
 	select SPI_BITBANG
 	help
 	  This selects a driver for the PPC4xx SPI Controller.
@@ -279,9 +294,15 @@ config SPI_PXA2XX
 config SPI_PXA2XX_PCI
 	def_bool SPI_PXA2XX && X86_32 && PCI
 
+config SPI_RSPI
+	tristate "Renesas RSPI controller"
+	depends on SUPERH
+	help
+	  SPI driver for Renesas RSPI blocks.
+
 config SPI_S3C24XX
 	tristate "Samsung S3C24XX series SPI"
-	depends on ARCH_S3C2410 && EXPERIMENTAL
+	depends on ARCH_S3C24XX && EXPERIMENTAL
 	select SPI_BITBANG
 	help
 	  SPI driver for Samsung S3C24XX series ARM SoCs
@@ -299,7 +320,7 @@ config SPI_S3C24XX_FIQ
 
 config SPI_S3C64XX
 	tristate "Samsung S3C64XX series type SPI"
-	depends on (ARCH_S3C64XX || ARCH_S5P64X0 || ARCH_EXYNOS)
+	depends on (ARCH_S3C24XX || ARCH_S3C64XX || ARCH_S5P64X0 || ARCH_EXYNOS)
 	select S3C64XX_DMA if ARCH_S3C64XX
 	help
 	  SPI driver for Samsung S3C64XX and newer SoCs.
@@ -324,15 +345,28 @@ config SPI_SH_SCI
 	help
 	  SPI driver for SuperH SCI blocks.
 
+config SPI_SH_HSPI
+	tristate "SuperH HSPI controller"
+	depends on ARCH_SHMOBILE
+	help
+	  SPI driver for SuperH HSPI blocks.
+
+config SPI_SIRF
+	tristate "CSR SiRFprimaII SPI controller"
+	depends on ARCH_PRIMA2
+	select SPI_BITBANG
+	help
+	  SPI driver for CSR SiRFprimaII SoCs
+
 config SPI_STMP3XXX
 	tristate "Freescale STMP37xx/378x SPI/SSP controller"
-	depends on ARCH_STMP3XXX && SPI_MASTER
+	depends on ARCH_STMP3XXX
 	help
 	  SPI driver for Freescale STMP37xx/378x SoC SSP interface
 
 config SPI_TEGRA
 	tristate "Nvidia Tegra SPI controller"
-	depends on ARCH_TEGRA && TEGRA_SYSTEM_DMA
+	depends on ARCH_TEGRA && (TEGRA_SYSTEM_DMA || TEGRA20_APB_DMA)
 	help
 	  SPI driver for NVidia Tegra SoCs
 
@@ -359,6 +393,19 @@ config SPI_TXX9
 	help
 	  SPI driver for Toshiba TXx9 MIPS SoCs
 
+config SPI_XCOMM
+	tristate "Analog Devices AD-FMCOMMS1-EBZ SPI-I2C-bridge driver"
+	depends on I2C
+	help
+	  Support for the SPI-I2C bridge found on the Analog Devices
+	  AD-FMCOMMS1-EBZ board.
+
+config SPI_AD9250FMC
+	tristate "Analog Devices AD9250-FMC-250EBZ SPI-SPI-bridge driver"
+	help
+	  Support for the SPI-SPI bridge CPLD found on the Analog Devices
+	  AD9250-FMC-250EBZ and 4DSP FMC176 and FMX230 FMC cards.
+
 config SPI_XILINX
 	tristate "Xilinx SPI controller common module"
 	depends on HAS_IOMEM && EXPERIMENTAL
@@ -372,22 +419,14 @@ config SPI_XILINX
 
 config SPI_XILINX_PS_QSPI
 	tristate "Xilinx PS QSPI controller"
+	depends on ARCH_ZYNQ
 	depends on SPI_MASTER && EXPERIMENTAL
 	help
 	  This selects the PS Quad SPI controller master driver from the Xilinx.
 
-config XILINX_PS_QSPI_USE_DUAL_FLASH
-	bool "Use dual flash memories with seperate QSPI buses"
-	depends on SPI_XILINX_PS_QSPI
-	default y
-	help
-	  This option enables two SPI flash memories operating in parallel mode.
-	  This increases the maximum addressable QSPI flash memory from 16 MB
-	  (24-bit addressing) to 32 MB (25-bit addressing), and the throughput
-	  by a factor of 2.
-
 config SPI_XILINX_PS_SPI
 	tristate "Xilinx PS SPI controller"
+	depends on ARCH_ZYNQ
 	depends on SPI_MASTER && EXPERIMENTAL
 	help
 	  This selects the PS SPI controller master driver from the Xilinx.
@@ -405,7 +444,6 @@ config SPI_NUC900
 
 config SPI_DESIGNWARE
 	tristate "DesignWare SPI controller core support"
-	depends on SPI_MASTER
 	help
 	  general driver for SPI controller core from DesignWare
 
