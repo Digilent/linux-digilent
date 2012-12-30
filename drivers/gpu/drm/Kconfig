@@ -198,8 +198,9 @@ config DRM_SAVAGE
 
 config DRM_ENCODER_ADV7511
 	tristate "AV7511 encoder"
-	depends on I2C && DRM
+	depends on DRM
 	select REGMAP_I2C
+	select DRM_ANALOG
 
 source "drivers/gpu/drm/analog/Kconfig"
 
