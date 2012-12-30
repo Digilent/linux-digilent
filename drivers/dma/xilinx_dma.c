@@ -1529,23 +1529,22 @@ static int __devinit xilinx_dma_of_probe(struct platform_device *pdev)
 			if (xdev->chan[i])
 				xdev->chan[i]->num_frms = num_frames;
 		}
-
-		ret = dma_async_device_register(&xdev->common);
-		if (ret)
-			goto err_free_chan;
-	
-		for (i = 0; i < XILINX_DMA_MAX_CHANS_PER_DEVICE; i++) {
-			if (xdev->chan[i]) {
-				chan = xdev->chan[i];
-				debugfs_create_regset32(dev_name(&chan->common.dev->device), S_IRUGO, NULL, &chan->debugfs_regset);
-			}
-		}
-	
-		platform_set_drvdata(pdev, xdev);
-
-		DMA_OUT(&chan->regs->cr, reg);
-		return 0;
 	}
+
+	ret = dma_async_device_register(&xdev->common);
+	if (ret)
+		goto err_free_chan;
+
+	for (i = 0; i < XILINX_DMA_MAX_CHANS_PER_DEVICE; i++) {
+		if (xdev->chan[i]) {
+			chan = xdev->chan[i];
+			debugfs_create_regset32(dev_name(&chan->common.dev->device), S_IRUGO, NULL, &chan->debugfs_regset);
+		}
+	}
+
+	platform_set_drvdata(pdev, xdev);
+
+	return 0;
 
 err_free_chan:
 	for (i = 0; i < XILINX_DMA_MAX_CHANS_PER_DEVICE; i++) {
@@ -1563,10 +1562,9 @@ static int __devexit xilinx_dma_of_remove(struct platform_device *pdev)
 
 	dma_async_device_unregister(&xdev->common);
 
-		DMA_OUT(&chan->regs->cr, reg);
-		break;
-	default:
-		return -ENXIO;
+	for (i = 0; i < XILINX_DMA_MAX_CHANS_PER_DEVICE; i++) {
+		if (xdev->chan[i])
+			xilinx_dma_chan_remove(xdev->chan[i]);
 	}
 
 	iounmap(xdev->regs);
