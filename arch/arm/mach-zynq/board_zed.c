@@ -61,7 +61,7 @@ static const char *xilinx_dt_match[] = {
 	NULL
 };
 
-MACHINE_START(XILINX, "Xilinx Zynq Platform")
+MACHINE_START(XILINX_EP107, "Xilinx Zynq Platform")
 	.map_io		= xilinx_map_io,
 	.init_irq	= xilinx_irq_init,
 #ifdef	GIC_CPU_CTRL
