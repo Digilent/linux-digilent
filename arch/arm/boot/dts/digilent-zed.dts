@@ -46,8 +46,8 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait devtmpfs.mount=0";
-		/* bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x800000,8M init=/init earlyprintk rootwait devtmpfs.mount=0"; */
+		bootargs = "console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait devtmpfs.mount=1";
+		/* bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x800000,8M init=/init earlyprintk rootwait devtmpfs.mount=1"; */
 		linux,stdout-path = "/axi@0/serial@e0001000";
 	};
 
