@@ -293,7 +293,10 @@ archprepare:
 bzImage: zImage
 
 #zImage Image xipImage bootpImage uImage: vmlinux
-$(BOOT_TARGETS1) $(BOOT_TARGETS2) : vmlinux
+$(BOOT_TARGETS1) : vmlinux
+	$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
+
+$(BOOT_TARGETS2) : vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
 
 zinstall uinstall install: vmlinux
