@@ -2918,6 +2918,7 @@ static int __devinit xemacps_probe(struct platform_device *pdev)
 	const void *prop;
 	u32 regval = 0;
 	int rc = -ENXIO;
+	int size = 0;
 
 	r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	r_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
@@ -3064,6 +3065,12 @@ static int __devinit xemacps_probe(struct platform_device *pdev)
 		goto err_out_unregister_clk_notifier;
 	}
 
+	lp->ndev->dev_addr = of_get_property(lp->pdev->dev.of_node, "local-mac-address", &size);
+	if ((!lp->ndev->dev_addr) || (size != 6)) {
+		dev_warn(&lp->pdev->dev, "Could not find MAC address in device tree, use default\n");
+	} else {
+		xemacps_set_hwaddr(lp);
+	}
 	xemacps_update_hwaddr(lp);
 
 	platform_set_drvdata(pdev, ndev);
