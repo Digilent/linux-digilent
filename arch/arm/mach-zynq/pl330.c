@@ -2052,7 +2052,7 @@ static void pl330_enable_dma(unsigned int channel,
 				dma_alloc_coherent(device_data->dev,
 						   0x1000,
 						   &channel_data->dma_prog_phy,
-						   GFP_KERNEL);
+						   GFP_ATOMIC);
 		}
 		PDEBUG("channel %d DMA program: vir %#08x, phy %#08x\n",
 		       channel,
