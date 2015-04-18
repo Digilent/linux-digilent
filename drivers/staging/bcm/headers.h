@@ -1,6 +1,6 @@
 
 /*******************************************************************
-* 		Headers.h
+*		Headers.h
 *******************************************************************/
 #ifndef __HEADERS_H__
 #define __HEADERS_H__
@@ -34,7 +34,7 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <linux/usb.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <net/ip.h>
 
 #include "Typedefs.h"

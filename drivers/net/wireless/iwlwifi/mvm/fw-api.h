@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,6 +32,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -70,10 +72,8 @@
 #include "fw-api-mac.h"
 #include "fw-api-power.h"
 #include "fw-api-d3.h"
-#include "fw-api-bt-coex.h"
-
-/* maximal number of Tx queues in any platform */
-#define IWL_MVM_MAX_QUEUES	20
+#include "fw-api-coex.h"
+#include "fw-api-scan.h"
 
 /* Tx queue numbers */
 enum {
@@ -81,9 +81,18 @@ enum {
 	IWL_MVM_CMD_QUEUE = 9,
 };
 
-#define IWL_MVM_CMD_FIFO	7
+enum iwl_mvm_tx_fifo {
+	IWL_MVM_TX_FIFO_BK = 0,
+	IWL_MVM_TX_FIFO_BE,
+	IWL_MVM_TX_FIFO_VI,
+	IWL_MVM_TX_FIFO_VO,
+	IWL_MVM_TX_FIFO_MCAST = 5,
+	IWL_MVM_TX_FIFO_CMD = 7,
+};
 
 #define IWL_MVM_STATION_COUNT	16
+
+#define IWL_MVM_TDLS_STA_COUNT	4
 
 /* commands */
 enum {
@@ -95,6 +104,7 @@ enum {
 	/* PHY context commands */
 	PHY_CONTEXT_CMD = 0x8,
 	DBG_CFG = 0x9,
+	ANTENNA_COUPLING_NOTIFICATION = 0xa,
 
 	/* station table */
 	ADD_STA_KEY = 0x17,
@@ -105,6 +115,9 @@ enum {
 	TX_CMD = 0x1c,
 	TXPATH_FLUSH = 0x1e,
 	MGMT_MCAST_KEY = 0x1f,
+
+	/* scheduler config */
+	SCD_QUEUE_CFG = 0x1d,
 
 	/* global key */
 	WEP_KEY = 0x20,
@@ -129,10 +142,12 @@ enum {
 	/* Scan offload */
 	SCAN_OFFLOAD_REQUEST_CMD = 0x51,
 	SCAN_OFFLOAD_ABORT_CMD = 0x52,
+	HOT_SPOT_CMD = 0x53,
 	SCAN_OFFLOAD_COMPLETE = 0x6D,
 	SCAN_OFFLOAD_UPDATE_PROFILES_CMD = 0x6E,
 	SCAN_OFFLOAD_CONFIG_CMD = 0x6f,
 	MATCH_FOUND_NOTIFICATION = 0xd9,
+	SCAN_ITERATION_COMPLETE = 0xe7,
 
 	/* Phy */
 	PHY_CONFIGURATION_CMD = 0x6a,
@@ -142,6 +157,7 @@ enum {
 	/* Power - legacy power table command */
 	POWER_TABLE_CMD = 0x77,
 	PSM_UAPSD_AP_MISBEHAVING_NOTIFICATION = 0x78,
+	LTR_CONFIG = 0xee,
 
 	/* Thermal Throttling*/
 	REPLY_THERMAL_MNG_BACKOFF = 0x7e,
@@ -161,8 +177,8 @@ enum {
 	BEACON_NOTIFICATION = 0x90,
 	BEACON_TEMPLATE_CMD = 0x91,
 	TX_ANT_CONFIGURATION_CMD = 0x98,
-	BT_CONFIG = 0x9b,
 	STATISTICS_NOTIFICATION = 0x9d,
+	EOSP_NOTIFICATION = 0x9e,
 	REDUCE_TX_POWER_CMD = 0x9f,
 
 	/* RF-KILL commands and notifications */
@@ -178,18 +194,29 @@ enum {
 	REPLY_RX_MPDU_CMD = 0xc1,
 	BA_NOTIF = 0xc5,
 
+	MARKER_CMD = 0xcb,
+
 	/* BT Coex */
 	BT_COEX_PRIO_TABLE = 0xcc,
 	BT_COEX_PROT_ENV = 0xcd,
 	BT_PROFILE_NOTIFICATION = 0xce,
+	BT_CONFIG = 0x9b,
+	BT_COEX_UPDATE_SW_BOOST = 0x5a,
+	BT_COEX_UPDATE_CORUN_LUT = 0x5b,
+	BT_COEX_UPDATE_REDUCED_TXP = 0x5c,
 	BT_COEX_CI = 0x5d,
 
 	REPLY_SF_CFG_CMD = 0xd1,
 	REPLY_BEACON_FILTERING_CMD = 0xd2,
 
+	/* DTS measurements */
+	CMD_DTS_MEASUREMENT_TRIGGER = 0xdc,
+	DTS_MEASUREMENT_NOTIFICATION = 0xdd,
+
 	REPLY_DEBUG_CMD = 0xf0,
 	DEBUG_LOG_MSG = 0xf7,
 
+	BCAST_FILTER_CMD = 0xcf,
 	MCAST_FILTER_CMD = 0xd0,
 
 	/* D3 commands/notifications */
@@ -197,6 +224,7 @@ enum {
 	PROT_OFFLOAD_CONFIG_CMD = 0xd4,
 	OFFLOADS_QUERY_CMD = 0xd5,
 	REMOTE_WAKE_CONFIG_CMD = 0xd6,
+	D0I3_END_CMD = 0xed,
 
 	/* for WoWLAN in particular */
 	WOWLAN_PATTERNS = 0xe0,
@@ -313,14 +341,12 @@ enum {
 
 /* Section types for NVM_ACCESS_CMD */
 enum {
-	NVM_SECTION_TYPE_HW = 0,
-	NVM_SECTION_TYPE_SW,
-	NVM_SECTION_TYPE_PAPD,
-	NVM_SECTION_TYPE_BT,
-	NVM_SECTION_TYPE_CALIBRATION,
-	NVM_SECTION_TYPE_PRODUCTION,
-	NVM_SECTION_TYPE_POST_FCS_CALIB,
-	NVM_NUM_OF_SECTIONS,
+	NVM_SECTION_TYPE_SW = 1,
+	NVM_SECTION_TYPE_REGULATORY = 3,
+	NVM_SECTION_TYPE_CALIBRATION = 4,
+	NVM_SECTION_TYPE_PRODUCTION = 5,
+	NVM_SECTION_TYPE_MAC_OVERRIDE = 11,
+	NVM_MAX_NUM_SECTIONS = 12,
 };
 
 /**
@@ -412,6 +438,35 @@ struct mvm_alive_resp {
 	__le32 scd_base_ptr;		/* SRAM address for SCD */
 } __packed; /* ALIVE_RES_API_S_VER_1 */
 
+struct mvm_alive_resp_ver2 {
+	__le16 status;
+	__le16 flags;
+	u8 ucode_minor;
+	u8 ucode_major;
+	__le16 id;
+	u8 api_minor;
+	u8 api_major;
+	u8 ver_subtype;
+	u8 ver_type;
+	u8 mac;
+	u8 opt;
+	__le16 reserved2;
+	__le32 timestamp;
+	__le32 error_event_table_ptr;	/* SRAM address for error log */
+	__le32 log_event_table_ptr;	/* SRAM address for LMAC event log */
+	__le32 cpu_register_ptr;
+	__le32 dbgm_config_ptr;
+	__le32 alive_counter_ptr;
+	__le32 scd_base_ptr;		/* SRAM address for SCD */
+	__le32 st_fwrd_addr;		/* pointer to Store and forward */
+	__le32 st_fwrd_size;
+	u8 umac_minor;			/* UMAC version: minor */
+	u8 umac_major;			/* UMAC version: major */
+	__le16 umac_id;			/* UMAC version: id */
+	__le32 error_info_addr;		/* SRAM address for UMAC error log */
+	__le32 dbg_print_buff_addr;
+} __packed; /* ALIVE_RES_API_S_VER_2 */
+
 /* Error response/notification */
 enum {
 	FW_ERR_UNKNOWN_CMD = 0x0,
@@ -502,6 +557,9 @@ enum iwl_time_event_type {
 	/* WiDi Sync Events */
 	TE_WIDI_TX_SYNC,
 
+	/* Channel Switch NoA */
+	TE_CHANNEL_SWITCH_PERIOD,
+
 	TE_MAX
 }; /* MAC_EVENT_TYPE_API_E_VER_1 */
 
@@ -573,52 +631,7 @@ enum {
 	TE_V1_NOTIF_INTERNAL_FRAG_END = BIT(7),
 }; /* MAC_EVENT_ACTION_API_E_VER_2 */
 
-
-/**
- * struct iwl_time_event_cmd_api_v1 - configuring Time Events
- * with struct MAC_TIME_EVENT_DATA_API_S_VER_1 (see also
- * with version 2. determined by IWL_UCODE_TLV_FLAGS)
- * ( TIME_EVENT_CMD = 0x29 )
- * @id_and_color: ID and color of the relevant MAC
- * @action: action to perform, one of FW_CTXT_ACTION_*
- * @id: this field has two meanings, depending on the action:
- *	If the action is ADD, then it means the type of event to add.
- *	For all other actions it is the unique event ID assigned when the
- *	event was added by the FW.
- * @apply_time: When to start the Time Event (in GP2)
- * @max_delay: maximum delay to event's start (apply time), in TU
- * @depends_on: the unique ID of the event we depend on (if any)
- * @interval: interval between repetitions, in TU
- * @interval_reciprocal: 2^32 / interval
- * @duration: duration of event in TU
- * @repeat: how many repetitions to do, can be TE_REPEAT_ENDLESS
- * @dep_policy: one of TE_V1_INDEPENDENT, TE_V1_DEP_OTHER, TE_V1_DEP_TSF
- *	and TE_V1_EVENT_SOCIOPATHIC
- * @is_present: 0 or 1, are we present or absent during the Time Event
- * @max_frags: maximal number of fragments the Time Event can be divided to
- * @notify: notifications using TE_V1_NOTIF_* (whom to notify when)
- */
-struct iwl_time_event_cmd_v1 {
-	/* COMMON_INDEX_HDR_API_S_VER_1 */
-	__le32 id_and_color;
-	__le32 action;
-	__le32 id;
-	/* MAC_TIME_EVENT_DATA_API_S_VER_1 */
-	__le32 apply_time;
-	__le32 max_delay;
-	__le32 dep_policy;
-	__le32 depends_on;
-	__le32 is_present;
-	__le32 max_frags;
-	__le32 interval;
-	__le32 interval_reciprocal;
-	__le32 duration;
-	__le32 repeat;
-	__le32 notify;
-} __packed; /* MAC_TIME_EVENT_CMD_API_S_VER_1 */
-
-
-/* Time event - defines for command API v2 */
+/* Time event - defines for command API */
 
 /*
  * @TE_V2_FRAG_NONE: fragmentation of the time event is NOT allowed.
@@ -649,7 +662,7 @@ enum {
 #define TE_V2_PLACEMENT_POS	12
 #define TE_V2_ABSENCE_POS	15
 
-/* Time event policy values (for time event cmd api v2)
+/* Time event policy values
  * A notification (both event and fragment) includes a status indicating weather
  * the FW was able to schedule the event or not. For fragment start/end
  * notification the status is always success. There is no start/end fragment
@@ -682,6 +695,7 @@ enum {
 	TE_V2_NOTIF_HOST_FRAG_END = BIT(5),
 	TE_V2_NOTIF_INTERNAL_FRAG_START = BIT(6),
 	TE_V2_NOTIF_INTERNAL_FRAG_END = BIT(7),
+	T2_V2_START_IMMEDIATELY = BIT(11),
 
 	TE_V2_NOTIF_MSK = 0xff,
 
@@ -695,7 +709,7 @@ enum {
 };
 
 /**
- * struct iwl_time_event_cmd_api_v2 - configuring Time Events
+ * struct iwl_time_event_cmd_api - configuring Time Events
  * with struct MAC_TIME_EVENT_DATA_API_S_VER_2 (see also
  * with version 1. determined by IWL_UCODE_TLV_FLAGS)
  * ( TIME_EVENT_CMD = 0x29 )
@@ -718,7 +732,7 @@ enum {
  *	TE_EVENT_SOCIOPATHIC
  *	using TE_ABSENCE and using TE_NOTIF_*
  */
-struct iwl_time_event_cmd_v2 {
+struct iwl_time_event_cmd {
 	/* COMMON_INDEX_HDR_API_S_VER_1 */
 	__le32 id_and_color;
 	__le32 action;
@@ -912,6 +926,72 @@ struct iwl_phy_context_cmd {
 	__le32 acquisition_data;
 	__le32 dsp_cfg_flags;
 } __packed; /* PHY_CONTEXT_CMD_API_VER_1 */
+
+/*
+ * Aux ROC command
+ *
+ * Command requests the firmware to create a time event for a certain duration
+ * and remain on the given channel. This is done by using the Aux framework in
+ * the FW.
+ * The command was first used for Hot Spot issues - but can be used regardless
+ * to Hot Spot.
+ *
+ * ( HOT_SPOT_CMD 0x53 )
+ *
+ * @id_and_color: ID and color of the MAC
+ * @action: action to perform, one of FW_CTXT_ACTION_*
+ * @event_unique_id: If the action FW_CTXT_ACTION_REMOVE then the
+ *	event_unique_id should be the id of the time event assigned by ucode.
+ *	Otherwise ignore the event_unique_id.
+ * @sta_id_and_color: station id and color, resumed during "Remain On Channel"
+ *	activity.
+ * @channel_info: channel info
+ * @node_addr: Our MAC Address
+ * @reserved: reserved for alignment
+ * @apply_time: GP2 value to start (should always be the current GP2 value)
+ * @apply_time_max_delay: Maximum apply time delay value in TU. Defines max
+ *	time by which start of the event is allowed to be postponed.
+ * @duration: event duration in TU To calculate event duration:
+ *	timeEventDuration = min(duration, remainingQuota)
+ */
+struct iwl_hs20_roc_req {
+	/* COMMON_INDEX_HDR_API_S_VER_1 hdr */
+	__le32 id_and_color;
+	__le32 action;
+	__le32 event_unique_id;
+	__le32 sta_id_and_color;
+	struct iwl_fw_channel_info channel_info;
+	u8 node_addr[ETH_ALEN];
+	__le16 reserved;
+	__le32 apply_time;
+	__le32 apply_time_max_delay;
+	__le32 duration;
+} __packed; /* HOT_SPOT_CMD_API_S_VER_1 */
+
+/*
+ * values for AUX ROC result values
+ */
+enum iwl_mvm_hot_spot {
+	HOT_SPOT_RSP_STATUS_OK,
+	HOT_SPOT_RSP_STATUS_TOO_MANY_EVENTS,
+	HOT_SPOT_MAX_NUM_OF_SESSIONS,
+};
+
+/*
+ * Aux ROC command response
+ *
+ * In response to iwl_hs20_roc_req the FW sends this command to notify the
+ * driver the uid of the timevent.
+ *
+ * ( HOT_SPOT_CMD 0x53 )
+ *
+ * @event_unique_id: Unique ID of time event assigned by ucode
+ * @status: Return status 0 is success, all the rest used for specific errors
+ */
+struct iwl_hs20_roc_res {
+	__le32 event_unique_id;
+	__le32 status;
+} __packed; /* HOT_SPOT_RSP_API_S_VER_1 */
 
 #define IWL_RX_INFO_PHY_CNT 8
 #define IWL_RX_INFO_ENERGY_ANT_ABC_IDX 1
@@ -1158,6 +1238,122 @@ struct iwl_mcast_filter_cmd {
 	u8 reserved[2];
 	u8 addr_list[0];
 } __packed; /* MCAST_FILTERING_CMD_API_S_VER_1 */
+
+#define MAX_BCAST_FILTERS 8
+#define MAX_BCAST_FILTER_ATTRS 2
+
+/**
+ * enum iwl_mvm_bcast_filter_attr_offset - written by fw for each Rx packet
+ * @BCAST_FILTER_OFFSET_PAYLOAD_START: offset is from payload start.
+ * @BCAST_FILTER_OFFSET_IP_END: offset is from ip header end (i.e.
+ *	start of ip payload).
+ */
+enum iwl_mvm_bcast_filter_attr_offset {
+	BCAST_FILTER_OFFSET_PAYLOAD_START = 0,
+	BCAST_FILTER_OFFSET_IP_END = 1,
+};
+
+/**
+ * struct iwl_fw_bcast_filter_attr - broadcast filter attribute
+ * @offset_type:	&enum iwl_mvm_bcast_filter_attr_offset.
+ * @offset:	starting offset of this pattern.
+ * @val:		value to match - big endian (MSB is the first
+ *		byte to match from offset pos).
+ * @mask:	mask to match (big endian).
+ */
+struct iwl_fw_bcast_filter_attr {
+	u8 offset_type;
+	u8 offset;
+	__le16 reserved1;
+	__be32 val;
+	__be32 mask;
+} __packed; /* BCAST_FILTER_ATT_S_VER_1 */
+
+/**
+ * enum iwl_mvm_bcast_filter_frame_type - filter frame type
+ * @BCAST_FILTER_FRAME_TYPE_ALL: consider all frames.
+ * @BCAST_FILTER_FRAME_TYPE_IPV4: consider only ipv4 frames
+ */
+enum iwl_mvm_bcast_filter_frame_type {
+	BCAST_FILTER_FRAME_TYPE_ALL = 0,
+	BCAST_FILTER_FRAME_TYPE_IPV4 = 1,
+};
+
+/**
+ * struct iwl_fw_bcast_filter - broadcast filter
+ * @discard: discard frame (1) or let it pass (0).
+ * @frame_type: &enum iwl_mvm_bcast_filter_frame_type.
+ * @num_attrs: number of valid attributes in this filter.
+ * @attrs: attributes of this filter. a filter is considered matched
+ *	only when all its attributes are matched (i.e. AND relationship)
+ */
+struct iwl_fw_bcast_filter {
+	u8 discard;
+	u8 frame_type;
+	u8 num_attrs;
+	u8 reserved1;
+	struct iwl_fw_bcast_filter_attr attrs[MAX_BCAST_FILTER_ATTRS];
+} __packed; /* BCAST_FILTER_S_VER_1 */
+
+/**
+ * struct iwl_fw_bcast_mac - per-mac broadcast filtering configuration.
+ * @default_discard: default action for this mac (discard (1) / pass (0)).
+ * @attached_filters: bitmap of relevant filters for this mac.
+ */
+struct iwl_fw_bcast_mac {
+	u8 default_discard;
+	u8 reserved1;
+	__le16 attached_filters;
+} __packed; /* BCAST_MAC_CONTEXT_S_VER_1 */
+
+/**
+ * struct iwl_bcast_filter_cmd - broadcast filtering configuration
+ * @disable: enable (0) / disable (1)
+ * @max_bcast_filters: max number of filters (MAX_BCAST_FILTERS)
+ * @max_macs: max number of macs (NUM_MAC_INDEX_DRIVER)
+ * @filters: broadcast filters
+ * @macs: broadcast filtering configuration per-mac
+ */
+struct iwl_bcast_filter_cmd {
+	u8 disable;
+	u8 max_bcast_filters;
+	u8 max_macs;
+	u8 reserved1;
+	struct iwl_fw_bcast_filter filters[MAX_BCAST_FILTERS];
+	struct iwl_fw_bcast_mac macs[NUM_MAC_INDEX_DRIVER];
+} __packed; /* BCAST_FILTERING_HCMD_API_S_VER_1 */
+
+/*
+ * enum iwl_mvm_marker_id - maker ids
+ *
+ * The ids for different type of markers to insert into the usniffer logs
+ */
+enum iwl_mvm_marker_id {
+	MARKER_ID_TX_FRAME_LATENCY = 1,
+}; /* MARKER_ID_API_E_VER_1 */
+
+/**
+ * struct iwl_mvm_marker - mark info into the usniffer logs
+ *
+ * (MARKER_CMD = 0xcb)
+ *
+ * Mark the UTC time stamp into the usniffer logs together with additional
+ * metadata, so the usniffer output can be parsed.
+ * In the command response the ucode will return the GP2 time.
+ *
+ * @dw_len: The amount of dwords following this byte including this byte.
+ * @marker_id: A unique marker id (iwl_mvm_marker_id).
+ * @reserved: reserved.
+ * @timestamp: in milliseconds since 1970-01-01 00:00:00 UTC
+ * @metadata: additional meta data that will be written to the unsiffer log
+ */
+struct iwl_mvm_marker {
+	u8 dwLen;
+	u8 markerId;
+	__le16 reserved;
+	__le64 timestamp;
+	__le32 metadata[0];
+} __packed; /* MARKER_API_S_VER_1 */
 
 struct mvm_statistics_dbg {
 	__le32 burst_check;
@@ -1413,19 +1609,106 @@ enum iwl_sf_scenario {
 
 #define SF_LONG_DELAY_AGING_TIMER 1000000	/* 1 Sec */
 
+#define SF_CFG_DUMMY_NOTIF_OFF	BIT(16)
+
 /**
  * Smart Fifo configuration command.
- * @state: smart fifo state, types listed in iwl_sf_sate.
+ * @state: smart fifo state, types listed in enum %iwl_sf_sate.
  * @watermark: Minimum allowed availabe free space in RXF for transient state.
  * @long_delay_timeouts: aging and idle timer values for each scenario
  * in long delay state.
  * @full_on_timeouts: timer values for each scenario in full on state.
  */
 struct iwl_sf_cfg_cmd {
-	enum iwl_sf_state state;
+	__le32 state;
 	__le32 watermark[SF_TRANSIENT_STATES_NUMBER];
 	__le32 long_delay_timeouts[SF_NUM_SCENARIO][SF_NUM_TIMEOUT_TYPES];
 	__le32 full_on_timeouts[SF_NUM_SCENARIO][SF_NUM_TIMEOUT_TYPES];
 } __packed; /* SF_CFG_API_S_VER_2 */
+
+/* DTS measurements */
+
+enum iwl_dts_measurement_flags {
+	DTS_TRIGGER_CMD_FLAGS_TEMP	= BIT(0),
+	DTS_TRIGGER_CMD_FLAGS_VOLT	= BIT(1),
+};
+
+/**
+ * iwl_dts_measurement_cmd - request DTS temperature and/or voltage measurements
+ *
+ * @flags: indicates which measurements we want as specified in &enum
+ *	   iwl_dts_measurement_flags
+ */
+struct iwl_dts_measurement_cmd {
+	__le32 flags;
+} __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_CMD_S */
+
+/**
+ * iwl_dts_measurement_notif - notification received with the measurements
+ *
+ * @temp: the measured temperature
+ * @voltage: the measured voltage
+ */
+struct iwl_dts_measurement_notif {
+	__le32 temp;
+	__le32 voltage;
+} __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S */
+
+/**
+ * enum iwl_scd_control - scheduler config command control flags
+ * @IWL_SCD_CONTROL_RM_TID: remove TID from this queue
+ * @IWL_SCD_CONTROL_SET_SSN: use the SSN and program it into HW
+ */
+enum iwl_scd_control {
+	IWL_SCD_CONTROL_RM_TID	= BIT(4),
+	IWL_SCD_CONTROL_SET_SSN	= BIT(5),
+};
+
+/**
+ * enum iwl_scd_flags - scheduler config command flags
+ * @IWL_SCD_FLAGS_SHARE_TID: multiple TIDs map to this queue
+ * @IWL_SCD_FLAGS_SHARE_RA: multiple RAs map to this queue
+ * @IWL_SCD_FLAGS_DQA_ENABLED: DQA is enabled
+ */
+enum iwl_scd_flags {
+	IWL_SCD_FLAGS_SHARE_TID		= BIT(0),
+	IWL_SCD_FLAGS_SHARE_RA		= BIT(1),
+	IWL_SCD_FLAGS_DQA_ENABLED	= BIT(2),
+};
+
+#define IWL_SCDQ_INVALID_STA	0xff
+
+/**
+ * struct iwl_scd_txq_cfg_cmd - New txq hw scheduler config command
+ * @token:	dialog token addba - unused legacy
+ * @sta_id:	station id 4-bit
+ * @tid:	TID 0..7
+ * @scd_queue:	TFD queue num 0 .. 31
+ * @enable:	1 queue enable, 0 queue disable
+ * @aggregate:	1 aggregated queue, 0 otherwise
+ * @tx_fifo:	tx fifo num 0..7
+ * @window:	up to 64
+ * @ssn:	starting seq num 12-bit
+ * @control:	command control flags
+ * @flags:	flags - see &enum iwl_scd_flags
+ *
+ * Note that every time the command is sent, all parameters must
+ * be filled with the exception of
+ *  - the SSN, which is only used with @IWL_SCD_CONTROL_SET_SSN
+ *  - the window, which is only relevant when starting aggregation
+ */
+struct iwl_scd_txq_cfg_cmd {
+	u8 token;
+	u8 sta_id;
+	u8 tid;
+	u8 scd_queue;
+	u8 enable;
+	u8 aggregate;
+	u8 tx_fifo;
+	u8 window;
+	__le16 ssn;
+	u8 control;
+	u8 flags;
+} __packed;
 
 #endif /* __fw_api_h__ */

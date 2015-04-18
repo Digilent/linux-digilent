@@ -37,6 +37,9 @@
 
 struct sh_mobile_sdhi_of_data {
 	unsigned long tmio_flags;
+	unsigned long capabilities;
+	unsigned long capabilities2;
+	dma_addr_t dma_rx_offset;
 };
 
 static const struct sh_mobile_sdhi_of_data sh_mobile_sdhi_of_cfg[] = {
@@ -44,6 +47,36 @@ static const struct sh_mobile_sdhi_of_data sh_mobile_sdhi_of_cfg[] = {
 		.tmio_flags = TMIO_MMC_HAS_IDLE_WAIT,
 	},
 };
+
+static const struct sh_mobile_sdhi_of_data of_rcar_gen1_compatible = {
+	.tmio_flags	= TMIO_MMC_HAS_IDLE_WAIT | TMIO_MMC_WRPROTECT_DISABLE |
+			  TMIO_MMC_CLK_ACTUAL,
+	.capabilities	= MMC_CAP_SD_HIGHSPEED | MMC_CAP_SDIO_IRQ,
+};
+
+static const struct sh_mobile_sdhi_of_data of_rcar_gen2_compatible = {
+	.tmio_flags	= TMIO_MMC_HAS_IDLE_WAIT | TMIO_MMC_WRPROTECT_DISABLE |
+			  TMIO_MMC_CLK_ACTUAL,
+	.capabilities	= MMC_CAP_SD_HIGHSPEED | MMC_CAP_SDIO_IRQ,
+	.dma_rx_offset	= 0x2000,
+};
+
+static const struct of_device_id sh_mobile_sdhi_of_match[] = {
+	{ .compatible = "renesas,sdhi-shmobile" },
+	{ .compatible = "renesas,sdhi-sh7372" },
+	{ .compatible = "renesas,sdhi-sh73a0", .data = &sh_mobile_sdhi_of_cfg[0], },
+	{ .compatible = "renesas,sdhi-r8a73a4", .data = &sh_mobile_sdhi_of_cfg[0], },
+	{ .compatible = "renesas,sdhi-r8a7740", .data = &sh_mobile_sdhi_of_cfg[0], },
+	{ .compatible = "renesas,sdhi-r8a7778", .data = &of_rcar_gen1_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7779", .data = &of_rcar_gen1_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7790", .data = &of_rcar_gen2_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7791", .data = &of_rcar_gen2_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7792", .data = &of_rcar_gen2_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7793", .data = &of_rcar_gen2_compatible, },
+	{ .compatible = "renesas,sdhi-r8a7794", .data = &of_rcar_gen2_compatible, },
+	{},
+};
+MODULE_DEVICE_TABLE(of, sh_mobile_sdhi_of_match);
 
 struct sh_mobile_sdhi {
 	struct clk *clk;
@@ -105,6 +138,24 @@ static int sh_mobile_sdhi_write16_hook(struct tmio_mmc_host *host, int addr)
 	return 0;
 }
 
+static int sh_mobile_sdhi_multi_io_quirk(struct mmc_card *card,
+					 unsigned int direction, int blk_size)
+{
+	/*
+	 * In Renesas controllers, when performing a
+	 * multiple block read of one or two blocks,
+	 * depending on the timing with which the
+	 * response register is read, the response
+	 * value may not be read properly.
+	 * Use single block read for this HW bug
+	 */
+	if ((direction == MMC_DATA_READ) &&
+	    blk_size == 2)
+		return 1;
+
+	return blk_size;
+}
+
 static void sh_mobile_sdhi_cd_wakeup(const struct platform_device *pdev)
 {
 	mmc_detect_change(platform_get_drvdata(pdev), msecs_to_jiffies(100));
@@ -113,19 +164,6 @@ static void sh_mobile_sdhi_cd_wakeup(const struct platform_device *pdev)
 static const struct sh_mobile_sdhi_ops sdhi_ops = {
 	.cd_wakeup = sh_mobile_sdhi_cd_wakeup,
 };
-
-static const struct of_device_id sh_mobile_sdhi_of_match[] = {
-	{ .compatible = "renesas,sdhi-shmobile" },
-	{ .compatible = "renesas,sdhi-sh7372" },
-	{ .compatible = "renesas,sdhi-sh73a0", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{ .compatible = "renesas,sdhi-r8a73a4", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{ .compatible = "renesas,sdhi-r8a7740", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{ .compatible = "renesas,sdhi-r8a7778", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{ .compatible = "renesas,sdhi-r8a7779", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{ .compatible = "renesas,sdhi-r8a7790", .data = &sh_mobile_sdhi_of_cfg[0], },
-	{},
-};
-MODULE_DEVICE_TABLE(of, sh_mobile_sdhi_of_match);
 
 static int sh_mobile_sdhi_probe(struct platform_device *pdev)
 {
@@ -173,6 +211,7 @@ static int sh_mobile_sdhi_probe(struct platform_device *pdev)
 	mmc_data->clk_disable = sh_mobile_sdhi_clk_disable;
 	mmc_data->capabilities = MMC_CAP_MMC_HIGHSPEED;
 	mmc_data->write16_hook = sh_mobile_sdhi_write16_hook;
+	mmc_data->multi_io_quirk = sh_mobile_sdhi_multi_io_quirk;
 	if (p) {
 		mmc_data->flags = p->tmio_flags;
 		mmc_data->ocr_mask = p->tmio_ocr_mask;
@@ -209,9 +248,27 @@ static int sh_mobile_sdhi_probe(struct platform_device *pdev)
 	 */
 	mmc_data->flags |= TMIO_MMC_SDIO_IRQ;
 
+	/*
+	 * All SDHI have CMD12 controll bit
+	 */
+	mmc_data->flags |= TMIO_MMC_HAVE_CMD12_CTRL;
+
+	/*
+	 * All SDHI need SDIO_INFO1 reserved bit
+	 */
+	mmc_data->flags |= TMIO_MMC_SDIO_STATUS_QUIRK;
+
+	/*
+	 * All SDHI have DMA control register
+	 */
+	mmc_data->flags |= TMIO_MMC_HAVE_CTL_DMA_REG;
+
 	if (of_id && of_id->data) {
 		const struct sh_mobile_sdhi_of_data *of_data = of_id->data;
 		mmc_data->flags |= of_data->tmio_flags;
+		mmc_data->capabilities |= of_data->capabilities;
+		mmc_data->capabilities2 |= of_data->capabilities2;
+		dma_priv->dma_rx_offset = of_data->dma_rx_offset;
 	}
 
 	/* SD control register space size is 0x100, 0x200 for bus_shift=1 */
@@ -316,16 +373,16 @@ static int sh_mobile_sdhi_remove(struct platform_device *pdev)
 }
 
 static const struct dev_pm_ops tmio_mmc_dev_pm_ops = {
-	.suspend = tmio_mmc_host_suspend,
-	.resume = tmio_mmc_host_resume,
-	.runtime_suspend = tmio_mmc_host_runtime_suspend,
-	.runtime_resume = tmio_mmc_host_runtime_resume,
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+			pm_runtime_force_resume)
+	SET_PM_RUNTIME_PM_OPS(tmio_mmc_host_runtime_suspend,
+			tmio_mmc_host_runtime_resume,
+			NULL)
 };
 
 static struct platform_driver sh_mobile_sdhi_driver = {
 	.driver		= {
 		.name	= "sh_mobile_sdhi",
-		.owner	= THIS_MODULE,
 		.pm	= &tmio_mmc_dev_pm_ops,
 		.of_match_table = sh_mobile_sdhi_of_match,
 	},

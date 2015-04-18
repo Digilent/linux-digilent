@@ -249,6 +249,7 @@ static void parse_options(char *options)
 
 static int pstore_remount(struct super_block *sb, int *flags, char *data)
 {
+	sync_filesystem(sb);
 	parse_options(data);
 
 	return 0;
@@ -319,10 +320,10 @@ int pstore_mkfile(enum pstore_type_id type, char *psname, u64 id, int count,
 						compressed ? ".enc.z" : "");
 		break;
 	case PSTORE_TYPE_CONSOLE:
-		sprintf(name, "console-%s", psname);
+		sprintf(name, "console-%s-%lld", psname, id);
 		break;
 	case PSTORE_TYPE_FTRACE:
-		sprintf(name, "ftrace-%s", psname);
+		sprintf(name, "ftrace-%s-%lld", psname, id);
 		break;
 	case PSTORE_TYPE_MCE:
 		sprintf(name, "mce-%s-%lld", psname, id);

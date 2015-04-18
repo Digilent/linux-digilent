@@ -446,6 +446,7 @@ static int usbvision_v4l2_close(struct file *file)
 	if (usbvision->remove_pending) {
 		printk(KERN_INFO "%s: Final disconnect\n", __func__);
 		usbvision_release(usbvision);
+		return 0;
 	}
 	mutex_unlock(&usbvision->v4l2_lock);
 
@@ -597,7 +598,7 @@ static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id id)
 
 	usbvision->tvnorm_id = id;
 
-	call_all(usbvision, core, s_std, usbvision->tvnorm_id);
+	call_all(usbvision, video, s_std, usbvision->tvnorm_id);
 	/* propagate the change to the decoder */
 	usbvision_muxsel(usbvision, usbvision->ctl_input);
 
@@ -1221,6 +1222,7 @@ static int usbvision_radio_close(struct file *file)
 	if (usbvision->remove_pending) {
 		printk(KERN_INFO "%s: Final disconnect\n", __func__);
 		usbvision_release(usbvision);
+		return err_code;
 	}
 
 	mutex_unlock(&usbvision->v4l2_lock);

@@ -32,6 +32,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/rpmsg.h>
+#include <linux/remoteproc.h>
 #include <linux/mutex.h>
 
 /**
@@ -51,7 +52,6 @@
  * @sendq:	wait queue of sending contexts waiting for a tx buffers
  * @sleepers:	number of senders that are waiting for a tx buffer
  * @ns_ept:	the bus's name service endpoint
- * @id:		unique system-wide index id for this vproc
  *
  * This structure stores the rpmsg state of a given virtio remote processor
  * device (there might be several virtio proc devices for each physical
@@ -69,14 +69,7 @@ struct virtproc_info {
 	wait_queue_head_t sendq;
 	atomic_t sleepers;
 	struct rpmsg_endpoint *ns_ept;
-	int id;
 };
-
-int get_virtproc_id(struct virtproc_info *vrp)
-{
-	return vrp->id;
-}
-EXPORT_SYMBOL(get_virtproc_id);
 
 /**
  * struct rpmsg_channel_info - internal channel info representation
@@ -140,16 +133,6 @@ rpmsg_show_attr(name, id.name, "%s\n");
 rpmsg_show_attr(src, src, "0x%x\n");
 rpmsg_show_attr(dst, dst, "0x%x\n");
 rpmsg_show_attr(announce, announce ? "true" : "false", "%s\n");
-
-/*
- * The virtio devices we are probed with represent remote processors
- * on the system. We call them _virtual_ processors, because every physical
- * remote processor might actually have several virtio devices.
- *
- * The idr below is used to assign each vproc a unique, system-wide, index id.
- */
-static struct idr vprocs;
-static DEFINE_MUTEX(vprocs_mutex);
 
 /*
  * Unique (and free running) index for rpmsg devices.
@@ -511,7 +494,7 @@ static int rpmsg_channel_match(struct device *dev, void *data)
  * this function will be used to create both static and dynamic
  * channels.
  */
-static struct rpmsg_channel *__rpmsg_create_channel(struct virtproc_info *vrp,
+static struct rpmsg_channel *rpmsg_create_channel(struct virtproc_info *vrp,
 				struct rpmsg_channel_info *chinfo)
 {
 	struct rpmsg_channel *rpdev;
@@ -567,7 +550,7 @@ static struct rpmsg_channel *__rpmsg_create_channel(struct virtproc_info *vrp,
  * find an existing channel using its name + address properties,
  * and destroy it
  */
-static int __rpmsg_destroy_channel(struct virtproc_info *vrp,
+static int rpmsg_destroy_channel(struct virtproc_info *vrp,
 					struct rpmsg_channel_info *chinfo)
 {
 	struct virtio_device *vdev = vrp->vdev;
@@ -706,6 +689,8 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	struct scatterlist sg;
 	struct rpmsg_hdr *msg;
 	int err;
+	struct rproc *vrp_rproc;
+	void *msg_guest_addr_kva; /* message DMA address' virtual address conversion */
 
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
@@ -770,7 +755,12 @@ int rpmsg_send_offchannel_raw(struct rpmsg_channel *rpdev, u32 src, u32 dst,
 	print_hex_dump(KERN_DEBUG, "rpmsg_virtio TX: ", DUMP_PREFIX_NONE, 16, 1,
 					msg, sizeof(*msg) + msg->len, true);
 
-	sg_init_one(&sg, msg, sizeof(*msg) + len);
+	vrp_rproc = vdev_to_rproc(vrp->vdev);
+	msg_guest_addr_kva = msg;
+	if (vrp_rproc->ops->kva_to_guest_addr_kva) {
+		msg_guest_addr_kva = vrp_rproc->ops->kva_to_guest_addr_kva(vrp_rproc, msg, vrp->svq);
+	}
+	sg_init_one(&sg, msg_guest_addr_kva, sizeof(*msg) + len);
 
 	mutex_lock(&vrp->tx_lock);
 
@@ -800,6 +790,8 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	struct rpmsg_endpoint *ept;
 	struct scatterlist sg;
 	int err;
+	struct rproc *vrp_rproc;
+	void *msg_guest_addr_kva; /* message DMA address' virtual address conversion */
 
 	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
 					msg->src, msg->dst, msg->len,
@@ -843,8 +835,13 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	} else
 		dev_warn(dev, "msg received with no recipient\n");
 
+	vrp_rproc = vdev_to_rproc(vrp->vdev);
+	msg_guest_addr_kva = msg;
+	if (vrp_rproc->ops->kva_to_guest_addr_kva) {
+		msg_guest_addr_kva = vrp_rproc->ops->kva_to_guest_addr_kva(vrp_rproc, msg, vrp->rvq);
+	}
 	/* publish the real size of the buffer */
-	sg_init_one(&sg, msg, RPMSG_BUF_SIZE);
+	sg_init_one(&sg, msg_guest_addr_kva, RPMSG_BUF_SIZE);
 
 	/* add the buffer back to the remote processor's virtqueue */
 	err = virtqueue_add_inbuf(vrp->rvq, &sg, 1, msg, GFP_KERNEL);
@@ -905,25 +902,6 @@ static void rpmsg_xmit_done(struct virtqueue *svq)
 	wake_up_interruptible(&vrp->sendq);
 }
 
-struct rpmsg_channel *rpmsg_create_channel(int vrp_id, const char *name,
-							int src, int dst)
-{
-	struct rpmsg_channel_info chinfo;
-	struct virtproc_info *vrp;
-
-	strncpy(chinfo.name, name, sizeof(chinfo.name));
-	chinfo.src = src;
-	chinfo.dst = dst;
-
-	/* TODO we probably want radix tree and fw-induced id numbers ? */
-	vrp = idr_find(&vprocs, vrp_id);
-	if (!vrp)
-		return NULL;
-
-	return __rpmsg_create_channel(vrp, &chinfo);
-}
-EXPORT_SYMBOL(rpmsg_create_channel);
-
 /* invoked when a name service announcement arrives */
 static void rpmsg_ns_cb(struct rpmsg_channel *rpdev, void *data, int len,
 							void *priv, u32 src)
@@ -967,13 +945,13 @@ static void rpmsg_ns_cb(struct rpmsg_channel *rpdev, void *data, int len,
 	chinfo.dst = msg->addr;
 
 	if (msg->flags & RPMSG_NS_DESTROY) {
-		ret = __rpmsg_destroy_channel(vrp, &chinfo);
+		ret = rpmsg_destroy_channel(vrp, &chinfo);
 		if (ret)
-			dev_err(dev, "__rpmsg_destroy_channel err: %d\n", ret);
+			dev_err(dev, "rpmsg_destroy_channel failed: %d\n", ret);
 	} else {
-		newch = __rpmsg_create_channel(vrp, &chinfo);
+		newch = rpmsg_create_channel(vrp, &chinfo);
 		if (!newch)
-			dev_err(dev, "__rpmsg_create_channel failed\n");
+			dev_err(dev, "rpmsg_create_channel failed\n");
 	}
 }
 
@@ -983,8 +961,12 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	const char *names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
 	struct virtproc_info *vrp;
+	struct rproc *vrp_rproc;
 	void *bufs_va;
-	int err = 0, i, vproc_id;
+	void *cpu_addr; /* buffer virtual address */
+	void *cpu_addr_dma; /* buffer DMA address' virutal address conversion */
+	void *rbufs_guest_addr_kva;
+	int err = 0, i;
 
 	vrp = kzalloc(sizeof(*vrp), GFP_KERNEL);
 	if (!vrp)
@@ -997,26 +979,10 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	mutex_init(&vrp->tx_lock);
 	init_waitqueue_head(&vrp->sendq);
 
-	if (!idr_pre_get(&vprocs, GFP_KERNEL))
-		goto free_vrp;
-
-	mutex_lock(&vprocs_mutex);
-
-	err = idr_get_new(&vprocs, vrp, &vproc_id);
-
-	mutex_unlock(&vprocs_mutex);
-
-	if (err) {
-		dev_err(&vdev->dev, "idr_get_new failed: %d\n", err);
-		goto free_vrp;
-	}
-
-	vrp->id = vproc_id;
-
 	/* We expect two virtqueues, rx and tx (and in this order) */
 	err = vdev->config->find_vqs(vdev, 2, vqs, vq_cbs, names);
 	if (err)
-		goto rem_idr;
+		goto free_vrp;
 
 	vrp->rvq = vqs[0];
 	vrp->svq = vqs[1];
@@ -1039,12 +1005,18 @@ static int rpmsg_probe(struct virtio_device *vdev)
 	/* and half is dedicated for TX */
 	vrp->sbufs = bufs_va + RPMSG_TOTAL_BUF_SPACE / 2;
 
+	vrp_rproc = vdev_to_rproc(vdev);
+	rbufs_guest_addr_kva = vrp->rbufs;
+	if (vrp_rproc->ops->kva_to_guest_addr_kva) {
+		rbufs_guest_addr_kva = vrp_rproc->ops->kva_to_guest_addr_kva(vrp_rproc, vrp->rbufs, vrp->rvq);
+	}
 	/* set up the receive buffers */
 	for (i = 0; i < RPMSG_NUM_BUFS / 2; i++) {
 		struct scatterlist sg;
-		void *cpu_addr = vrp->rbufs + i * RPMSG_BUF_SIZE;
+		cpu_addr = vrp->rbufs + i * RPMSG_BUF_SIZE;
+		cpu_addr_dma = rbufs_guest_addr_kva + i*RPMSG_BUF_SIZE;
 
-		sg_init_one(&sg, cpu_addr, RPMSG_BUF_SIZE);
+		sg_init_one(&sg, cpu_addr_dma, RPMSG_BUF_SIZE);
 
 		err = virtqueue_add_inbuf(vrp->rvq, &sg, 1, cpu_addr,
 								GFP_KERNEL);
@@ -1080,10 +1052,6 @@ free_coherent:
 					bufs_va, vrp->bufs_dma);
 vqs_del:
 	vdev->config->del_vqs(vrp->vdev);
-rem_idr:
-	mutex_lock(&vprocs_mutex);
-	idr_remove(&vprocs, vproc_id);
-	mutex_unlock(&vprocs_mutex);
 free_vrp:
 	kfree(vrp);
 	return err;
@@ -1114,22 +1082,8 @@ static void rpmsg_remove(struct virtio_device *vdev)
 
 	vdev->config->del_vqs(vrp->vdev);
 
-	/* FIXME del_vqs is calling rproc_shutdown which switch loaded resource
-	 * table back to cached table but without any synchronization.
-	 * That's why vdev->config->reset(vdev) above is called on loaded table
-	 * and this one is called on cached resource table which ensure
-	 * that WARN_ON_ONCE(dev->config->get_status(dev)); in
-	 * virtio_dev_remove() won't show bug because cached table wasn't
-	 * synchronized with loaded one.
-	 */
-	vdev->config->reset(vdev);
-
 	dma_free_coherent(vdev->dev.parent->parent, RPMSG_TOTAL_BUF_SPACE,
 					vrp->rbufs, vrp->bufs_dma);
-
-	mutex_lock(&vprocs_mutex);
-	idr_remove(&vprocs, vrp->id);
-	mutex_unlock(&vprocs_mutex);
 
 	kfree(vrp);
 }
@@ -1157,8 +1111,6 @@ static int __init rpmsg_init(void)
 {
 	int ret;
 
-	idr_init(&vprocs);
-
 	ret = bus_register(&rpmsg_bus);
 	if (ret) {
 		pr_err("failed to register rpmsg bus: %d\n", ret);
@@ -1179,9 +1131,6 @@ static void __exit rpmsg_fini(void)
 {
 	unregister_virtio_driver(&virtio_ipc_driver);
 	bus_unregister(&rpmsg_bus);
-
-	idr_remove_all(&vprocs);
-	idr_destroy(&vprocs);
 }
 module_exit(rpmsg_fini);
 

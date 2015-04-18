@@ -582,6 +582,14 @@ static inline void flush_requests(struct blkfront_info *info)
 		notify_remote_via_irq(info->irq);
 }
 
+static inline bool blkif_request_flush_valid(struct request *req,
+					     struct blkfront_info *info)
+{
+	return ((req->cmd_type != REQ_TYPE_FS) ||
+		((req->cmd_flags & (REQ_FLUSH | REQ_FUA)) &&
+		!info->flush_op));
+}
+
 /*
  * do_blkif_request
  *  read a block; request is in a request queue
@@ -604,18 +612,16 @@ static void do_blkif_request(struct request_queue *rq)
 
 		blk_start_request(req);
 
-		if ((req->cmd_type != REQ_TYPE_FS) ||
-		    ((req->cmd_flags & (REQ_FLUSH | REQ_FUA)) &&
-		    !info->flush_op)) {
+		if (blkif_request_flush_valid(req, info)) {
 			__blk_end_request_all(req, -EIO);
 			continue;
 		}
 
 		pr_debug("do_blk_req %p: cmd %p, sec %lx, "
-			 "(%u/%u) buffer:%p [%s]\n",
+			 "(%u/%u) [%s]\n",
 			 req, req->cmd, (unsigned long)blk_rq_pos(req),
 			 blk_rq_cur_sectors(req), blk_rq_sectors(req),
-			 req->buffer, rq_data_dir(req) ? "write" : "read");
+			 rq_data_dir(req) ? "write" : "read");
 
 		if (blkif_queue_request(req)) {
 			blk_requeue_request(rq, req);
@@ -1635,36 +1641,24 @@ blkfront_closing(struct blkfront_info *info)
 static void blkfront_setup_discard(struct blkfront_info *info)
 {
 	int err;
-	char *type;
 	unsigned int discard_granularity;
 	unsigned int discard_alignment;
 	unsigned int discard_secure;
 
-	type = xenbus_read(XBT_NIL, info->xbdev->otherend, "type", NULL);
-	if (IS_ERR(type))
-		return;
-
-	info->feature_secdiscard = 0;
-	if (strncmp(type, "phy", 3) == 0) {
-		err = xenbus_gather(XBT_NIL, info->xbdev->otherend,
-			"discard-granularity", "%u", &discard_granularity,
-			"discard-alignment", "%u", &discard_alignment,
-			NULL);
-		if (!err) {
-			info->feature_discard = 1;
-			info->discard_granularity = discard_granularity;
-			info->discard_alignment = discard_alignment;
-		}
-		err = xenbus_gather(XBT_NIL, info->xbdev->otherend,
-			    "discard-secure", "%d", &discard_secure,
-			    NULL);
-		if (!err)
-			info->feature_secdiscard = discard_secure;
-
-	} else if (strncmp(type, "file", 4) == 0)
-		info->feature_discard = 1;
-
-	kfree(type);
+	info->feature_discard = 1;
+	err = xenbus_gather(XBT_NIL, info->xbdev->otherend,
+		"discard-granularity", "%u", &discard_granularity,
+		"discard-alignment", "%u", &discard_alignment,
+		NULL);
+	if (!err) {
+		info->discard_granularity = discard_granularity;
+		info->discard_alignment = discard_alignment;
+	}
+	err = xenbus_gather(XBT_NIL, info->xbdev->otherend,
+		    "discard-secure", "%d", &discard_secure,
+		    NULL);
+	if (!err)
+		info->feature_secdiscard = !!discard_secure;
 }
 
 static int blkfront_setup_indirect(struct blkfront_info *info)
@@ -2067,13 +2061,14 @@ static const struct xenbus_device_id blkfront_ids[] = {
 	{ "" }
 };
 
-static DEFINE_XENBUS_DRIVER(blkfront, ,
+static struct xenbus_driver blkfront_driver = {
+	.ids  = blkfront_ids,
 	.probe = blkfront_probe,
 	.remove = blkfront_remove,
 	.resume = blkfront_resume,
 	.otherend_changed = blkback_changed,
 	.is_ready = blkfront_is_ready,
-);
+};
 
 static int __init xlblk_init(void)
 {

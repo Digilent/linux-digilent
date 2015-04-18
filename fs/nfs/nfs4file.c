@@ -8,6 +8,10 @@
 #include "fscache.h"
 #include "pnfs.h"
 
+#ifdef CONFIG_NFS_V4_2
+#include "nfs42.h"
+#endif
+
 #define NFSDBG_FACILITY		NFSDBG_FILE
 
 static int
@@ -100,8 +104,7 @@ nfs4_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 			break;
 		mutex_lock(&inode->i_mutex);
 		ret = nfs_file_fsync_commit(file, start, end, datasync);
-		if (!ret && !datasync)
-			/* application has asked for meta-data sync */
+		if (!ret)
 			ret = pnfs_layoutcommit_inode(inode, true);
 		mutex_unlock(&inode->i_mutex);
 		/*
@@ -116,12 +119,33 @@ nfs4_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	return ret;
 }
 
+#ifdef CONFIG_NFS_V4_2
+static loff_t nfs4_file_llseek(struct file *filep, loff_t offset, int whence)
+{
+	loff_t ret;
+
+	switch (whence) {
+	case SEEK_HOLE:
+	case SEEK_DATA:
+		ret = nfs42_proc_llseek(filep, offset, whence);
+		if (ret != -ENOTSUPP)
+			return ret;
+	default:
+		return nfs_file_llseek(filep, offset, whence);
+	}
+}
+#endif /* CONFIG_NFS_V4_2 */
+
 const struct file_operations nfs4_file_operations = {
+#ifdef CONFIG_NFS_V4_2
+	.llseek		= nfs4_file_llseek,
+#else
 	.llseek		= nfs_file_llseek,
-	.read		= do_sync_read,
-	.write		= do_sync_write,
-	.aio_read	= nfs_file_read,
-	.aio_write	= nfs_file_write,
+#endif
+	.read		= new_sync_read,
+	.write		= new_sync_write,
+	.read_iter	= nfs_file_read,
+	.write_iter	= nfs_file_write,
 	.mmap		= nfs_file_mmap,
 	.open		= nfs4_file_open,
 	.flush		= nfs_file_flush,
@@ -130,7 +154,7 @@ const struct file_operations nfs4_file_operations = {
 	.lock		= nfs_lock,
 	.flock		= nfs_flock,
 	.splice_read	= nfs_file_splice_read,
-	.splice_write	= nfs_file_splice_write,
+	.splice_write	= iter_file_splice_write,
 	.check_flags	= nfs_check_flags,
-	.setlease	= nfs_setlease,
+	.setlease	= simple_nosetlease,
 };

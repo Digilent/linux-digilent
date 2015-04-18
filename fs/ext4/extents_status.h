@@ -64,6 +64,17 @@ struct ext4_es_tree {
 	struct extent_status *cache_es;	/* recently accessed extent */
 };
 
+struct ext4_es_stats {
+	unsigned long es_stats_last_sorted;
+	unsigned long es_stats_shrunk;
+	unsigned long es_stats_cache_hits;
+	unsigned long es_stats_cache_misses;
+	u64 es_stats_scan_time;
+	u64 es_stats_max_scan_time;
+	struct percpu_counter es_stats_all_cnt;
+	struct percpu_counter es_stats_lru_cnt;
+};
+
 extern int __init ext4_init_es(void);
 extern void ext4_exit_es(void);
 extern void ext4_es_init_tree(struct ext4_es_tree *tree);
@@ -129,7 +140,16 @@ static inline void ext4_es_store_status(struct extent_status *es,
 		       (es->es_pblk & ~ES_MASK));
 }
 
-extern void ext4_es_register_shrinker(struct ext4_sb_info *sbi);
+static inline void ext4_es_store_pblock_status(struct extent_status *es,
+					       ext4_fsblk_t pb,
+					       unsigned int status)
+{
+	es->es_pblk = (((ext4_fsblk_t)
+			(status & EXTENT_STATUS_FLAGS) << ES_SHIFT) |
+		       (pb & ~ES_MASK));
+}
+
+extern int ext4_es_register_shrinker(struct ext4_sb_info *sbi);
 extern void ext4_es_unregister_shrinker(struct ext4_sb_info *sbi);
 extern void ext4_es_lru_add(struct inode *inode);
 extern void ext4_es_lru_del(struct inode *inode);

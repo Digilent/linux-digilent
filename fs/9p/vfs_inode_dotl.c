@@ -226,7 +226,7 @@ int v9fs_open_to_dotl_flags(int flags)
  * v9fs_vfs_create_dotl - VFS hook to create files for 9P2000.L protocol.
  * @dir: directory inode that is being created
  * @dentry:  dentry that is being deleted
- * @mode: create permissions
+ * @omode: create permissions
  *
  */
 
@@ -375,7 +375,7 @@ err_clunk_old_fid:
  * v9fs_vfs_mkdir_dotl - VFS mkdir hook to create a directory
  * @dir:  inode that is being unlinked
  * @dentry: dentry that is being unlinked
- * @mode: mode for new directory
+ * @omode: mode for new directory
  *
  */
 
@@ -393,7 +393,7 @@ static int v9fs_vfs_mkdir_dotl(struct inode *dir,
 	struct dentry *dir_dentry;
 	struct posix_acl *dacl = NULL, *pacl = NULL;
 
-	p9_debug(P9_DEBUG_VFS, "name %s\n", dentry->d_name.name);
+	p9_debug(P9_DEBUG_VFS, "name %pd\n", dentry);
 	err = 0;
 	v9ses = v9fs_inode2v9ses(dir);
 
@@ -607,7 +607,6 @@ int v9fs_vfs_setattr_dotl(struct dentry *dentry, struct iattr *iattr)
  * v9fs_stat2inode_dotl - populate an inode structure with stat info
  * @stat: stat structure
  * @inode: inode to populate
- * @sb: superblock of filesystem
  *
  */
 
@@ -768,8 +767,8 @@ v9fs_vfs_link_dotl(struct dentry *old_dentry, struct inode *dir,
 	struct p9_fid *dfid, *oldfid;
 	struct v9fs_session_info *v9ses;
 
-	p9_debug(P9_DEBUG_VFS, "dir ino: %lu, old_name: %s, new_name: %s\n",
-		 dir->i_ino, old_dentry->d_name.name, dentry->d_name.name);
+	p9_debug(P9_DEBUG_VFS, "dir ino: %lu, old_name: %pd, new_name: %pd\n",
+		 dir->i_ino, old_dentry, dentry);
 
 	v9ses = v9fs_inode2v9ses(dir);
 	dir_dentry = dentry->d_parent;
@@ -808,7 +807,7 @@ v9fs_vfs_link_dotl(struct dentry *old_dentry, struct inode *dir,
  * v9fs_vfs_mknod_dotl - create a special file
  * @dir: inode destination for new link
  * @dentry: dentry for file
- * @mode: mode for creation
+ * @omode: mode for creation
  * @rdev: device associated with special file
  *
  */
@@ -918,7 +917,7 @@ v9fs_vfs_follow_link_dotl(struct dentry *dentry, struct nameidata *nd)
 	char *link = __getname();
 	char *target;
 
-	p9_debug(P9_DEBUG_VFS, "%s\n", dentry->d_name.name);
+	p9_debug(P9_DEBUG_VFS, "%pd\n", dentry);
 
 	if (!link) {
 		link = ERR_PTR(-ENOMEM);

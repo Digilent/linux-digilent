@@ -96,7 +96,7 @@ config MTD_NAND_OMAP2
 
 config MTD_NAND_OMAP_BCH
 	depends on MTD_NAND_OMAP2
-	tristate "Support hardware based BCH error correction"
+	bool "Support hardware based BCH error correction"
 	default n
 	select BCH
 	help
@@ -104,7 +104,10 @@ config MTD_NAND_OMAP_BCH
 	  locate and correct errors when using BCH ECC scheme. This offloads
 	  the cpu from doing ECC error searching and correction. However some
 	  legacy OMAP families like OMAP2xxx, OMAP3xxx do not have ELM engine
-	  so they should not enable this config symbol.
+	  so this is optional for them.
+
+config MTD_NAND_OMAP_BCH_BUILD
+	def_tristate MTD_NAND_OMAP2 && MTD_NAND_OMAP_BCH
 
 config MTD_NAND_IDS
 	tristate
@@ -428,6 +431,7 @@ config MTD_NAND_FSL_IFC
 	tristate "NAND support for Freescale IFC controller"
 	depends on MTD_NAND && FSL_SOC
 	select FSL_IFC
+	select MEMORY
 	help
 	  Various Freescale chips e.g P1010, include a NAND Flash machine
 	  with built-in hardware ECC capabilities.
@@ -459,6 +463,8 @@ config MTD_NAND_MXC
 config MTD_NAND_SH_FLCTL
 	tristate "Support for NAND on Renesas SuperH FLCTL"
 	depends on SUPERH || ARCH_SHMOBILE || COMPILE_TEST
+	depends on HAS_IOMEM
+	depends on HAS_DMA
 	help
 	  Several Renesas SuperH CPU has FLCTL. This option enables support
 	  for NAND Flash using FLCTL.
@@ -516,5 +522,11 @@ config MTD_NAND_XWAY
 	help
 	  Enables support for NAND Flash chips on Lantiq XWAY SoCs. NAND is attached
 	  to the External Bus Unit (EBU).
+
+config MTD_NAND_ARASAN
+	tristate "Support for Arasan Nand Flash controller"
+	depends on MTD_NAND
+	help
+	  Enables the driver for the Arasan Nand Flash controller in ZynqMP SoC.
 
 endif # MTD_NAND

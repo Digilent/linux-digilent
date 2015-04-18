@@ -98,8 +98,13 @@ struct pinmux_irq {
 	const short *gpios;
 };
 
+#ifdef CONFIG_ARCH_MULTIPLATFORM
+#define PINMUX_IRQ(irq_nr, ids...)			   \
+	{ .gpios = (const short []) { ids, -1 } }
+#else
 #define PINMUX_IRQ(irq_nr, ids...)			   \
 	{ .irq = irq_nr, .gpios = (const short []) { ids, -1 } }
+#endif
 
 struct pinmux_range {
 	u16 begin;
@@ -111,7 +116,6 @@ struct sh_pfc;
 
 struct sh_pfc_soc_operations {
 	int (*init)(struct sh_pfc *pfc);
-	void (*exit)(struct sh_pfc *pfc);
 	unsigned int (*get_bias)(struct sh_pfc *pfc, unsigned int pin);
 	void (*set_bias)(struct sh_pfc *pfc, unsigned int pin,
 			 unsigned int bias);

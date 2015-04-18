@@ -109,8 +109,6 @@ sampling rate. If you sample two channels you get 4kHz and so on.
 #define USBDUX_CMD_PWM_ON	7
 #define USBDUX_CMD_PWM_OFF	8
 
-#define USBDUX_NUM_AO_CHAN	4
-
 /* timeout for the USB-transfer in ms */
 #define BULK_TIMEOUT		1000
 
@@ -198,18 +196,13 @@ struct usbdux_private {
 	/* size of the PWM buffer which holds the bit pattern */
 	int pwm_buf_sz;
 	/* input buffer for the ISO-transfer */
-	uint16_t *in_buf;
+	__le16 *in_buf;
 	/* input buffer for single insn */
-	uint16_t *insn_buf;
-
-	uint8_t ao_chanlist[USBDUX_NUM_AO_CHAN];
-	unsigned int ao_readback[USBDUX_NUM_AO_CHAN];
+	__le16 *insn_buf;
 
 	unsigned int high_speed:1;
 	unsigned int ai_cmd_running:1;
-	unsigned int ai_continous:1;
 	unsigned int ao_cmd_running:1;
-	unsigned int ao_continous:1;
 	unsigned int pwm_cmd_running:1;
 
 	/* number of samples to acquire */
@@ -266,7 +259,8 @@ static void usbduxsub_ai_isoc_irq(struct urb *urb)
 	struct comedi_device *dev = urb->context;
 	struct comedi_subdevice *s = dev->read_subdev;
 	struct usbdux_private *devpriv = dev->private;
-	int i, err, n;
+	struct comedi_cmd *cmd = &s->async->cmd;
+	int i, err;
 
 	/* first we test if something unusual has just happened */
 	switch (urb->status) {
@@ -349,7 +343,7 @@ static void usbduxsub_ai_isoc_irq(struct urb *urb)
 	devpriv->ai_counter = devpriv->ai_timer;
 
 	/* test, if we transmit only a fixed number of samples */
-	if (!devpriv->ai_continous) {
+	if (cmd->stop_src == TRIG_COUNT) {
 		/* not continuous, fixed number of samples */
 		devpriv->ai_sample_count--;
 		/* all samples received? */
@@ -363,9 +357,8 @@ static void usbduxsub_ai_isoc_irq(struct urb *urb)
 		}
 	}
 	/* get the data from the USB bus and hand it over to comedi */
-	n = s->async->cmd.chanlist_len;
-	for (i = 0; i < n; i++) {
-		unsigned int range = CR_RANGE(s->async->cmd.chanlist[i]);
+	for (i = 0; i < cmd->chanlist_len; i++) {
+		unsigned int range = CR_RANGE(cmd->chanlist[i]);
 		uint16_t val = le16_to_cpu(devpriv->in_buf[i]);
 
 		/* bipolar data is two's-complement */
@@ -373,7 +366,7 @@ static void usbduxsub_ai_isoc_irq(struct urb *urb)
 			val ^= ((s->maxdata + 1) >> 1);
 
 		/* transfer data */
-		err = comedi_buf_put(s->async, val);
+		err = comedi_buf_put(s, val);
 		if (unlikely(err == 0)) {
 			/* buffer overflow */
 			usbdux_ai_stop(dev, 0);
@@ -414,8 +407,8 @@ static void usbduxsub_ao_isoc_irq(struct urb *urb)
 	struct comedi_device *dev = urb->context;
 	struct comedi_subdevice *s = dev->write_subdev;
 	struct usbdux_private *devpriv = dev->private;
+	struct comedi_cmd *cmd = &s->async->cmd;
 	uint8_t *datap;
-	int len;
 	int ret;
 	int i;
 
@@ -463,7 +456,7 @@ static void usbduxsub_ao_isoc_irq(struct urb *urb)
 		devpriv->ao_counter = devpriv->ao_timer;
 
 		/* handle non continous acquisition */
-		if (!devpriv->ao_continous) {
+		if (cmd->stop_src == TRIG_COUNT) {
 			/* fixed number of samples */
 			devpriv->ao_sample_count--;
 			if (devpriv->ao_sample_count < 0) {
@@ -478,13 +471,12 @@ static void usbduxsub_ao_isoc_irq(struct urb *urb)
 
 		/* transmit data to the USB bus */
 		datap = urb->transfer_buffer;
-		len = s->async->cmd.chanlist_len;
-		*datap++ = len;
-		for (i = 0; i < s->async->cmd.chanlist_len; i++) {
-			unsigned int chan = devpriv->ao_chanlist[i];
+		*datap++ = cmd->chanlist_len;
+		for (i = 0; i < cmd->chanlist_len; i++) {
+			unsigned int chan = CR_CHAN(cmd->chanlist[i]);
 			unsigned short val;
 
-			ret = comedi_buf_get(s->async, &val);
+			ret = comedi_buf_get(s, &val);
 			if (ret < 0) {
 				dev_err(dev->class_dev, "buffer underflow\n");
 				s->async->events |= (COMEDI_CB_EOA |
@@ -493,8 +485,8 @@ static void usbduxsub_ao_isoc_irq(struct urb *urb)
 			/* pointer to the DA */
 			*datap++ = val & 0xff;
 			*datap++ = (val >> 8) & 0xff;
-			*datap++ = chan;
-			devpriv->ao_readback[chan] = val;
+			*datap++ = chan << 6;
+			s->readback[chan] = val;
 
 			s->async->events |= COMEDI_CB_BLOCK;
 			comedi_event(dev, s);
@@ -517,7 +509,7 @@ static void usbduxsub_ao_isoc_irq(struct urb *urb)
 			dev_err(dev->class_dev,
 				"ao urb resubm failed in int-cont. ret=%d",
 				ret);
-			if (ret == EL2NSYNC)
+			if (ret == -EL2NSYNC)
 				dev_err(dev->class_dev,
 					"buggy USB host controller or bug in IRQ handling!\n");
 
@@ -631,12 +623,10 @@ static int usbdux_ai_cmdtest(struct comedi_device *dev,
 
 	err |= cfc_check_trigger_arg_is(&cmd->scan_end_arg, cmd->chanlist_len);
 
-	if (cmd->stop_src == TRIG_COUNT) {
-		/* any count is allowed */
-	} else {
-		/* TRIG_NONE */
+	if (cmd->stop_src == TRIG_COUNT)
+		err |= cfc_check_trigger_arg_min(&cmd->stop_arg, 1);
+	else	/* TRIG_NONE */
 		err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
-	}
 
 	if (err)
 		return 3;
@@ -692,15 +682,16 @@ static int receive_dux_commands(struct comedi_device *dev, unsigned int command)
 
 static int usbdux_ai_inttrig(struct comedi_device *dev,
 			     struct comedi_subdevice *s,
-			     unsigned int trignum)
+			     unsigned int trig_num)
 {
 	struct usbdux_private *devpriv = dev->private;
-	int ret = -EINVAL;
+	struct comedi_cmd *cmd = &s->async->cmd;
+	int ret;
+
+	if (trig_num != cmd->start_arg)
+		return -EINVAL;
 
 	down(&devpriv->sem);
-
-	if (trignum != 0)
-		goto ai_trig_exit;
 
 	if (!devpriv->ai_cmd_running) {
 		devpriv->ai_cmd_running = 1;
@@ -777,10 +768,8 @@ static int usbdux_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	if (cmd->stop_src == TRIG_COUNT) {
 		/* data arrives as one packet */
 		devpriv->ai_sample_count = cmd->stop_arg;
-		devpriv->ai_continous = 0;
 	} else {
 		/* continous acquisition */
-		devpriv->ai_continous = 1;
 		devpriv->ai_sample_count = 0;
 	}
 
@@ -860,15 +849,13 @@ static int usbdux_ao_insn_read(struct comedi_device *dev,
 			       unsigned int *data)
 {
 	struct usbdux_private *devpriv = dev->private;
-	unsigned int chan = CR_CHAN(insn->chanspec);
-	int i;
+	int ret;
 
 	down(&devpriv->sem);
-	for (i = 0; i < insn->n; i++)
-		data[i] = devpriv->ao_readback[chan];
+	ret = comedi_readback_insn_read(dev, s, insn, data);
 	up(&devpriv->sem);
 
-	return insn->n;
+	return ret;
 }
 
 static int usbdux_ao_insn_write(struct comedi_device *dev,
@@ -878,8 +865,8 @@ static int usbdux_ao_insn_write(struct comedi_device *dev,
 {
 	struct usbdux_private *devpriv = dev->private;
 	unsigned int chan = CR_CHAN(insn->chanspec);
-	unsigned int val = devpriv->ao_readback[chan];
-	uint16_t *p = (uint16_t *)&devpriv->dux_commands[2];
+	unsigned int val = s->readback[chan];
+	__le16 *p = (__le16 *)&devpriv->dux_commands[2];
 	int ret = -EBUSY;
 	int i;
 
@@ -902,8 +889,9 @@ static int usbdux_ao_insn_write(struct comedi_device *dev,
 		ret = send_dux_commands(dev, USBDUX_CMD_AO);
 		if (ret < 0)
 			goto ao_write_exit;
+
+		s->readback[chan] = val;
 	}
-	devpriv->ao_readback[chan] = val;
 
 ao_write_exit:
 	up(&devpriv->sem);
@@ -913,15 +901,16 @@ ao_write_exit:
 
 static int usbdux_ao_inttrig(struct comedi_device *dev,
 			     struct comedi_subdevice *s,
-			     unsigned int trignum)
+			     unsigned int trig_num)
 {
 	struct usbdux_private *devpriv = dev->private;
-	int ret = -EINVAL;
+	struct comedi_cmd *cmd = &s->async->cmd;
+	int ret;
+
+	if (trig_num != cmd->start_arg)
+		return -EINVAL;
 
 	down(&devpriv->sem);
-
-	if (trignum != 0)
-		goto ao_trig_exit;
 
 	if (!devpriv->ao_cmd_running) {
 		devpriv->ao_cmd_running = 1;
@@ -1012,12 +1001,10 @@ static int usbdux_ao_cmdtest(struct comedi_device *dev,
 
 	err |= cfc_check_trigger_arg_is(&cmd->scan_end_arg, cmd->chanlist_len);
 
-	if (cmd->stop_src == TRIG_COUNT) {
-		/* any count is allowed */
-	} else {
-		/* TRIG_NONE */
+	if (cmd->stop_src == TRIG_COUNT)
+		err |= cfc_check_trigger_arg_min(&cmd->stop_arg, 1);
+	else	/* TRIG_NONE */
 		err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
-	}
 
 	if (err)
 		return 3;
@@ -1030,7 +1017,6 @@ static int usbdux_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	struct usbdux_private *devpriv = dev->private;
 	struct comedi_cmd *cmd = &s->async->cmd;
 	int ret = -EBUSY;
-	int i;
 
 	down(&devpriv->sem);
 
@@ -1039,12 +1025,6 @@ static int usbdux_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 
 	/* set current channel of the running acquisition to zero */
 	s->async->cur_chan = 0;
-
-	for (i = 0; i < cmd->chanlist_len; ++i) {
-		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
-
-		devpriv->ao_chanlist[i] = chan << 6;
-	}
 
 	/* we count in steps of 1ms (125us) */
 	/* 125us mode not used yet */
@@ -1077,10 +1057,8 @@ static int usbdux_ao_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 			/* data arrives as one packet */
 			devpriv->ao_sample_count = cmd->stop_arg;
 		}
-		devpriv->ao_continous = 0;
 	} else {
 		/* continous acquisition */
-		devpriv->ao_continous = 1;
 		devpriv->ao_sample_count = 0;
 	}
 
@@ -1198,7 +1176,7 @@ static int usbdux_counter_write(struct comedi_device *dev,
 {
 	struct usbdux_private *devpriv = dev->private;
 	unsigned int chan = CR_CHAN(insn->chanspec);
-	uint16_t *p = (uint16_t *)&devpriv->dux_commands[2];
+	__le16 *p = (__le16 *)&devpriv->dux_commands[2];
 	int ret = 0;
 	int i;
 
@@ -1307,7 +1285,7 @@ static void usbduxsub_pwm_irq(struct urb *urb)
 			dev_err(dev->class_dev,
 				"pwm urb resubm failed in int-cont. ret=%d",
 				ret);
-			if (ret == EL2NSYNC)
+			if (ret == -EL2NSYNC)
 				dev_err(dev->class_dev,
 					"buggy USB host controller or bug in IRQ handling!\n");
 
@@ -1340,13 +1318,13 @@ static int usbdux_pwm_period(struct comedi_device *dev,
 	struct usbdux_private *devpriv = dev->private;
 	int fx2delay = 255;
 
-	if (period < MIN_PWM_PERIOD) {
+	if (period < MIN_PWM_PERIOD)
 		return -EAGAIN;
-	} else {
-		fx2delay = (period / (6 * 512 * 1000 / 33)) - 6;
-		if (fx2delay > 255)
-			return -EAGAIN;
-	}
+
+	fx2delay = (period / (6 * 512 * 1000 / 33)) - 6;
+	if (fx2delay > 255)
+		return -EAGAIN;
+
 	devpriv->pwm_delay = fx2delay;
 	devpriv->pwm_period = period;
 
@@ -1733,7 +1711,7 @@ static int usbdux_auto_attach(struct comedi_device *dev,
 	dev->write_subdev = s;
 	s->type		= COMEDI_SUBD_AO;
 	s->subdev_flags	= SDF_WRITABLE | SDF_GROUND | SDF_CMD_WRITE;
-	s->n_chan	= USBDUX_NUM_AO_CHAN;
+	s->n_chan	= 4;
 	s->maxdata	= 0x0fff;
 	s->len_chanlist	= s->n_chan;
 	s->range_table	= &range_usbdux_ao_range;
@@ -1742,6 +1720,10 @@ static int usbdux_auto_attach(struct comedi_device *dev,
 	s->cancel	= usbdux_ao_cancel;
 	s->insn_read	= usbdux_ao_insn_read;
 	s->insn_write	= usbdux_ao_insn_write;
+
+	ret = comedi_alloc_subdev_readback(s);
+	if (ret)
+		return ret;
 
 	/* Digital I/O subdevice */
 	s = &dev->subdevices[2];

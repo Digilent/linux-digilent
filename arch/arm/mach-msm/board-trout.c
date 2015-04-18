@@ -19,6 +19,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/clkdev.h>
+#include <linux/memblock.h>
 
 #include <asm/system_info.h>
 #include <asm/mach-types.h>
@@ -55,12 +56,9 @@ static void __init trout_init_irq(void)
 	msm_init_irq();
 }
 
-static void __init trout_fixup(struct tag *tags, char **cmdline,
-			       struct meminfo *mi)
+static void __init trout_fixup(struct tag *tags, char **cmdline)
 {
-	mi->nr_banks = 1;
-	mi->bank[0].start = PHYS_OFFSET;
-	mi->bank[0].size = (101*1024*1024);
+	memblock_add(PHYS_OFFSET, 101*SZ_1M);
 }
 
 static void __init trout_init(void)
@@ -78,7 +76,7 @@ static void __init trout_init(void)
 
 static struct map_desc trout_io_desc[] __initdata = {
 	{
-		.virtual = TROUT_CPLD_BASE,
+		.virtual = (unsigned long)TROUT_CPLD_BASE,
 		.pfn     = __phys_to_pfn(TROUT_CPLD_START),
 		.length  = TROUT_CPLD_SIZE,
 		.type    = MT_DEVICE_NONSHARED
@@ -90,7 +88,7 @@ static void __init trout_map_io(void)
 	msm_map_common_io();
 	iotable_init(trout_io_desc, ARRAY_SIZE(trout_io_desc));
 
-#ifdef CONFIG_MSM_DEBUG_UART3
+#if defined(CONFIG_DEBUG_MSM_UART) && (CONFIG_DEBUG_UART_PHYS == 0xa9c00000)
 	/* route UART3 to the "H2W" extended usb connector */
 	writeb(0x80, TROUT_CPLD_BASE + 0x00);
 #endif

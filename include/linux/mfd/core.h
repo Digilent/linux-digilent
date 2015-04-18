@@ -44,6 +44,9 @@ struct mfd_cell {
 	 */
 	const char		*of_compatible;
 
+	/* Matches ACPI PNP id, either _HID or _CID */
+	const char		*acpi_pnpid;
+
 	/*
 	 * These resources can be specified relative to the parent device.
 	 * For accessing hardware you should use resources from the platform dev
@@ -63,7 +66,7 @@ struct mfd_cell {
 	/* A list of regulator supplies that should be mapped to the MFD
 	 * device rather than the child device when requested
 	 */
-	const char		**parent_supplies;
+	const char * const	*parent_supplies;
 	int			num_parent_supplies;
 };
 

@@ -37,6 +37,18 @@
 #include <linux/mlx5/driver.h>
 
 #define MLX5_INVALID_LKEY	0x100
+#define MLX5_SIG_WQE_SIZE	(MLX5_SEND_WQE_BB * 5)
+#define MLX5_DIF_SIZE		8
+#define MLX5_STRIDE_BLOCK_OP	0x400
+#define MLX5_CPY_GRD_MASK	0xc0
+#define MLX5_CPY_APP_MASK	0x30
+#define MLX5_CPY_REF_MASK	0x0f
+#define MLX5_BSF_INC_REFTAG	(1 << 6)
+#define MLX5_BSF_INL_VALID	(1 << 15)
+#define MLX5_BSF_REFRESH_DIF	(1 << 14)
+#define MLX5_BSF_REPEAT_BLOCK	(1 << 7)
+#define MLX5_BSF_APPTAG_ESCAPE	0x1
+#define MLX5_BSF_APPREF_ESCAPE	0x2
 
 enum mlx5_qp_optpar {
 	MLX5_QP_OPTPAR_ALT_ADDR_PATH		= 1 << 0,
@@ -143,12 +155,18 @@ enum {
 
 enum {
 	MLX5_QP_LAT_SENSITIVE	= 1 << 28,
+	MLX5_QP_BLOCK_MCAST	= 1 << 30,
 	MLX5_QP_ENABLE_SIG	= 1 << 31,
 };
 
 enum {
 	MLX5_RCV_DBR	= 0,
 	MLX5_SND_DBR	= 1,
+};
+
+enum {
+	MLX5_FLAGS_INLINE	= 1<<7,
+	MLX5_FLAGS_CHECK_FREE   = 1<<5,
 };
 
 struct mlx5_wqe_fmr_seg {
@@ -278,11 +296,74 @@ struct mlx5_wqe_inline_seg {
 	__be32	byte_count;
 };
 
+enum mlx5_sig_type {
+	MLX5_DIF_CRC = 0x1,
+	MLX5_DIF_IPCS = 0x2,
+};
+
+struct mlx5_bsf_inl {
+	__be16		vld_refresh;
+	__be16		dif_apptag;
+	__be32		dif_reftag;
+	u8		sig_type;
+	u8		rp_inv_seed;
+	u8		rsvd[3];
+	u8		dif_inc_ref_guard_check;
+	__be16		dif_app_bitmask_check;
+};
+
+struct mlx5_bsf {
+	struct mlx5_bsf_basic {
+		u8		bsf_size_sbs;
+		u8		check_byte_mask;
+		union {
+			u8	copy_byte_mask;
+			u8	bs_selector;
+			u8	rsvd_wflags;
+		} wire;
+		union {
+			u8	bs_selector;
+			u8	rsvd_mflags;
+		} mem;
+		__be32		raw_data_size;
+		__be32		w_bfs_psv;
+		__be32		m_bfs_psv;
+	} basic;
+	struct mlx5_bsf_ext {
+		__be32		t_init_gen_pro_size;
+		__be32		rsvd_epi_size;
+		__be32		w_tfs_psv;
+		__be32		m_tfs_psv;
+	} ext;
+	struct mlx5_bsf_inl	w_inl;
+	struct mlx5_bsf_inl	m_inl;
+};
+
+struct mlx5_klm {
+	__be32		bcount;
+	__be32		key;
+	__be64		va;
+};
+
+struct mlx5_stride_block_entry {
+	__be16		stride;
+	__be16		bcount;
+	__be32		key;
+	__be64		va;
+};
+
+struct mlx5_stride_block_ctrl_seg {
+	__be32		bcount_per_cycle;
+	__be32		op;
+	__be32		repeat_count;
+	u16		rsvd;
+	__be16		num_entries;
+};
+
 struct mlx5_core_qp {
+	struct mlx5_core_rsc_common	common; /* must be first */
 	void (*event)		(struct mlx5_core_qp *, int);
 	int			qpn;
-	atomic_t		refcount;
-	struct completion	free;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
 };
@@ -442,6 +523,11 @@ struct mlx5_dealloc_xrcd_mbox_out {
 static inline struct mlx5_core_qp *__mlx5_qp_lookup(struct mlx5_core_dev *dev, u32 qpn)
 {
 	return radix_tree_lookup(&dev->priv.qp_table.tree, qpn);
+}
+
+static inline struct mlx5_core_mr *__mlx5_mr_lookup(struct mlx5_core_dev *dev, u32 key)
+{
+	return radix_tree_lookup(&dev->priv.mr_table.tree, key);
 }
 
 int mlx5_core_create_qp(struct mlx5_core_dev *dev,

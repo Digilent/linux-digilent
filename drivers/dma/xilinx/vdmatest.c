@@ -1,7 +1,7 @@
 /*
  * XILINX VDMA Engine test client driver
  *
- * Copyright (C) 2010-2013 Xilinx, Inc. All rights reserved.
+ * Copyright (C) 2010-2014 Xilinx, Inc. All rights reserved.
  *
  * Based on Atmel DMA Test Client
  *
@@ -32,7 +32,7 @@ static unsigned int test_buf_size = 64;
 module_param(test_buf_size, uint, S_IRUGO);
 MODULE_PARM_DESC(test_buf_size, "Size of the memcpy test buffer");
 
-static unsigned int iterations;
+static unsigned int iterations = 1;
 module_param(iterations, uint, S_IRUGO);
 MODULE_PARM_DESC(iterations,
 		"Iterations before stopping test (default: infinite)");
@@ -75,6 +75,7 @@ struct xilinx_vdmatest_slave_thread {
 	u8 **srcs;
 	u8 **dsts;
 	enum dma_transaction_type type;
+	bool done;
 };
 
 /**
@@ -90,13 +91,31 @@ struct xilinx_vdmatest_chan {
 };
 
 /* Global variables */
+static DECLARE_WAIT_QUEUE_HEAD(thread_wait);
 static LIST_HEAD(xilinx_vdmatest_channels);
 static unsigned int nr_channels;
 static unsigned int frm_cnt;
 static dma_addr_t dma_srcs[MAX_NUM_FRAMES];
 static dma_addr_t dma_dsts[MAX_NUM_FRAMES];
-static struct scatterlist tx_sg[MAX_NUM_FRAMES];
-static struct scatterlist rx_sg[MAX_NUM_FRAMES];
+static struct dma_interleaved_template xt;
+
+static bool is_threaded_test_run(struct xilinx_vdmatest_chan *tx_dtc,
+					struct xilinx_vdmatest_chan *rx_dtc)
+{
+	struct xilinx_vdmatest_slave_thread *thread;
+	int ret = false;
+
+	list_for_each_entry(thread, &tx_dtc->threads, node) {
+		if (!thread->done)
+			ret = true;
+	}
+
+	list_for_each_entry(thread, &rx_dtc->threads, node) {
+		if (!thread->done)
+			ret = true;
+	}
+	return ret;
+}
 
 static void xilinx_vdmatest_init_srcs(u8 **bufs, unsigned int start,
 					unsigned int len)
@@ -223,7 +242,6 @@ static int xilinx_vdmatest_slave_func(void *data)
 	thread_name = current->comm;
 
 	/* Limit testing scope here */
-	iterations = 1;
 	test_buf_size = hsize * vsize;
 
 	/* This barrier ensures 'thread' is initialized and
@@ -284,54 +302,57 @@ static int xilinx_vdmatest_slave_func(void *data)
 		xilinx_vdmatest_init_srcs(thread->srcs, 0, len);
 		xilinx_vdmatest_init_dsts(thread->dsts, 0, len);
 
-		sg_init_table(tx_sg, frm_cnt);
-		sg_init_table(rx_sg, frm_cnt);
+		/* Zero out configuration */
+		memset(&config, 0, sizeof(struct xilinx_vdma_config));
 
-		for (i = 0; i < frm_cnt; i++) {
-			u8 *buf = thread->srcs[i];
+		/* Set up hardware configuration information */
+		config.frm_cnt_en = 1;
+		config.coalesc = frm_cnt * 10;
+		config.park = 1;
+		xilinx_vdma_channel_set_config(tx_chan, &config);
 
-			dma_srcs[i] = dma_map_single(tx_dev->dev, buf, len,
-							DMA_MEM_TO_DEV);
-			pr_debug("src buf %x dma %x\n", (unsigned int)buf,
-				 (unsigned int)dma_srcs[i]);
-			sg_dma_address(&tx_sg[i]) = dma_srcs[i];
-			sg_dma_len(&tx_sg[i]) = len;
-		}
+		config.park = 0;
+		xilinx_vdma_channel_set_config(rx_chan, &config);
 
 		for (i = 0; i < frm_cnt; i++) {
 			dma_dsts[i] = dma_map_single(rx_dev->dev,
 							thread->dsts[i],
 							test_buf_size,
 							DMA_DEV_TO_MEM);
-			pr_debug("dst %x dma %x\n",
-				 (unsigned int)thread->dsts[i],
-				 (unsigned int)dma_dsts[i]);
-			sg_dma_address(&rx_sg[i]) = dma_dsts[i];
-			sg_dma_len(&rx_sg[i]) = len;
+
+			if (dma_mapping_error(rx_dev->dev, dma_dsts[i])) {
+				failed_tests++;
+				continue;
+			}
+			xt.dst_start = dma_dsts[i];
+			xt.dir = DMA_DEV_TO_MEM;
+			xt.numf = vsize;
+			xt.sgl[0].size = hsize;
+			xt.sgl[0].icg = 0;
+			xt.frame_size = 1;
+			rxd = rx_dev->device_prep_interleaved_dma(rx_chan,
+								  &xt, flags);
 		}
 
-		/* Zero out configuration */
-		memset(&config, 0, sizeof(struct xilinx_vdma_config));
+		for (i = 0; i < frm_cnt; i++) {
+			u8 *buf = thread->srcs[i];
 
-		/* Set up hardware configuration information */
-		config.vsize = vsize;
-		config.hsize = hsize;
-		config.stride = hsize;
-		config.frm_cnt_en = 1;
-		config.coalesc = frm_cnt * 10;
-		config.park = 1;
-		tx_dev->device_control(tx_chan, DMA_SLAVE_CONFIG,
-					(unsigned long)&config);
+			dma_srcs[i] = dma_map_single(tx_dev->dev, buf, len,
+							DMA_MEM_TO_DEV);
 
-		config.park = 0;
-		rx_dev->device_control(rx_chan, DMA_SLAVE_CONFIG,
-					(unsigned long)&config);
-
-		rxd = rx_dev->device_prep_slave_sg(rx_chan, rx_sg, frm_cnt,
-				DMA_DEV_TO_MEM, flags, NULL);
-
-		txd = tx_dev->device_prep_slave_sg(tx_chan, tx_sg, frm_cnt,
-				DMA_MEM_TO_DEV, flags, NULL);
+			if (dma_mapping_error(tx_dev->dev, dma_srcs[i])) {
+				failed_tests++;
+				continue;
+			}
+			xt.src_start = dma_srcs[i];
+			xt.dir = DMA_MEM_TO_DEV;
+			xt.numf = vsize;
+			xt.sgl[0].size = hsize;
+			xt.sgl[0].icg = 0;
+			xt.frame_size = 1;
+			txd = tx_dev->device_prep_interleaved_dma(tx_chan,
+								  &xt, flags);
+		}
 
 		if (!rxd || !txd) {
 			for (i = 0; i < frm_cnt; i++)
@@ -459,11 +480,8 @@ err_srcs:
 	pr_notice("%s: terminating after %u tests, %u failures (status %d)\n",
 			thread_name, total_tests, failed_tests, ret);
 
-	if (iterations > 0)
-		while (!kthread_should_stop()) {
-			DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wait_vdmatest_exit);
-			interruptible_sleep_on(&wait_vdmatest_exit);
-		}
+	thread->done = true;
+	wake_up(&thread_wait);
 
 	return ret;
 }
@@ -512,6 +530,7 @@ xilinx_vdmatest_add_slave_threads(struct xilinx_vdmatest_chan *tx_dtc,
 		pr_warn("xilinx_vdmatest: Failed to run thread %s-%s\n",
 				dma_chan_name(tx_chan), dma_chan_name(rx_chan));
 		kfree(thread);
+		return PTR_ERR(thread->task);
 	}
 
 	list_add_tail(&thread->node, &tx_dtc->threads);
@@ -548,6 +567,9 @@ static int xilinx_vdmatest_add_slave_channels(struct dma_chan *tx_chan,
 	list_add_tail(&tx_dtc->node, &xilinx_vdmatest_channels);
 	list_add_tail(&rx_dtc->node, &xilinx_vdmatest_channels);
 	nr_channels += 2;
+
+	if (iterations)
+		wait_event(thread_wait, !is_threaded_test_run(tx_dtc, rx_dtc));
 
 	return 0;
 }
@@ -609,7 +631,7 @@ static int xilinx_vdmatest_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xilinx_vdmatest_of_ids[] = {
-	{ .compatible = "xlnx,axi-vdma-test",},
+	{ .compatible = "xlnx,axi-vdma-test-1.00.a",},
 	{}
 };
 

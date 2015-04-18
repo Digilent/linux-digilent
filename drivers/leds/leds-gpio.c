@@ -10,18 +10,17 @@
  * published by the Free Software Foundation.
  *
  */
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/platform_device.h>
+#include <linux/err.h>
 #include <linux/gpio.h>
+#include <linux/kernel.h>
 #include <linux/leds.h>
+#include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/of_gpio.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
-#include <linux/module.h>
-#include <linux/err.h>
 
 struct gpio_led_data {
 	struct led_classdev cdev;
@@ -37,7 +36,7 @@ struct gpio_led_data {
 
 static void gpio_led_work(struct work_struct *work)
 {
-	struct gpio_led_data	*led_dat =
+	struct gpio_led_data *led_dat =
 		container_of(work, struct gpio_led_data, work);
 
 	if (led_dat->blinking) {
@@ -204,6 +203,9 @@ static struct gpio_leds_priv *gpio_leds_create_of(struct platform_device *pdev)
 				led.default_state = LEDS_GPIO_DEFSTATE_OFF;
 		}
 
+		if (of_get_property(child, "retain-state-suspended", NULL))
+			led.retain_state_suspended = 1;
+
 		ret = create_gpio_led(&led, &priv->leds[priv->num_leds++],
 				      &pdev->dev, NULL);
 		if (ret < 0) {
@@ -224,6 +226,8 @@ static const struct of_device_id of_gpio_leds_match[] = {
 	{ .compatible = "gpio-leds", },
 	{},
 };
+
+MODULE_DEVICE_TABLE(of, of_gpio_leds_match);
 #else /* CONFIG_OF_GPIO */
 static struct gpio_leds_priv *gpio_leds_create_of(struct platform_device *pdev)
 {
@@ -231,13 +235,11 @@ static struct gpio_leds_priv *gpio_leds_create_of(struct platform_device *pdev)
 }
 #endif /* CONFIG_OF_GPIO */
 
-
 static int gpio_led_probe(struct platform_device *pdev)
 {
 	struct gpio_led_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct gpio_leds_priv *priv;
 	int i, ret = 0;
-
 
 	if (pdata && pdata->num_leds) {
 		priv = devm_kzalloc(&pdev->dev,

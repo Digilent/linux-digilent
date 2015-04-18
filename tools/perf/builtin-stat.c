@@ -43,6 +43,7 @@
 
 #include "perf.h"
 #include "builtin.h"
+#include "util/cgroup.h"
 #include "util/util.h"
 #include "util/parse-options.h"
 #include "util/parse-events.h"
@@ -174,13 +175,20 @@ static inline int perf_evsel__nr_cpus(struct perf_evsel *evsel)
 
 static void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
 {
-	memset(evsel->priv, 0, sizeof(struct perf_stat));
+	int i;
+	struct perf_stat *ps = evsel->priv;
+
+	for (i = 0; i < 3; i++)
+		init_stats(&ps->res_stats[i]);
 }
 
 static int perf_evsel__alloc_stat_priv(struct perf_evsel *evsel)
 {
 	evsel->priv = zalloc(sizeof(struct perf_stat));
-	return evsel->priv == NULL ? -ENOMEM : 0;
+	if (evsel->priv == NULL)
+		return -ENOMEM;
+	perf_evsel__reset_stat_priv(evsel);
+	return 0;
 }
 
 static void perf_evsel__free_stat_priv(struct perf_evsel *evsel)
@@ -586,7 +594,7 @@ static int __run_perf_stat(int argc, const char **argv)
 
 	if (perf_evlist__apply_filters(evsel_list)) {
 		error("failed to set filter with %d (%s)\n", errno,
-			strerror(errno));
+			strerror_r(errno, msg, sizeof(msg)));
 		return -1;
 	}
 
@@ -725,7 +733,7 @@ static void aggr_printout(struct perf_evsel *evsel, int id, int nr)
 	}
 }
 
-static void nsec_printout(int cpu, int nr, struct perf_evsel *evsel, double avg)
+static void nsec_printout(int id, int nr, struct perf_evsel *evsel, double avg)
 {
 	double msecs = avg / 1e6;
 	const char *fmt_v, *fmt_n;
@@ -734,7 +742,7 @@ static void nsec_printout(int cpu, int nr, struct perf_evsel *evsel, double avg)
 	fmt_v = csv_output ? "%.6f%s" : "%18.6f%s";
 	fmt_n = csv_output ? "%s" : "%-25s";
 
-	aggr_printout(evsel, cpu, nr);
+	aggr_printout(evsel, id, nr);
 
 	scnprintf(name, sizeof(name), "%s%s",
 		  perf_evsel__name(evsel), csv_output ? "" : " (msec)");
@@ -940,11 +948,12 @@ static void print_ll_cache_misses(int cpu,
 	fprintf(output, " of all LL-cache hits   ");
 }
 
-static void abs_printout(int cpu, int nr, struct perf_evsel *evsel, double avg)
+static void abs_printout(int id, int nr, struct perf_evsel *evsel, double avg)
 {
 	double total, ratio = 0.0, total2;
 	double sc =  evsel->scale;
 	const char *fmt;
+	int cpu = cpu_map__id_to_cpu(id);
 
 	if (csv_output) {
 		fmt = sc != 1.0 ?  "%.2f%s" : "%.0f%s";
@@ -955,7 +964,7 @@ static void abs_printout(int cpu, int nr, struct perf_evsel *evsel, double avg)
 			fmt = sc != 1.0 ? "%18.2f%s" : "%18.0f%s";
 	}
 
-	aggr_printout(evsel, cpu, nr);
+	aggr_printout(evsel, id, nr);
 
 	if (aggr_mode == AGGR_GLOBAL)
 		cpu = 0;

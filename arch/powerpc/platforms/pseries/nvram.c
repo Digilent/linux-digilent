@@ -276,8 +276,10 @@ static ssize_t pSeries_nvram_get_size(void)
  * sequence #: The unique sequence # for each event. (until it wraps)
  * error log: The error log from event_scan
  */
-int nvram_write_os_partition(struct nvram_os_partition *part, char * buff,
-		int length, unsigned int err_type, unsigned int error_log_cnt)
+static int nvram_write_os_partition(struct nvram_os_partition *part,
+				    char *buff, int length,
+				    unsigned int err_type,
+				    unsigned int error_log_cnt)
 {
 	int rc;
 	loff_t tmp_index;
@@ -298,13 +300,13 @@ int nvram_write_os_partition(struct nvram_os_partition *part, char * buff,
 
 	rc = ppc_md.nvram_write((char *)&info, sizeof(struct err_log_info), &tmp_index);
 	if (rc <= 0) {
-		pr_err("%s: Failed nvram_write (%d)\n", __FUNCTION__, rc);
+		pr_err("%s: Failed nvram_write (%d)\n", __func__, rc);
 		return rc;
 	}
 
 	rc = ppc_md.nvram_write(buff, length, &tmp_index);
 	if (rc <= 0) {
-		pr_err("%s: Failed nvram_write (%d)\n", __FUNCTION__, rc);
+		pr_err("%s: Failed nvram_write (%d)\n", __func__, rc);
 		return rc;
 	}
 	
@@ -330,9 +332,9 @@ int nvram_write_error_log(char * buff, int length,
  *
  * Reads nvram partition for at most 'length'
  */
-int nvram_read_partition(struct nvram_os_partition *part, char *buff,
-			int length, unsigned int *err_type,
-			unsigned int *error_log_cnt)
+static int nvram_read_partition(struct nvram_os_partition *part, char *buff,
+				int length, unsigned int *err_type,
+				unsigned int *error_log_cnt)
 {
 	int rc;
 	loff_t tmp_index;
@@ -351,15 +353,14 @@ int nvram_read_partition(struct nvram_os_partition *part, char *buff,
 					sizeof(struct err_log_info),
 					&tmp_index);
 		if (rc <= 0) {
-			pr_err("%s: Failed nvram_read (%d)\n", __FUNCTION__,
-									rc);
+			pr_err("%s: Failed nvram_read (%d)\n", __func__, rc);
 			return rc;
 		}
 	}
 
 	rc = ppc_md.nvram_read(buff, length, &tmp_index);
 	if (rc <= 0) {
-		pr_err("%s: Failed nvram_read (%d)\n", __FUNCTION__, rc);
+		pr_err("%s: Failed nvram_read (%d)\n", __func__, rc);
 		return rc;
 	}
 
@@ -869,7 +870,7 @@ static void oops_to_nvram(struct kmsg_dumper *dumper,
 		break;
 	default:
 		pr_err("%s: ignoring unrecognized KMSG_DUMP_* reason %d\n",
-						__FUNCTION__, (int) reason);
+		       __func__, (int) reason);
 		return;
 	}
 

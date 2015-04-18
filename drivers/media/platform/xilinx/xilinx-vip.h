@@ -1,9 +1,11 @@
 /*
  * Xilinx Video IP Core
  *
- * Copyright (C) 2013 Ideas on Board SPRL
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -15,6 +17,8 @@
 
 #include <linux/io.h>
 #include <media/v4l2-subdev.h>
+
+struct clk;
 
 /*
  * Minimum and maximum width and height common to most video IP cores. IP
@@ -88,29 +92,35 @@
  * @subdev: V4L2 subdevice
  * @dev: (OF) device
  * @iomem: device I/O register space remapped to kernel virtual memory
+ * @clk: video core clock
  * @saved_ctrl: saved control register for resume / suspend
  */
 struct xvip_device {
 	struct v4l2_subdev subdev;
 	struct device *dev;
 	void __iomem *iomem;
+	struct clk *clk;
 	u32 saved_ctrl;
 };
 
 /**
  * struct xvip_video_format - Xilinx Video IP video format description
- * @name: AXI4 format name
+ * @vf_code: AXI4 video format code
  * @width: AXI4 format width in bits per component
- * @bpp: bytes per pixel (when stored in memory)
+ * @pattern: CFA pattern for Mono/Sensor formats
  * @code: media bus format code
+ * @bpp: bytes per pixel (when stored in memory)
  * @fourcc: V4L2 pixel format FCC identifier
+ * @description: format description, suitable for userspace
  */
 struct xvip_video_format {
-	const char *name;
+	unsigned int vf_code;
 	unsigned int width;
-	unsigned int bpp;
+	const char *pattern;
 	unsigned int code;
+	unsigned int bpp;
 	u32 fourcc;
+	const char *description;
 };
 
 const struct xvip_video_format *xvip_get_format_by_code(unsigned int code);
@@ -145,6 +155,9 @@ static inline void xvip_set(struct xvip_device *xvip, u32 addr, u32 set)
 
 void xvip_clr_or_set(struct xvip_device *xvip, u32 addr, u32 mask, bool set);
 void xvip_clr_and_set(struct xvip_device *xvip, u32 addr, u32 clr, u32 set);
+
+int xvip_init_resources(struct xvip_device *xvip);
+void xvip_cleanup_resources(struct xvip_device *xvip);
 
 static inline void xvip_reset(struct xvip_device *xvip)
 {

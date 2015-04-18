@@ -4,6 +4,7 @@
 
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
+#include <linux/wait.h>
 #include <uapi/linux/rtnetlink.h>
 
 extern int rtnetlink_send(struct sk_buff *skb, struct net *net, u32 pid, u32 group, int echo);
@@ -22,6 +23,10 @@ extern void rtnl_lock(void);
 extern void rtnl_unlock(void);
 extern int rtnl_trylock(void);
 extern int rtnl_is_locked(void);
+
+extern wait_queue_head_t netdev_unregistering_wq;
+extern struct mutex net_mutex;
+
 #ifdef CONFIG_PROVE_LOCKING
 extern int lockdep_rtnl_is_held(void);
 #else
@@ -40,6 +45,16 @@ static inline int lockdep_rtnl_is_held(void)
  */
 #define rcu_dereference_rtnl(p)					\
 	rcu_dereference_check(p, lockdep_rtnl_is_held())
+
+/**
+ * rcu_dereference_bh_rtnl - rcu_dereference_bh with debug checking
+ * @p: The pointer to read, prior to dereference
+ *
+ * Do an rcu_dereference_bh(p), but check caller either holds rcu_read_lock_bh()
+ * or RTNL. Note : Please prefer rtnl_dereference() or rcu_dereference_bh()
+ */
+#define rcu_dereference_bh_rtnl(p)				\
+	rcu_dereference_bh_check(p, lockdep_rtnl_is_held())
 
 /**
  * rtnl_dereference - fetch RCU pointer when updates are prevented by RTNL
@@ -73,6 +88,7 @@ extern void __rtnl_unlock(void);
 extern int ndo_dflt_fdb_dump(struct sk_buff *skb,
 			     struct netlink_callback *cb,
 			     struct net_device *dev,
+			     struct net_device *filter_dev,
 			     int idx);
 extern int ndo_dflt_fdb_add(struct ndmsg *ndm,
 			    struct nlattr *tb[],

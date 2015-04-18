@@ -43,8 +43,10 @@
 #include <asm/prom.h>
 #include <asm/memctrl.h>
 #include <asm/cacheflush.h>
+#include <asm/setup.h>
 
 #include "entry.h"
+#include "kernel.h"
 #include "kstack.h"
 
 /* When an irrecoverable trap occurs at tl > 0, the trap entry
@@ -2102,6 +2104,11 @@ void sun4v_nonresum_overflow(struct pt_regs *regs)
 	atomic_inc(&sun4v_nonresum_oflow_cnt);
 }
 
+static void sun4v_tlb_error(struct pt_regs *regs)
+{
+	die_if_kernel("TLB/TSB error", regs);
+}
+
 unsigned long sun4v_err_itlb_vaddr;
 unsigned long sun4v_err_itlb_ctx;
 unsigned long sun4v_err_itlb_pte;
@@ -2109,8 +2116,7 @@ unsigned long sun4v_err_itlb_error;
 
 void sun4v_itlb_error_report(struct pt_regs *regs, int tl)
 {
-	if (tl > 1)
-		dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
 
 	printk(KERN_EMERG "SUN4V-ITLB: Error at TPC[%lx], tl %d\n",
 	       regs->tpc, tl);
@@ -2123,7 +2129,7 @@ void sun4v_itlb_error_report(struct pt_regs *regs, int tl)
 	       sun4v_err_itlb_vaddr, sun4v_err_itlb_ctx,
 	       sun4v_err_itlb_pte, sun4v_err_itlb_error);
 
-	prom_halt();
+	sun4v_tlb_error(regs);
 }
 
 unsigned long sun4v_err_dtlb_vaddr;
@@ -2133,8 +2139,7 @@ unsigned long sun4v_err_dtlb_error;
 
 void sun4v_dtlb_error_report(struct pt_regs *regs, int tl)
 {
-	if (tl > 1)
-		dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
+	dump_tl1_traplog((struct tl1_traplog *)(regs + 1));
 
 	printk(KERN_EMERG "SUN4V-DTLB: Error at TPC[%lx], tl %d\n",
 	       regs->tpc, tl);
@@ -2147,7 +2152,7 @@ void sun4v_dtlb_error_report(struct pt_regs *regs, int tl)
 	       sun4v_err_dtlb_vaddr, sun4v_err_dtlb_ctx,
 	       sun4v_err_dtlb_pte, sun4v_err_dtlb_error);
 
-	prom_halt();
+	sun4v_tlb_error(regs);
 }
 
 void hypervisor_tlbop_error(unsigned long err, unsigned long op)
@@ -2208,8 +2213,6 @@ void do_fpieee(struct pt_regs *regs)
 out:
 	exception_exit(prev_state);
 }
-
-extern int do_mathemu(struct pt_regs *, struct fpustate *, bool);
 
 void do_fpother(struct pt_regs *regs)
 {
@@ -2383,7 +2386,7 @@ static inline struct reg_window *kernel_stack_up(struct reg_window *rw)
 	return (struct reg_window *) (fp + STACK_BIAS);
 }
 
-void die_if_kernel(char *str, struct pt_regs *regs)
+void __noreturn die_if_kernel(char *str, struct pt_regs *regs)
 {
 	static int die_counter;
 	int count = 0;
@@ -2432,9 +2435,6 @@ EXPORT_SYMBOL(die_if_kernel);
 
 #define VIS_OPCODE_MASK	((0x3 << 30) | (0x3f << 19))
 #define VIS_OPCODE_VAL	((0x2 << 30) | (0x36 << 19))
-
-extern int handle_popc(u32 insn, struct pt_regs *regs);
-extern int handle_ldf_stq(u32 insn, struct pt_regs *regs);
 
 void do_illegal_instruction(struct pt_regs *regs)
 {
@@ -2485,8 +2485,6 @@ void do_illegal_instruction(struct pt_regs *regs)
 out:
 	exception_exit(prev_state);
 }
-
-extern void kernel_unaligned_trap(struct pt_regs *regs, unsigned int insn);
 
 void mem_address_unaligned(struct pt_regs *regs, unsigned long sfar, unsigned long sfsr)
 {

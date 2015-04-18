@@ -27,8 +27,7 @@
 #define RX_RING_MIN	64
 #define TX_RING_MAX	1024
 #define RX_RING_MAX	1024
-#define ETHERSMALL		60
-#define PKT_BUF_SZ		1538
+#define PKT_BUF_SZ	1538
 #define SH_ETH_TSU_TIMEOUT_MS	500
 #define SH_ETH_TSU_CAM_ENTRIES	32
 
@@ -163,9 +162,9 @@ enum {
 
 /* Driver's parameters */
 #if defined(CONFIG_CPU_SH4) || defined(CONFIG_ARCH_SHMOBILE)
-#define SH4_SKB_RX_ALIGN	32
+#define SH_ETH_RX_ALIGN		32
 #else
-#define SH2_SH3_SKB_RX_ALIGN	2
+#define SH_ETH_RX_ALIGN		2
 #endif
 
 /* Register's bits
@@ -320,7 +319,6 @@ enum TD_STS_BIT {
 enum RMCR_BIT {
 	RMCR_RNC = 0x00000001,
 };
-#define DEFAULT_RMCR_VALUE	0x00000000
 
 /* ECMR */
 enum FELIC_MODE_BIT {
@@ -467,7 +465,6 @@ struct sh_eth_cpu_data {
 	unsigned long fdr_value;
 	unsigned long fcftr_value;
 	unsigned long rpadir_value;
-	unsigned long rmcr_value;
 
 	/* interrupt checking mask */
 	unsigned long tx_check;
@@ -525,6 +522,7 @@ struct sh_eth_private {
 
 	unsigned no_ether_link:1;
 	unsigned ether_link_active_low:1;
+	unsigned is_opened:1;
 };
 
 static inline void sh_eth_soft_swap(char *src, int len)

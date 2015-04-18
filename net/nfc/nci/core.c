@@ -74,7 +74,7 @@ static int __nci_request(struct nci_dev *ndev,
 
 	ndev->req_status = NCI_REQ_PEND;
 
-	init_completion(&ndev->req_completion);
+	reinit_completion(&ndev->req_completion);
 	req(ndev, opt);
 	completion_rc =
 		wait_for_completion_interruptible_timeout(&ndev->req_completion,
@@ -227,6 +227,14 @@ static void nci_rf_discover_req(struct nci_dev *ndev, unsigned long opt)
 	     protocols & NFC_PROTO_NFC_DEP_MASK)) {
 		cmd.disc_configs[cmd.num_disc_configs].rf_tech_and_mode =
 			NCI_NFC_F_PASSIVE_POLL_MODE;
+		cmd.disc_configs[cmd.num_disc_configs].frequency = 1;
+		cmd.num_disc_configs++;
+	}
+
+	if ((cmd.num_disc_configs < NCI_MAX_NUM_RF_CONFIGS) &&
+	    (protocols & NFC_PROTO_ISO15693_MASK)) {
+		cmd.disc_configs[cmd.num_disc_configs].rf_tech_and_mode =
+			NCI_NFC_V_PASSIVE_POLL_MODE;
 		cmd.disc_configs[cmd.num_disc_configs].frequency = 1;
 		cmd.num_disc_configs++;
 	}
@@ -709,6 +717,7 @@ struct nci_dev *nci_allocate_device(struct nci_ops *ops,
 	ndev->ops = ops;
 	ndev->tx_headroom = tx_headroom;
 	ndev->tx_tailroom = tx_tailroom;
+	init_completion(&ndev->req_completion);
 
 	ndev->nfc_dev = nfc_allocate_device(&nci_nfc_ops,
 					    supported_protocols,
@@ -750,10 +759,6 @@ int nci_register_device(struct nci_dev *ndev)
 	struct device *dev = &ndev->nfc_dev->dev;
 	char name[32];
 
-	rc = nfc_register_device(ndev->nfc_dev);
-	if (rc)
-		goto exit;
-
 	ndev->flags = 0;
 
 	INIT_WORK(&ndev->cmd_work, nci_cmd_work);
@@ -761,7 +766,7 @@ int nci_register_device(struct nci_dev *ndev)
 	ndev->cmd_wq = create_singlethread_workqueue(name);
 	if (!ndev->cmd_wq) {
 		rc = -ENOMEM;
-		goto unreg_exit;
+		goto exit;
 	}
 
 	INIT_WORK(&ndev->rx_work, nci_rx_work);
@@ -791,6 +796,10 @@ int nci_register_device(struct nci_dev *ndev)
 
 	mutex_init(&ndev->req_lock);
 
+	rc = nfc_register_device(ndev->nfc_dev);
+	if (rc)
+		goto destroy_rx_wq_exit;
+
 	goto exit;
 
 destroy_rx_wq_exit:
@@ -798,9 +807,6 @@ destroy_rx_wq_exit:
 
 destroy_cmd_wq_exit:
 	destroy_workqueue(ndev->cmd_wq);
-
-unreg_exit:
-	nfc_unregister_device(ndev->nfc_dev);
 
 exit:
 	return rc;
@@ -859,6 +865,10 @@ static int nci_send_frame(struct nci_dev *ndev, struct sk_buff *skb)
 
 	/* Get rid of skb owner, prior to sending to the driver. */
 	skb_orphan(skb);
+
+	/* Send copy to sniffer */
+	nfc_send_to_raw_sock(ndev->nfc_dev, skb,
+			     RAW_PAYLOAD_NCI, NFC_DIRECTION_TX);
 
 	return ndev->ops->send(ndev, skb);
 }
@@ -934,6 +944,11 @@ static void nci_rx_work(struct work_struct *work)
 	struct sk_buff *skb;
 
 	while ((skb = skb_dequeue(&ndev->rx_q))) {
+
+		/* Send copy to sniffer */
+		nfc_send_to_raw_sock(ndev->nfc_dev, skb,
+				     RAW_PAYLOAD_NCI, NFC_DIRECTION_RX);
+
 		/* Process frame */
 		switch (nci_mt(skb->data)) {
 		case NCI_MT_RSP_PKT:

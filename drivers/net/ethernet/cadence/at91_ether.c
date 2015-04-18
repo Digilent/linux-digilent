@@ -342,13 +342,15 @@ static int __init at91ether_probe(struct platform_device *pdev)
 	}
 	clk_enable(lp->pclk);
 
+	lp->hclk = ERR_PTR(-ENOENT);
+	lp->tx_clk = ERR_PTR(-ENOENT);
+
 	/* Install the interrupt handler */
 	dev->irq = platform_get_irq(pdev, 0);
 	res = devm_request_irq(&pdev->dev, dev->irq, at91ether_interrupt, 0, dev->name, dev);
 	if (res)
 		goto err_disable_clock;
 
-	ether_setup(dev);
 	dev->netdev_ops = &at91ether_netdev_ops;
 	dev->ethtool_ops = &macb_ethtool_ops;
 	platform_set_drvdata(pdev, dev);

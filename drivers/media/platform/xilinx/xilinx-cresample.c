@@ -1,9 +1,11 @@
 /*
  * Xilinx Chroma Resampler
  *
- * Copyright (C) 2013 - 2014 Xilinx, Inc.
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Author: Hyun Woo Kwon <hyunk@xilinx.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -19,12 +21,12 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/xilinx-v4l2-controls.h>
 
 #include <media/v4l2-async.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
-#include "xilinx-controls.h"
 #include "xilinx-vip.h"
 
 #define XCRESAMPLE_ENCODING			0x100
@@ -316,7 +318,6 @@ static int xcresample_parse_of(struct xcresample_device *xcresample)
 static int xcresample_probe(struct platform_device *pdev)
 {
 	struct xcresample_device *xcresample;
-	struct resource *res;
 	struct v4l2_subdev *subdev;
 	struct v4l2_mbus_framefmt *default_format;
 	int ret;
@@ -331,10 +332,9 @@ static int xcresample_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xcresample->xvip.iomem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(xcresample->xvip.iomem))
-		return PTR_ERR(xcresample->xvip.iomem);
+	ret = xvip_init_resources(&xcresample->xvip);
+	if (ret < 0)
+		return ret;
 
 	/* Reset and initialize the core */
 	xvip_reset(&xcresample->xvip);
@@ -368,7 +368,7 @@ static int xcresample_probe(struct platform_device *pdev)
 	subdev->entity.ops = &xcresample_media_ops;
 	ret = media_entity_init(&subdev->entity, 2, xcresample->pads, 0);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	v4l2_ctrl_handler_init(&xcresample->ctrl_handler, 2);
 	xcresample_field.def =
@@ -403,6 +403,7 @@ static int xcresample_probe(struct platform_device *pdev)
 error:
 	v4l2_ctrl_handler_free(&xcresample->ctrl_handler);
 	media_entity_cleanup(&subdev->entity);
+	xvip_cleanup_resources(&xcresample->xvip);
 	return ret;
 }
 
@@ -415,6 +416,8 @@ static int xcresample_remove(struct platform_device *pdev)
 	v4l2_ctrl_handler_free(&xcresample->ctrl_handler);
 	media_entity_cleanup(&subdev->entity);
 
+	xvip_cleanup_resources(&xcresample->xvip);
+
 	return 0;
 }
 
@@ -422,14 +425,13 @@ static SIMPLE_DEV_PM_OPS(xcresample_pm_ops, xcresample_pm_suspend,
 			 xcresample_pm_resume);
 
 static const struct of_device_id xcresample_of_id_table[] = {
-	{ .compatible = "xlnx,axi-cresample-4.0" },
+	{ .compatible = "xlnx,v-cresample-4.0" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, xcresample_of_id_table);
 
 static struct platform_driver xcresample_driver = {
 	.driver			= {
-		.owner		= THIS_MODULE,
 		.name		= "xilinx-cresample",
 		.pm		= &xcresample_pm_ops,
 		.of_match_table	= xcresample_of_id_table,

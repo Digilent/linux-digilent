@@ -13,7 +13,6 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/err.h>
 #include <linux/module.h>
@@ -375,7 +374,7 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 			return -EAGAIN;
 		}
 	}
-	map_val = chan->channel + TOTAL_CHANNELS;
+	map_val = adc_dev->channel_step[chan->scan_index];
 
 	/*
 	 * We check the complete FIFO. We programmed just one entry but in case
@@ -546,7 +545,6 @@ MODULE_DEVICE_TABLE(of, ti_adc_dt_ids);
 static struct platform_driver tiadc_driver = {
 	.driver = {
 		.name   = "TI-am335x-adc",
-		.owner	= THIS_MODULE,
 		.pm	= TIADC_PM_OPS,
 		.of_match_table = ti_adc_dt_ids,
 	},

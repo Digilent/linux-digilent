@@ -727,7 +727,7 @@ static int __init init_pci_ext_cap_err_perm(struct perm_bits *perm)
 	p_setd(perm, 0, ALL_VIRT, NO_WRITE);
 
 	/* Writable bits mask */
-	mask =	PCI_ERR_UNC_TRAIN |		/* Training */
+	mask =	PCI_ERR_UNC_UND |		/* Undefined */
 		PCI_ERR_UNC_DLP |		/* Data Link Protocol */
 		PCI_ERR_UNC_SURPDN |		/* Surprise Down */
 		PCI_ERR_UNC_POISON_TLP |	/* Poisoned TLP */
@@ -1126,8 +1126,7 @@ static int vfio_ext_cap_len(struct vfio_pci_device *vdev, u16 ecap, u16 epos)
 			return pcibios_err_to_errno(ret);
 
 		byte &= PCI_DPA_CAP_SUBSTATE_MASK;
-		byte = round_up(byte + 1, 4);
-		return PCI_DPA_BASE_SIZEOF + byte;
+		return PCI_DPA_BASE_SIZEOF + byte + 1;
 	case PCI_EXT_CAP_ID_TPH:
 		ret = pci_read_config_dword(pdev, epos + PCI_TPH_CAP, &dword);
 		if (ret)
@@ -1136,9 +1135,9 @@ static int vfio_ext_cap_len(struct vfio_pci_device *vdev, u16 ecap, u16 epos)
 		if ((dword & PCI_TPH_CAP_LOC_MASK) == PCI_TPH_LOC_CAP) {
 			int sts;
 
-			sts = byte & PCI_TPH_CAP_ST_MASK;
+			sts = dword & PCI_TPH_CAP_ST_MASK;
 			sts >>= PCI_TPH_CAP_ST_SHIFT;
-			return PCI_TPH_BASE_SIZEOF + round_up(sts * 2, 4);
+			return PCI_TPH_BASE_SIZEOF + (sts * 2) + 2;
 		}
 		return PCI_TPH_BASE_SIZEOF;
 	default:

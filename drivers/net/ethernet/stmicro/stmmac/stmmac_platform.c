@@ -30,13 +30,20 @@
 #include "stmmac.h"
 
 static const struct of_device_id stmmac_dt_ids[] = {
+#ifdef CONFIG_DWMAC_MESON
+	{ .compatible = "amlogic,meson6-dwmac", .data = &meson6_dwmac_data},
+#endif
 #ifdef CONFIG_DWMAC_SUNXI
 	{ .compatible = "allwinner,sun7i-a20-gmac", .data = &sun7i_gmac_data},
 #endif
 #ifdef CONFIG_DWMAC_STI
-	{ .compatible = "st,stih415-dwmac", .data = &sti_gmac_data},
-	{ .compatible = "st,stih416-dwmac", .data = &sti_gmac_data},
-	{ .compatible = "st,stid127-dwmac", .data = &sti_gmac_data},
+	{ .compatible = "st,stih415-dwmac", .data = &stih4xx_dwmac_data},
+	{ .compatible = "st,stih416-dwmac", .data = &stih4xx_dwmac_data},
+	{ .compatible = "st,stid127-dwmac", .data = &stid127_dwmac_data},
+	{ .compatible = "st,stih407-dwmac", .data = &stih4xx_dwmac_data},
+#endif
+#ifdef CONFIG_DWMAC_SOCFPGA
+	{ .compatible = "altr,socfpga-stmmac", .data = &socfpga_gmac_data },
 #endif
 	/* SoC specific glue layers should come before generic bindings */
 	{ .compatible = "st,spear600-gmac"},
@@ -49,6 +56,59 @@ static const struct of_device_id stmmac_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, stmmac_dt_ids);
 
 #ifdef CONFIG_OF
+
+/* This function validates the number of Multicast filtering bins specified
+ * by the configuration through the device tree. The Synopsys GMAC supports
+ * 64 bins, 128 bins, or 256 bins. "bins" refer to the division of CRC
+ * number space. 64 bins correspond to 6 bits of the CRC, 128 corresponds
+ * to 7 bits, and 256 refers to 8 bits of the CRC. Any other setting is
+ * invalid and will cause the filtering algorithm to use Multicast
+ * promiscuous mode.
+ */
+static int dwmac1000_validate_mcast_bins(int mcast_bins)
+{
+	int x = mcast_bins;
+
+	switch (x) {
+	case HASH_TABLE_SIZE:
+	case 128:
+	case 256:
+		break;
+	default:
+		x = 0;
+		pr_info("Hash table entries set to unexpected value %d",
+			mcast_bins);
+		break;
+	}
+	return x;
+}
+
+/* This function validates the number of Unicast address entries supported
+ * by a particular Synopsys 10/100/1000 controller. The Synopsys controller
+ * supports 1, 32, 64, or 128 Unicast filter entries for it's Unicast filter
+ * logic. This function validates a valid, supported configuration is
+ * selected, and defaults to 1 Unicast address if an unsupported
+ * configuration is selected.
+ */
+static int dwmac1000_validate_ucast_entries(int ucast_entries)
+{
+	int x = ucast_entries;
+
+	switch (x) {
+	case 1:
+	case 32:
+	case 64:
+	case 128:
+		break;
+	default:
+		x = 1;
+		pr_info("Unicast table entries set to unexpected value %d\n",
+			ucast_entries);
+		break;
+	}
+	return x;
+}
+
 static int stmmac_probe_config_dt(struct platform_device *pdev,
 				  struct plat_stmmacenet_data *plat,
 				  const char **mac)
@@ -101,11 +161,16 @@ static int stmmac_probe_config_dt(struct platform_device *pdev,
 	if (of_property_read_u32(np, "snps,phy-addr", &plat->phy_addr) == 0)
 		dev_warn(&pdev->dev, "snps,phy-addr property is deprecated\n");
 
-	plat->mdio_bus_data = devm_kzalloc(&pdev->dev,
-					   sizeof(struct stmmac_mdio_bus_data),
-					   GFP_KERNEL);
+	if (plat->phy_bus_name)
+		plat->mdio_bus_data = NULL;
+	else
+		plat->mdio_bus_data =
+			devm_kzalloc(&pdev->dev,
+				     sizeof(struct stmmac_mdio_bus_data),
+				     GFP_KERNEL);
 
-	plat->force_sf_dma_mode = of_property_read_bool(np, "snps,force_sf_dma_mode");
+	plat->force_sf_dma_mode =
+		of_property_read_bool(np, "snps,force_sf_dma_mode");
 
 	/* Set the maxmtu to a default of JUMBO_LEN in case the
 	 * parameter is not present in the device tree.
@@ -128,6 +193,14 @@ static int stmmac_probe_config_dt(struct platform_device *pdev,
 		 * are clearly MTUs
 		 */
 		of_property_read_u32(np, "max-frame-size", &plat->maxmtu);
+		of_property_read_u32(np, "snps,multicast-filter-bins",
+				     &plat->multicast_filter_bins);
+		of_property_read_u32(np, "snps,perfect-filter-entries",
+				     &plat->unicast_filter_entries);
+		plat->unicast_filter_entries = dwmac1000_validate_ucast_entries(
+					       plat->unicast_filter_entries);
+		plat->multicast_filter_bins = dwmac1000_validate_mcast_bins(
+					      plat->multicast_filter_bins);
 		plat->has_gmac = 1;
 		plat->pmt = 1;
 	}
@@ -191,16 +264,23 @@ static int stmmac_pltfr_probe(struct platform_device *pdev)
 		return PTR_ERR(addr);
 
 	plat_dat = dev_get_platdata(&pdev->dev);
-	if (pdev->dev.of_node) {
-		if (!plat_dat)
-			plat_dat = devm_kzalloc(&pdev->dev,
+
+	if (!plat_dat)
+		plat_dat = devm_kzalloc(&pdev->dev,
 					sizeof(struct plat_stmmacenet_data),
 					GFP_KERNEL);
-		if (!plat_dat) {
-			pr_err("%s: ERROR: no memory", __func__);
-			return  -ENOMEM;
-		}
+	if (!plat_dat) {
+		pr_err("%s: ERROR: no memory", __func__);
+		return  -ENOMEM;
+	}
 
+	/* Set default value for multicast hash bins */
+	plat_dat->multicast_filter_bins = HASH_TABLE_SIZE;
+
+	/* Set default value for unicast filter entries */
+	plat_dat->unicast_filter_entries = 1;
+
+	if (pdev->dev.of_node) {
 		ret = stmmac_probe_config_dt(pdev, plat_dat, &mac);
 		if (ret) {
 			pr_err("%s: main dt probe failed", __func__);
@@ -234,10 +314,12 @@ static int stmmac_pltfr_probe(struct platform_device *pdev)
 
 	/* Get the MAC information */
 	priv->dev->irq = platform_get_irq_byname(pdev, "macirq");
-	if (priv->dev->irq == -ENXIO) {
-		pr_err("%s: ERROR: MAC IRQ configuration "
-		       "information not found\n", __func__);
-		return -ENXIO;
+	if (priv->dev->irq < 0) {
+		if (priv->dev->irq != -EPROBE_DEFER) {
+			netdev_err(priv->dev,
+				   "MAC IRQ configuration information not found\n");
+		}
+		return priv->dev->irq;
 	}
 
 	/*
@@ -249,10 +331,15 @@ static int stmmac_pltfr_probe(struct platform_device *pdev)
 	 * so the driver will continue to use the mac irq (ndev->irq)
 	 */
 	priv->wol_irq = platform_get_irq_byname(pdev, "eth_wake_irq");
-	if (priv->wol_irq == -ENXIO)
+	if (priv->wol_irq < 0) {
+		if (priv->wol_irq == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		priv->wol_irq = priv->dev->irq;
+	}
 
 	priv->lpi_irq = platform_get_irq_byname(pdev, "eth_lpi");
+	if (priv->lpi_irq == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
 
 	platform_set_drvdata(pdev, priv->dev);
 

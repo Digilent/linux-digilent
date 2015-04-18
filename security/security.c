@@ -433,11 +433,20 @@ int security_path_link(struct dentry *old_dentry, struct path *new_dir,
 }
 
 int security_path_rename(struct path *old_dir, struct dentry *old_dentry,
-			 struct path *new_dir, struct dentry *new_dentry)
+			 struct path *new_dir, struct dentry *new_dentry,
+			 unsigned int flags)
 {
 	if (unlikely(IS_PRIVATE(old_dentry->d_inode) ||
 		     (new_dentry->d_inode && IS_PRIVATE(new_dentry->d_inode))))
 		return 0;
+
+	if (flags & RENAME_EXCHANGE) {
+		int err = security_ops->path_rename(new_dir, new_dentry,
+						    old_dir, old_dentry);
+		if (err)
+			return err;
+	}
+
 	return security_ops->path_rename(old_dir, old_dentry, new_dir,
 					 new_dentry);
 }
@@ -524,11 +533,20 @@ int security_inode_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 }
 
 int security_inode_rename(struct inode *old_dir, struct dentry *old_dentry,
-			   struct inode *new_dir, struct dentry *new_dentry)
+			   struct inode *new_dir, struct dentry *new_dentry,
+			   unsigned int flags)
 {
         if (unlikely(IS_PRIVATE(old_dentry->d_inode) ||
             (new_dentry->d_inode && IS_PRIVATE(new_dentry->d_inode))))
 		return 0;
+
+	if (flags & RENAME_EXCHANGE) {
+		int err = security_ops->inode_rename(new_dir, new_dentry,
+						     old_dir, old_dentry);
+		if (err)
+			return err;
+	}
+
 	return security_ops->inode_rename(old_dir, old_dentry,
 					   new_dir, new_dentry);
 }
@@ -757,9 +775,9 @@ int security_file_fcntl(struct file *file, unsigned int cmd, unsigned long arg)
 	return security_ops->file_fcntl(file, cmd, arg);
 }
 
-int security_file_set_fowner(struct file *file)
+void security_file_set_fowner(struct file *file)
 {
-	return security_ops->file_set_fowner(file);
+	security_ops->file_set_fowner(file);
 }
 
 int security_file_send_sigiotask(struct task_struct *tsk,
@@ -826,6 +844,17 @@ int security_kernel_create_files_as(struct cred *new, struct inode *inode)
 {
 	return security_ops->kernel_create_files_as(new, inode);
 }
+
+int security_kernel_fw_from_file(struct file *file, char *buf, size_t size)
+{
+	int ret;
+
+	ret = security_ops->kernel_fw_from_file(file, buf, size);
+	if (ret)
+		return ret;
+	return ima_fw_from_file(file, buf, size);
+}
+EXPORT_SYMBOL_GPL(security_kernel_fw_from_file);
 
 int security_kernel_module_request(char *kmod_name)
 {
@@ -1407,7 +1436,7 @@ void security_key_free(struct key *key)
 }
 
 int security_key_permission(key_ref_t key_ref,
-			    const struct cred *cred, key_perm_t perm)
+			    const struct cred *cred, unsigned perm)
 {
 	return security_ops->key_permission(key_ref, cred, perm);
 }

@@ -12,6 +12,9 @@
  * File: ima_template.c
  *      Helpers to manage template descriptors.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <crypto/hash_info.h>
 
 #include "ima.h"
@@ -19,20 +22,20 @@
 
 static struct ima_template_desc defined_templates[] = {
 	{.name = IMA_TEMPLATE_IMA_NAME, .fmt = IMA_TEMPLATE_IMA_FMT},
-	{.name = "ima-ng",.fmt = "d-ng|n-ng"},
-	{.name = "ima-sig",.fmt = "d-ng|n-ng|sig"},
+	{.name = "ima-ng", .fmt = "d-ng|n-ng"},
+	{.name = "ima-sig", .fmt = "d-ng|n-ng|sig"},
 };
 
 static struct ima_template_field supported_fields[] = {
-	{.field_id = "d",.field_init = ima_eventdigest_init,
+	{.field_id = "d", .field_init = ima_eventdigest_init,
 	 .field_show = ima_show_template_digest},
-	{.field_id = "n",.field_init = ima_eventname_init,
+	{.field_id = "n", .field_init = ima_eventname_init,
 	 .field_show = ima_show_template_string},
-	{.field_id = "d-ng",.field_init = ima_eventdigest_ng_init,
+	{.field_id = "d-ng", .field_init = ima_eventdigest_ng_init,
 	 .field_show = ima_show_template_digest_ng},
-	{.field_id = "n-ng",.field_init = ima_eventname_ng_init,
+	{.field_id = "n-ng", .field_init = ima_eventname_ng_init,
 	 .field_show = ima_show_template_string},
-	{.field_id = "sig",.field_init = ima_eventsig_init,
+	{.field_id = "sig", .field_init = ima_eventsig_init,
 	 .field_show = ima_show_template_sig},
 };
 
@@ -58,7 +61,7 @@ static int __init ima_template_setup(char *str)
 	 */
 	if (template_len == 3 && strcmp(str, IMA_TEMPLATE_IMA_NAME) == 0 &&
 	    ima_hash_algo != HASH_ALGO_SHA1 && ima_hash_algo != HASH_ALGO_MD5) {
-		pr_err("IMA: template does not support hash alg\n");
+		pr_err("template does not support hash alg\n");
 		return 1;
 	}
 
@@ -149,24 +152,6 @@ out:
 	return result;
 }
 
-static int init_defined_templates(void)
-{
-	int i = 0;
-	int result = 0;
-
-	/* Init defined templates. */
-	for (i = 0; i < ARRAY_SIZE(defined_templates); i++) {
-		struct ima_template_desc *template = &defined_templates[i];
-
-		result = template_desc_init_fields(template->fmt,
-						   &(template->fields),
-						   &(template->num_fields));
-		if (result < 0)
-			return result;
-	}
-	return result;
-}
-
 struct ima_template_desc *ima_template_desc_current(void)
 {
 	if (!ima_template)
@@ -175,13 +160,11 @@ struct ima_template_desc *ima_template_desc_current(void)
 	return ima_template;
 }
 
-int ima_init_template(void)
+int __init ima_init_template(void)
 {
-	int result;
+	struct ima_template_desc *template = ima_template_desc_current();
 
-	result = init_defined_templates();
-	if (result < 0)
-		return result;
-
-	return 0;
+	return template_desc_init_fields(template->fmt,
+					 &(template->fields),
+					 &(template->num_fields));
 }

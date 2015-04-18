@@ -48,6 +48,7 @@
 #include <asm/system_misc.h>
 
 #include <mach/regs-s3c2443-clock.h>
+#include <mach/rtc-core.h>
 
 #include <plat/gpio-core.h>
 #include <plat/gpio-cfg.h>
@@ -61,7 +62,6 @@
 #include <plat/fb-core.h>
 #include <plat/nand-core.h>
 #include <plat/adc-core.h>
-#include <plat/rtc-core.h>
 #include <plat/spi-core.h>
 
 #include "common.h"
@@ -80,14 +80,6 @@ struct bus_type s3c2416_subsys = {
 static struct device s3c2416_dev = {
 	.bus		= &s3c2416_subsys,
 };
-
-void s3c2416_restart(enum reboot_mode mode, const char *cmd)
-{
-	if (mode == REBOOT_SOFT)
-		soft_restart(0);
-
-	__raw_writel(S3C2443_SWRST_RESET, S3C2443_SWRST);
-}
 
 int __init s3c2416_init(void)
 {

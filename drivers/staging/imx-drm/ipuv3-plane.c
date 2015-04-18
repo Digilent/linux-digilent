@@ -17,7 +17,7 @@
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_gem_cma_helper.h>
 
-#include "ipu-v3/imx-ipu-v3.h"
+#include "video/imx-ipu-v3.h"
 #include "ipuv3-plane.h"
 
 #define to_ipu_plane(x)	container_of(x, struct ipu_plane, base)
@@ -62,26 +62,24 @@ static inline int calc_bandwidth(int width, int height, unsigned int vref)
 int ipu_plane_set_base(struct ipu_plane *ipu_plane, struct drm_framebuffer *fb,
 		       int x, int y)
 {
-	struct ipu_ch_param __iomem *cpmem;
 	struct drm_gem_cma_object *cma_obj;
 	unsigned long eba;
 
 	cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
 	if (!cma_obj) {
-		DRM_LOG_KMS("entry is null.\n");
+		DRM_DEBUG_KMS("entry is null.\n");
 		return -EFAULT;
 	}
 
-	dev_dbg(ipu_plane->base.dev->dev, "phys = 0x%x, x = %d, y = %d",
-		cma_obj->paddr, x, y);
+	dev_dbg(ipu_plane->base.dev->dev, "phys = %pad, x = %d, y = %d",
+		&cma_obj->paddr, x, y);
 
-	cpmem = ipu_get_cpmem(ipu_plane->ipu_ch);
-	ipu_cpmem_set_stride(cpmem, fb->pitches[0]);
+	ipu_cpmem_set_stride(ipu_plane->ipu_ch, fb->pitches[0]);
 
 	eba = cma_obj->paddr + fb->offsets[0] +
 	      fb->pitches[0] * y + (fb->bits_per_pixel >> 3) * x;
-	ipu_cpmem_set_buffer(cpmem, 0, eba);
-	ipu_cpmem_set_buffer(cpmem, 1, eba);
+	ipu_cpmem_set_buffer(ipu_plane->ipu_ch, 0, eba);
+	ipu_cpmem_set_buffer(ipu_plane->ipu_ch, 1, eba);
 
 	/* cache offsets for subsequent pageflips */
 	ipu_plane->x = x;
@@ -97,7 +95,6 @@ int ipu_plane_mode_set(struct ipu_plane *ipu_plane, struct drm_crtc *crtc,
 		       uint32_t src_x, uint32_t src_y,
 		       uint32_t src_w, uint32_t src_h)
 {
-	struct ipu_ch_param __iomem *cpmem;
 	struct device *dev = ipu_plane->base.dev->dev;
 	int ret;
 
@@ -175,10 +172,9 @@ int ipu_plane_mode_set(struct ipu_plane *ipu_plane, struct drm_crtc *crtc,
 		return ret;
 	}
 
-	cpmem = ipu_get_cpmem(ipu_plane->ipu_ch);
-	ipu_ch_param_zero(cpmem);
-	ipu_cpmem_set_resolution(cpmem, src_w, src_h);
-	ret = ipu_cpmem_set_fmt(cpmem, fb->pixel_format);
+	ipu_cpmem_zero(ipu_plane->ipu_ch);
+	ipu_cpmem_set_resolution(ipu_plane->ipu_ch, src_w, src_h);
+	ret = ipu_cpmem_set_fmt(ipu_plane->ipu_ch, fb->pixel_format);
 	if (ret < 0) {
 		dev_err(dev, "unsupported pixel format 0x%08x\n",
 			fb->pixel_format);
@@ -239,6 +235,8 @@ err_out:
 
 void ipu_plane_enable(struct ipu_plane *ipu_plane)
 {
+	if (ipu_plane->dp)
+		ipu_dp_enable(ipu_plane->ipu);
 	ipu_dmfc_enable_channel(ipu_plane->dmfc);
 	ipu_idmac_enable_channel(ipu_plane->ipu_ch);
 	if (ipu_plane->dp)
@@ -257,28 +255,8 @@ void ipu_plane_disable(struct ipu_plane *ipu_plane)
 		ipu_dp_disable_channel(ipu_plane->dp);
 	ipu_idmac_disable_channel(ipu_plane->ipu_ch);
 	ipu_dmfc_disable_channel(ipu_plane->dmfc);
-}
-
-static void ipu_plane_dpms(struct ipu_plane *ipu_plane, int mode)
-{
-	bool enable;
-
-	DRM_DEBUG_KMS("mode = %d", mode);
-
-	enable = (mode == DRM_MODE_DPMS_ON);
-
-	if (enable == ipu_plane->enabled)
-		return;
-
-	if (enable) {
-		ipu_plane_enable(ipu_plane);
-	} else {
-		ipu_plane_disable(ipu_plane);
-
-		ipu_idmac_put(ipu_plane->ipu_ch);
-		ipu_dmfc_put(ipu_plane->dmfc);
-		ipu_dp_put(ipu_plane->dp);
-	}
+	if (ipu_plane->dp)
+		ipu_dp_disable(ipu_plane->ipu);
 }
 
 /*
@@ -314,7 +292,8 @@ static int ipu_update_plane(struct drm_plane *plane, struct drm_crtc *crtc,
 				plane->crtc, crtc);
 	plane->crtc = crtc;
 
-	ipu_plane_dpms(ipu_plane, DRM_MODE_DPMS_ON);
+	if (!ipu_plane->enabled)
+		ipu_plane_enable(ipu_plane);
 
 	return 0;
 }
@@ -325,7 +304,8 @@ static int ipu_disable_plane(struct drm_plane *plane)
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
-	ipu_plane_dpms(ipu_plane, DRM_MODE_DPMS_OFF);
+	if (ipu_plane->enabled)
+		ipu_plane_disable(ipu_plane);
 
 	ipu_plane_put_resources(ipu_plane);
 

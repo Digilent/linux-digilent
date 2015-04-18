@@ -188,8 +188,8 @@ static int InterfaceAbortIdlemode(struct bcm_mini_adapter *Adapter,
 			5000);
 		if (status)
 			return status;
-		else
-			BCM_DEBUG_PRINT(Adapter, DBG_TYPE_OTHERS,
+
+		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_OTHERS,
 				IDLE_MODE, DBG_LVL_ALL,
 				"NOB Sent down :%d", lenwritten);
 
@@ -211,8 +211,7 @@ static int InterfaceAbortIdlemode(struct bcm_mini_adapter *Adapter,
 		else
 			BCM_DEBUG_PRINT(Adapter, DBG_TYPE_OTHERS,
 				IDLE_MODE, DBG_LVL_ALL,
-				"Number of completed iteration to"
-				"read chip-id :%lu", itr);
+				"Number of completed iteration to read chip-id :%lu", itr);
 
 		status = wrmalt(Adapter, SW_ABORT_IDLEMODE_LOC,
 				&Pattern, sizeof(status));
@@ -223,7 +222,6 @@ static int InterfaceAbortIdlemode(struct bcm_mini_adapter *Adapter,
 }
 int InterfaceIdleModeWakeup(struct bcm_mini_adapter *Adapter)
 {
-	ULONG	Status = 0;
 	if (Adapter->bTriedToWakeUpFromlowPowerMode) {
 		BCM_DEBUG_PRINT(Adapter, DBG_TYPE_OTHERS,
 		IDLE_MODE, DBG_LVL_ALL,
@@ -233,7 +231,7 @@ int InterfaceIdleModeWakeup(struct bcm_mini_adapter *Adapter)
 		InterfaceAbortIdlemode(Adapter, Adapter->usIdleModePattern);
 
 	}
-	return Status;
+	return 0;
 }
 
 void InterfaceHandleShutdownModeWakeup(struct bcm_mini_adapter *Adapter)

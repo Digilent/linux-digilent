@@ -73,10 +73,17 @@ struct nf_conn_help {
 
 struct nf_conn {
 	/* Usage count in here is 1 for hash table/destruct timer, 1 per skb,
-           plus 1 for any connection(s) we are `master' for */
+	 * plus 1 for any connection(s) we are `master' for
+	 *
+	 * Hint, SKB address this struct and refcnt via skb->nfct and
+	 * helpers nf_conntrack_get() and nf_conntrack_put().
+	 * Helper nf_ct_put() equals nf_conntrack_put() by dec refcnt,
+	 * beware nf_ct_get() is different and don't inc refcnt.
+	 */
 	struct nf_conntrack ct_general;
 
-	spinlock_t lock;
+	spinlock_t	lock;
+	u16		cpu;
 
 	/* XXX should I move this to the tail ? - Y.K */
 	/* These are my tuples; original and reply */
@@ -235,7 +242,7 @@ extern s32 (*nf_ct_nat_offset)(const struct nf_conn *ct,
 DECLARE_PER_CPU(struct nf_conn, nf_conntrack_untracked);
 static inline struct nf_conn *nf_ct_untracked_get(void)
 {
-	return &__raw_get_cpu_var(nf_conntrack_untracked);
+	return raw_cpu_ptr(&nf_conntrack_untracked);
 }
 void nf_ct_untracked_status_or(unsigned long bits);
 

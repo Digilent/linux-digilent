@@ -18,10 +18,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  * ----------------------------------------------------------------------------
  *
  */
@@ -218,7 +214,7 @@ i2c_dw_scl_hcnt(u32 ic_clk, u32 tSYMBOL, u32 tf, int cond, int offset)
 		 *
 		 * If your hardware is free from tHD;STA issue, try this one.
 		 */
-		return (ic_clk * tSYMBOL + 5000) / 10000 - 8 + offset;
+		return (ic_clk * tSYMBOL + 500000) / 1000000 - 8 + offset;
 	else
 		/*
 		 * Conditional expression:
@@ -234,7 +230,8 @@ i2c_dw_scl_hcnt(u32 ic_clk, u32 tSYMBOL, u32 tf, int cond, int offset)
 		 * The reason why we need to take into account "tf" here,
 		 * is the same as described in i2c_dw_scl_lcnt().
 		 */
-		return (ic_clk * (tSYMBOL + tf) + 5000) / 10000 - 3 + offset;
+		return (ic_clk * (tSYMBOL + tf) + 500000) / 1000000
+			- 3 + offset;
 }
 
 static u32 i2c_dw_scl_lcnt(u32 ic_clk, u32 tLOW, u32 tf, int offset)
@@ -250,7 +247,7 @@ static u32 i2c_dw_scl_lcnt(u32 ic_clk, u32 tLOW, u32 tf, int offset)
 	 * account the fall time of SCL signal (tf).  Default tf value
 	 * should be 0.3 us, for safety.
 	 */
-	return ((ic_clk * (tLOW + tf) + 5000) / 10000) - 1 + offset;
+	return ((ic_clk * (tLOW + tf) + 500000) / 1000000) - 1 + offset;
 }
 
 static void __i2c_dw_enable(struct dw_i2c_dev *dev, bool enable)
@@ -287,6 +284,7 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 	u32 input_clock_khz;
 	u32 hcnt, lcnt;
 	u32 reg;
+	u32 sda_falling_time, scl_falling_time;
 
 	input_clock_khz = dev->get_clk_rate_khz(dev);
 
@@ -308,15 +306,18 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 
 	/* set standard and fast speed deviders for high/low periods */
 
+	sda_falling_time = dev->sda_falling_time ?: 300; /* ns */
+	scl_falling_time = dev->scl_falling_time ?: 300; /* ns */
+
 	/* Standard-mode */
 	hcnt = i2c_dw_scl_hcnt(input_clock_khz,
-				40,	/* tHD;STA = tHIGH = 4.0 us */
-				3,	/* tf = 0.3 us */
+				4000,	/* tHD;STA = tHIGH = 4.0 us */
+				sda_falling_time,
 				0,	/* 0: DW default, 1: Ideal */
 				0);	/* No offset */
 	lcnt = i2c_dw_scl_lcnt(input_clock_khz,
-				47,	/* tLOW = 4.7 us */
-				3,	/* tf = 0.3 us */
+				4700,	/* tLOW = 4.7 us */
+				scl_falling_time,
 				0);	/* No offset */
 
 	/* Allow platforms to specify the ideal HCNT and LCNT values */
@@ -330,13 +331,13 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 
 	/* Fast-mode */
 	hcnt = i2c_dw_scl_hcnt(input_clock_khz,
-				6,	/* tHD;STA = tHIGH = 0.6 us */
-				3,	/* tf = 0.3 us */
+				600,	/* tHD;STA = tHIGH = 0.6 us */
+				sda_falling_time,
 				0,	/* 0: DW default, 1: Ideal */
 				0);	/* No offset */
 	lcnt = i2c_dw_scl_lcnt(input_clock_khz,
-				13,	/* tLOW = 1.3 us */
-				3,	/* tf = 0.3 us */
+				1300,	/* tLOW = 1.3 us */
+				scl_falling_time,
 				0);	/* No offset */
 
 	if (dev->fs_hcnt && dev->fs_lcnt) {
@@ -358,7 +359,7 @@ int i2c_dw_init(struct dw_i2c_dev *dev)
 	}
 
 	/* Configure Tx/Rx FIFO threshold levels */
-	dw_writel(dev, dev->tx_fifo_depth - 1, DW_IC_TX_TL);
+	dw_writel(dev, dev->tx_fifo_depth / 2, DW_IC_TX_TL);
 	dw_writel(dev, 0, DW_IC_RX_TL);
 
 	/* configure the i2c master */
@@ -416,6 +417,9 @@ static void i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 	 * if applicable.
 	 */
 	dw_writel(dev, msgs[dev->msg_write_idx].addr | ic_tar, DW_IC_TAR);
+
+	/* enforce disabled interrupts (due to HW issues) */
+	i2c_dw_disable_int(dev);
 
 	/* Enable the adapter */
 	__i2c_dw_enable(dev, true);

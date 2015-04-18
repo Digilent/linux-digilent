@@ -16,6 +16,8 @@
  *
  */
 
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -542,8 +544,22 @@ static struct isp_platform_data cm_t35_isp_pdata = {
 	.subdevs = cm_t35_isp_subdevs,
 };
 
+static struct regulator_consumer_supply cm_t35_camera_supplies[] = {
+	REGULATOR_SUPPLY("vaa", "3-005d"),
+	REGULATOR_SUPPLY("vdd", "3-005d"),
+};
+
 static void __init cm_t35_init_camera(void)
 {
+	struct clk *clk;
+
+	clk = clk_register_fixed_rate(NULL, "mt9t001-clkin", NULL, CLK_IS_ROOT,
+				      48000000);
+	clk_register_clkdev(clk, NULL, "3-005d");
+
+	regulator_register_fixed(2, cm_t35_camera_supplies,
+				 ARRAY_SIZE(cm_t35_camera_supplies));
+
 	if (omap3_init_camera(&cm_t35_isp_pdata) < 0)
 		pr_warn("CM-T3x: Failed registering camera device!\n");
 }
@@ -750,7 +766,6 @@ MACHINE_START(CM_T35, "Compulab CM-T35")
 	.map_io		= omap3_map_io,
 	.init_early	= omap35xx_init_early,
 	.init_irq	= omap3_init_irq,
-	.handle_irq	= omap3_intc_handle_irq,
 	.init_machine	= cm_t35_init,
 	.init_late	= omap35xx_init_late,
 	.init_time	= omap3_sync32k_timer_init,
@@ -763,7 +778,6 @@ MACHINE_START(CM_T3730, "Compulab CM-T3730")
 	.map_io		= omap3_map_io,
 	.init_early	= omap3630_init_early,
 	.init_irq	= omap3_init_irq,
-	.handle_irq	= omap3_intc_handle_irq,
 	.init_machine	= cm_t3730_init,
 	.init_late     = omap3630_init_late,
 	.init_time	= omap3_sync32k_timer_init,

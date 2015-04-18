@@ -1608,8 +1608,8 @@ static ssize_t dps1_insert_key(struct device *dev,
 #define FLOOR_SYSFS(id) { \
 	__ATTR(f##id##_dps0_is_keylocked, S_IRUGO, dps0_is_key_locked, NULL), \
 	__ATTR(f##id##_dps1_is_keylocked, S_IRUGO, dps1_is_key_locked, NULL), \
-	__ATTR(f##id##_dps0_protection_key, S_IWUGO, NULL, dps0_insert_key), \
-	__ATTR(f##id##_dps1_protection_key, S_IWUGO, NULL, dps1_insert_key), \
+	__ATTR(f##id##_dps0_protection_key, S_IWUSR|S_IWGRP, NULL, dps0_insert_key), \
+	__ATTR(f##id##_dps1_protection_key, S_IWUSR|S_IWGRP, NULL, dps1_insert_key), \
 }
 
 static struct device_attribute doc_sys_attrs[DOC_MAX_NBFLOORS][4] = {
@@ -1697,16 +1697,16 @@ static int dbg_asicmode_show(struct seq_file *s, void *p)
 
 	switch (mode) {
 	case DOC_ASICMODE_RESET:
-		pos += seq_printf(s, "reset");
+		pos += seq_puts(s, "reset");
 		break;
 	case DOC_ASICMODE_NORMAL:
-		pos += seq_printf(s, "normal");
+		pos += seq_puts(s, "normal");
 		break;
 	case DOC_ASICMODE_POWERDOWN:
-		pos += seq_printf(s, "powerdown");
+		pos += seq_puts(s, "powerdown");
 		break;
 	}
-	pos += seq_printf(s, ")\n");
+	pos += seq_puts(s, ")\n");
 	return pos;
 }
 DEBUGFS_RO_ATTR(asic_mode, dbg_asicmode_show);
@@ -1745,22 +1745,22 @@ static int dbg_protection_show(struct seq_file *s, void *p)
 	pos += seq_printf(s, "Protection = 0x%02x (",
 			 protect);
 	if (protect & DOC_PROTECT_FOUNDRY_OTP_LOCK)
-		pos += seq_printf(s, "FOUNDRY_OTP_LOCK,");
+		pos += seq_puts(s, "FOUNDRY_OTP_LOCK,");
 	if (protect & DOC_PROTECT_CUSTOMER_OTP_LOCK)
-		pos += seq_printf(s, "CUSTOMER_OTP_LOCK,");
+		pos += seq_puts(s, "CUSTOMER_OTP_LOCK,");
 	if (protect & DOC_PROTECT_LOCK_INPUT)
-		pos += seq_printf(s, "LOCK_INPUT,");
+		pos += seq_puts(s, "LOCK_INPUT,");
 	if (protect & DOC_PROTECT_STICKY_LOCK)
-		pos += seq_printf(s, "STICKY_LOCK,");
+		pos += seq_puts(s, "STICKY_LOCK,");
 	if (protect & DOC_PROTECT_PROTECTION_ENABLED)
-		pos += seq_printf(s, "PROTECTION ON,");
+		pos += seq_puts(s, "PROTECTION ON,");
 	if (protect & DOC_PROTECT_IPL_DOWNLOAD_LOCK)
-		pos += seq_printf(s, "IPL_DOWNLOAD_LOCK,");
+		pos += seq_puts(s, "IPL_DOWNLOAD_LOCK,");
 	if (protect & DOC_PROTECT_PROTECTION_ERROR)
-		pos += seq_printf(s, "PROTECT_ERR,");
+		pos += seq_puts(s, "PROTECT_ERR,");
 	else
-		pos += seq_printf(s, "NO_PROTECT_ERR");
-	pos += seq_printf(s, ")\n");
+		pos += seq_puts(s, "NO_PROTECT_ERR");
+	pos += seq_puts(s, ")\n");
 
 	pos += seq_printf(s, "DPS0 = 0x%02x : "
 			 "Protected area [0x%x - 0x%x] : OTP=%d, READ=%d, "

@@ -57,10 +57,10 @@ struct machdep_calls {
 	void            (*hpte_removebolted)(unsigned long ea,
 					     int psize, int ssize);
 	void		(*flush_hash_range)(unsigned long number, int local);
-	void		(*hugepage_invalidate)(struct mm_struct *mm,
+	void		(*hugepage_invalidate)(unsigned long vsid,
+					       unsigned long addr,
 					       unsigned char *hpte_slot_array,
-					       unsigned long addr, int psize);
-
+					       int psize, int ssize);
 	/* special for kexec, to be called in real mode, linear mapping is
 	 * destroyed as well */
 	void		(*hpte_clear_all)(void);
@@ -98,6 +98,9 @@ struct machdep_calls {
 	void		(*iommu_save)(void);
 	void		(*iommu_restore)(void);
 #endif
+#ifdef CONFIG_MEMORY_HOTPLUG_SPARSE
+	unsigned long	(*memory_block_size)(void);
+#endif
 #endif /* CONFIG_PPC64 */
 
 	void		(*pci_dma_dev_setup)(struct pci_dev *dev);
@@ -113,6 +116,8 @@ struct machdep_calls {
 	/* Optional, may be NULL. */
 	void		(*show_cpuinfo)(struct seq_file *m);
 	void		(*show_percpuinfo)(struct seq_file *m, int i);
+	/* Returns the current operating frequency of "cpu" in Hz */
+	unsigned long  	(*get_proc_freq)(unsigned int cpu);
 
 	void		(*init_IRQ)(void);
 
@@ -131,8 +136,6 @@ struct machdep_calls {
 	int		(*pci_setup_phb)(struct pci_controller *host);
 
 #ifdef CONFIG_PCI_MSI
-	int		(*msi_check_device)(struct pci_dev* dev,
-					    int nvec, int type);
 	int		(*setup_msi_irqs)(struct pci_dev *dev,
 					  int nvec, int type);
 	void		(*teardown_msi_irqs)(struct pci_dev *dev);
@@ -169,6 +172,13 @@ struct machdep_calls {
 	/* Exception handlers */
 	int		(*system_reset_exception)(struct pt_regs *regs);
 	int 		(*machine_check_exception)(struct pt_regs *regs);
+	int		(*handle_hmi_exception)(struct pt_regs *regs);
+
+	/* Early exception handlers called in realmode */
+	int		(*hmi_exception_early)(struct pt_regs *regs);
+
+	/* Called during machine check exception to retrive fixup address. */
+	bool		(*mce_check_early_recovery)(struct pt_regs *regs);
 
 	/* Motherboard/chipset features. This is a kind of general purpose
 	 * hook used to control some machine specific features (like reset
@@ -238,6 +248,9 @@ struct machdep_calls {
 	/* Called during PCI resource reassignment */
 	resource_size_t (*pcibios_window_alignment)(struct pci_bus *, unsigned long type);
 
+	/* Reset the secondary bus of bridge */
+	void  (*pcibios_reset_secondary_bus)(struct pci_dev *dev);
+
 	/* Called to shutdown machine specific hardware not already controlled
 	 * by other drivers.
 	 */
@@ -279,6 +292,10 @@ struct machdep_calls {
 #ifdef CONFIG_ARCH_RANDOM
 	int (*get_random_long)(unsigned long *v);
 #endif
+
+#ifdef CONFIG_MEMORY_HOTREMOVE
+	int (*remove_memory)(u64, u64);
+#endif
 };
 
 extern void e500_idle(void);
@@ -310,8 +327,6 @@ extern struct machdep_calls *machine_id;
 	})
 
 extern void probe_machine(void);
-
-extern char cmd_line[COMMAND_LINE_SIZE];
 
 #ifdef CONFIG_PPC_PMAC
 /*
@@ -351,6 +366,7 @@ static inline void log_error(char *buf, unsigned int err_type, int fatal)
 	} \
 	__define_initcall(__machine_initcall_##mach##_##fn, id);
 
+#define machine_early_initcall(mach, fn)	__define_machine_initcall(mach, fn, early)
 #define machine_core_initcall(mach, fn)		__define_machine_initcall(mach, fn, 1)
 #define machine_core_initcall_sync(mach, fn)	__define_machine_initcall(mach, fn, 1s)
 #define machine_postcore_initcall(mach, fn)	__define_machine_initcall(mach, fn, 2)

@@ -466,8 +466,6 @@ static int menelaus_set_voltage(const struct menelaus_vtg *vtg, int mV,
 	struct i2c_client *c = the_menelaus->client;
 
 	mutex_lock(&the_menelaus->lock);
-	if (!vtg)
-		goto set_voltage;
 
 	ret = menelaus_read_reg(vtg->vtg_reg);
 	if (ret < 0)
@@ -482,7 +480,6 @@ static int menelaus_set_voltage(const struct menelaus_vtg *vtg, int mV,
 	ret = menelaus_write_reg(vtg->vtg_reg, val);
 	if (ret < 0)
 		goto out;
-set_voltage:
 	ret = menelaus_write_reg(vtg->mode_reg, mode);
 out:
 	mutex_unlock(&the_menelaus->lock);
@@ -1186,7 +1183,7 @@ static int menelaus_probe(struct i2c_client *client,
 			  const struct i2c_device_id *id)
 {
 	struct menelaus_chip	*menelaus;
-	int			rev = 0, val;
+	int			rev = 0;
 	int			err = 0;
 	struct menelaus_platform_data *menelaus_pdata =
 					dev_get_platdata(&client->dev);
@@ -1239,10 +1236,10 @@ static int menelaus_probe(struct i2c_client *client,
 
 	pr_info("Menelaus rev %d.%d\n", rev >> 4, rev & 0x0f);
 
-	val = menelaus_read_reg(MENELAUS_VCORE_CTRL1);
-	if (val < 0)
+	err = menelaus_read_reg(MENELAUS_VCORE_CTRL1);
+	if (err < 0)
 		goto fail;
-	if (val & (1 << 7))
+	if (err & BIT(7))
 		menelaus->vcore_hw_mode = 1;
 	else
 		menelaus->vcore_hw_mode = 0;
@@ -1287,29 +1284,8 @@ static struct i2c_driver menelaus_i2c_driver = {
 	.id_table	= menelaus_id,
 };
 
-static int __init menelaus_init(void)
-{
-	int res;
-
-	res = i2c_add_driver(&menelaus_i2c_driver);
-	if (res < 0) {
-		pr_err(DRIVER_NAME ": driver registration failed\n");
-		return res;
-	}
-
-	return 0;
-}
-
-static void __exit menelaus_exit(void)
-{
-	i2c_del_driver(&menelaus_i2c_driver);
-
-	/* FIXME: Shutdown menelaus parts that can be shut down */
-}
+module_i2c_driver(menelaus_i2c_driver);
 
 MODULE_AUTHOR("Texas Instruments, Inc. (and others)");
 MODULE_DESCRIPTION("I2C interface for Menelaus.");
 MODULE_LICENSE("GPL");
-
-module_init(menelaus_init);
-module_exit(menelaus_exit);

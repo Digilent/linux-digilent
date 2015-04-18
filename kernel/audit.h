@@ -106,6 +106,11 @@ struct audit_names {
 	bool			should_free;
 };
 
+struct audit_proctitle {
+	int	len;	/* length of the cmdline field. */
+	char	*value;	/* the cmdline field */
+};
+
 /* The per-task audit context. */
 struct audit_context {
 	int		    dummy;	/* must be the first element */
@@ -202,6 +207,7 @@ struct audit_context {
 		} execve;
 	};
 	int fds[2];
+	struct audit_proctitle proctitle;
 
 #if AUDIT_DEBUG
 	int		    put_count;
@@ -216,7 +222,6 @@ extern void audit_copy_inode(struct audit_names *name,
 			     const struct inode *inode);
 extern void audit_log_cap(struct audit_buffer *ab, char *prefix,
 			  kernel_cap_t *cap);
-extern void audit_log_fcaps(struct audit_buffer *ab, struct audit_names *name);
 extern void audit_log_name(struct audit_context *context,
 			   struct audit_names *n, struct path *path,
 			   int record_num, int *call_panic);

@@ -365,56 +365,49 @@ static u32 mxs_lradc_plate_mask(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL0_MX23_PLATE_MASK;
-	else
-		return LRADC_CTRL0_MX28_PLATE_MASK;
+	return LRADC_CTRL0_MX28_PLATE_MASK;
 }
 
 static u32 mxs_lradc_irq_en_mask(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL1_MX23_LRADC_IRQ_EN_MASK;
-	else
-		return LRADC_CTRL1_MX28_LRADC_IRQ_EN_MASK;
+	return LRADC_CTRL1_MX28_LRADC_IRQ_EN_MASK;
 }
 
 static u32 mxs_lradc_irq_mask(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL1_MX23_LRADC_IRQ_MASK;
-	else
-		return LRADC_CTRL1_MX28_LRADC_IRQ_MASK;
+	return LRADC_CTRL1_MX28_LRADC_IRQ_MASK;
 }
 
 static u32 mxs_lradc_touch_detect_bit(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL0_MX23_TOUCH_DETECT_ENABLE;
-	else
-		return LRADC_CTRL0_MX28_TOUCH_DETECT_ENABLE;
+	return LRADC_CTRL0_MX28_TOUCH_DETECT_ENABLE;
 }
 
 static u32 mxs_lradc_drive_x_plate(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL0_MX23_XP | LRADC_CTRL0_MX23_XM;
-	else
-		return LRADC_CTRL0_MX28_XPPSW | LRADC_CTRL0_MX28_XNNSW;
+	return LRADC_CTRL0_MX28_XPPSW | LRADC_CTRL0_MX28_XNNSW;
 }
 
 static u32 mxs_lradc_drive_y_plate(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL0_MX23_YP | LRADC_CTRL0_MX23_YM;
-	else
-		return LRADC_CTRL0_MX28_YPPSW | LRADC_CTRL0_MX28_YNNSW;
+	return LRADC_CTRL0_MX28_YPPSW | LRADC_CTRL0_MX28_YNNSW;
 }
 
 static u32 mxs_lradc_drive_pressure(struct mxs_lradc *lradc)
 {
 	if (lradc->soc == IMX23_LRADC)
 		return LRADC_CTRL0_MX23_YP | LRADC_CTRL0_MX23_XM;
-	else
-		return LRADC_CTRL0_MX28_YPPSW | LRADC_CTRL0_MX28_XNNSW;
+	return LRADC_CTRL0_MX28_YPPSW | LRADC_CTRL0_MX28_XNNSW;
 }
 
 static bool mxs_lradc_check_touch_event(struct mxs_lradc *lradc)
@@ -846,8 +839,17 @@ static int mxs_lradc_read_single(struct iio_dev *iio_dev, int chan, int *val)
 			LRADC_CTRL1);
 	mxs_lradc_reg_clear(lradc, 0xff, LRADC_CTRL0);
 
+	/* Enable / disable the divider per requirement */
+	if (test_bit(chan, &lradc->is_divided))
+		mxs_lradc_reg_set(lradc, 1 << LRADC_CTRL2_DIVIDE_BY_TWO_OFFSET,
+			LRADC_CTRL2);
+	else
+		mxs_lradc_reg_clear(lradc,
+			1 << LRADC_CTRL2_DIVIDE_BY_TWO_OFFSET, LRADC_CTRL2);
+
 	/* Clean the slot's previous content, then set new one. */
-	mxs_lradc_reg_clear(lradc, LRADC_CTRL4_LRADCSELECT_MASK(0), LRADC_CTRL4);
+	mxs_lradc_reg_clear(lradc, LRADC_CTRL4_LRADCSELECT_MASK(0),
+			LRADC_CTRL4);
 	mxs_lradc_reg_set(lradc, chan, LRADC_CTRL4);
 
 	mxs_lradc_reg_wrt(lradc, 0, LRADC_CH(0));
@@ -897,10 +899,6 @@ static int mxs_lradc_read_raw(struct iio_dev *iio_dev,
 			int *val, int *val2, long m)
 {
 	struct mxs_lradc *lradc = iio_priv(iio_dev);
-
-	/* Check for invalid channel */
-	if (chan->channel > LRADC_MAX_TOTAL_CHANS)
-		return -EINVAL;
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
@@ -964,15 +962,11 @@ static int mxs_lradc_write_raw(struct iio_dev *iio_dev,
 		if (val == scale_avail[MXS_LRADC_DIV_DISABLED].integer &&
 		    val2 == scale_avail[MXS_LRADC_DIV_DISABLED].nano) {
 			/* divider by two disabled */
-			writel(1 << LRADC_CTRL2_DIVIDE_BY_TWO_OFFSET,
-			       lradc->base + LRADC_CTRL2 + STMP_OFFSET_REG_CLR);
 			clear_bit(chan->channel, &lradc->is_divided);
 			ret = 0;
 		} else if (val == scale_avail[MXS_LRADC_DIV_ENABLED].integer &&
 			   val2 == scale_avail[MXS_LRADC_DIV_ENABLED].nano) {
 			/* divider by two enabled */
-			writel(1 << LRADC_CTRL2_DIVIDE_BY_TWO_OFFSET,
-			       lradc->base + LRADC_CTRL2 + STMP_OFFSET_REG_SET);
 			set_bit(chan->channel, &lradc->is_divided);
 			ret = 0;
 		}
@@ -1169,11 +1163,12 @@ static irqreturn_t mxs_lradc_handle_irq(int irq, void *data)
 		mxs_lradc_handle_touch(lradc);
 
 	if (iio_buffer_enabled(iio))
-		iio_trigger_poll(iio->trig, iio_get_time_ns());
+		iio_trigger_poll(iio->trig);
 	else if (reg & LRADC_CTRL1_LRADC_IRQ(0))
 		complete(&lradc->completion);
 
-	mxs_lradc_reg_clear(lradc, reg & mxs_lradc_irq_mask(lradc), LRADC_CTRL1);
+	mxs_lradc_reg_clear(lradc, reg & mxs_lradc_irq_mask(lradc),
+			LRADC_CTRL1);
 
 	return IRQ_HANDLED;
 }
@@ -1264,7 +1259,8 @@ static int mxs_lradc_buffer_preenable(struct iio_dev *iio)
 	uint32_t ctrl1_irq = 0;
 	const uint32_t chan_value = LRADC_CH_ACCUMULATE |
 		((LRADC_DELAY_TIMER_LOOP - 1) << LRADC_CH_NUM_SAMPLES_OFFSET);
-	const int len = bitmap_weight(iio->active_scan_mask, LRADC_MAX_TOTAL_CHANS);
+	const int len = bitmap_weight(iio->active_scan_mask,
+			LRADC_MAX_TOTAL_CHANS);
 
 	if (!len)
 		return -EINVAL;
@@ -1277,7 +1273,7 @@ static int mxs_lradc_buffer_preenable(struct iio_dev *iio)
 	if (!ret)
 		return -EBUSY;
 
-	lradc->buffer = kmalloc(len * sizeof(*lradc->buffer), GFP_KERNEL);
+	lradc->buffer = kmalloc_array(len, sizeof(*lradc->buffer), GFP_KERNEL);
 	if (!lradc->buffer) {
 		ret = -ENOMEM;
 		goto err_mem;
@@ -1424,6 +1420,7 @@ static int mxs_lradc_hw_init(struct mxs_lradc *lradc)
 		(LRADC_DELAY_TIMER_PER << LRADC_DELAY_DELAY_OFFSET);
 
 	int ret = stmp_reset_block(lradc->base);
+
 	if (ret)
 		return ret;
 
@@ -1527,7 +1524,7 @@ static int mxs_lradc_probe(struct platform_device *pdev)
 	struct resource *iores;
 	int ret = 0, touch_ret;
 	int i, s;
-	unsigned int scale_uv;
+	uint64_t scale_uv;
 
 	/* Allocate the IIO device. */
 	iio = devm_iio_device_alloc(dev, sizeof(*lradc));
@@ -1562,14 +1559,16 @@ static int mxs_lradc_probe(struct platform_device *pdev)
 	/* Grab all IRQ sources */
 	for (i = 0; i < of_cfg->irq_count; i++) {
 		lradc->irq[i] = platform_get_irq(pdev, i);
-		if (lradc->irq[i] < 0)
-			return -EINVAL;
+		if (lradc->irq[i] < 0) {
+			ret = lradc->irq[i];
+			goto err_clk;
+		}
 
 		ret = devm_request_irq(dev, lradc->irq[i],
 					mxs_lradc_handle_irq, 0,
 					of_cfg->irq_name[i], iio);
 		if (ret)
-			return ret;
+			goto err_clk;
 	}
 
 	lradc->vref_mv = of_cfg->vref_mv;
@@ -1591,7 +1590,7 @@ static int mxs_lradc_probe(struct platform_device *pdev)
 				&mxs_lradc_trigger_handler,
 				&mxs_lradc_buffer_ops);
 	if (ret)
-		return ret;
+		goto err_clk;
 
 	ret = mxs_lradc_trigger_init(iio);
 	if (ret)
@@ -1646,6 +1645,8 @@ err_dev:
 	mxs_lradc_trigger_remove(iio);
 err_trig:
 	iio_triggered_buffer_cleanup(iio);
+err_clk:
+	clk_disable_unprepare(lradc->clk);
 	return ret;
 }
 

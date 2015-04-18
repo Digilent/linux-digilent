@@ -149,8 +149,8 @@ again:
 	spin_lock(&root->inode_lock);
 	ret = radix_tree_insert(&root->delayed_nodes_tree, ino, node);
 	if (ret == -EEXIST) {
-		kmem_cache_free(delayed_node_cache, node);
 		spin_unlock(&root->inode_lock);
+		kmem_cache_free(delayed_node_cache, node);
 		radix_tree_preload_end();
 		goto again;
 	}
@@ -267,14 +267,17 @@ static void __btrfs_release_delayed_node(
 	mutex_unlock(&delayed_node->mutex);
 
 	if (atomic_dec_and_test(&delayed_node->refs)) {
+		bool free = false;
 		struct btrfs_root *root = delayed_node->root;
 		spin_lock(&root->inode_lock);
 		if (atomic_read(&delayed_node->refs) == 0) {
 			radix_tree_delete(&root->delayed_nodes_tree,
 					  delayed_node->inode_id);
-			kmem_cache_free(delayed_node_cache, delayed_node);
+			free = true;
 		}
 		spin_unlock(&root->inode_lock);
+		if (free)
+			kmem_cache_free(delayed_node_cache, delayed_node);
 	}
 }
 
@@ -1039,7 +1042,7 @@ static int __btrfs_update_delayed_inode(struct btrfs_trans_handle *trans,
 	int ret;
 
 	key.objectid = node->inode_id;
-	btrfs_set_key_type(&key, BTRFS_INODE_ITEM_KEY);
+	key.type = BTRFS_INODE_ITEM_KEY;
 	key.offset = 0;
 
 	if (test_bit(BTRFS_DELAYED_NODE_DEL_IREF, &node->flags))
@@ -1096,7 +1099,7 @@ err_out:
 search:
 	btrfs_release_path(path);
 
-	btrfs_set_key_type(&key, BTRFS_INODE_EXTREF_KEY);
+	key.type = BTRFS_INODE_EXTREF_KEY;
 	key.offset = -1;
 	ret = btrfs_search_slot(trans, root, &key, path, -1, 1);
 	if (ret < 0)
@@ -1392,11 +1395,11 @@ static int btrfs_wq_run_delayed_node(struct btrfs_delayed_root *delayed_root,
 		return -ENOMEM;
 
 	async_work->delayed_root = delayed_root;
-	async_work->work.func = btrfs_async_run_delayed_root;
-	async_work->work.flags = 0;
+	btrfs_init_work(&async_work->work, btrfs_delayed_meta_helper,
+			btrfs_async_run_delayed_root, NULL, NULL);
 	async_work->nr = nr;
 
-	btrfs_queue_worker(&root->fs_info->delayed_workers, &async_work->work);
+	btrfs_queue_work(root->fs_info->delayed_workers, &async_work->work);
 	return 0;
 }
 
@@ -1470,7 +1473,7 @@ int btrfs_insert_delayed_dir_index(struct btrfs_trans_handle *trans,
 	}
 
 	delayed_item->key.objectid = btrfs_ino(dir);
-	btrfs_set_key_type(&delayed_item->key, BTRFS_DIR_INDEX_KEY);
+	delayed_item->key.type = BTRFS_DIR_INDEX_KEY;
 	delayed_item->key.offset = index;
 
 	dir_item = (struct btrfs_dir_item *)delayed_item->data;
@@ -1539,7 +1542,7 @@ int btrfs_delete_delayed_dir_index(struct btrfs_trans_handle *trans,
 		return PTR_ERR(node);
 
 	item_key.objectid = btrfs_ino(dir);
-	btrfs_set_key_type(&item_key, BTRFS_DIR_INDEX_KEY);
+	item_key.type = BTRFS_DIR_INDEX_KEY;
 	item_key.offset = index;
 
 	ret = btrfs_delete_delayed_insertion_item(root, node, &item_key);

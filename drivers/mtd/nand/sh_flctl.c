@@ -395,7 +395,7 @@ static int flctl_dma_fifo0_transfer(struct sh_flctl *flctl, unsigned long *buf,
 				msecs_to_jiffies(3000));
 
 	if (ret <= 0) {
-		chan->device->device_control(chan, DMA_TERMINATE_ALL, 0);
+		dmaengine_terminate_all(chan);
 		dev_err(&flctl->pdev->dev, "wait_for_completion_timeout\n");
 	}
 
@@ -897,7 +897,7 @@ static void flctl_select_chip(struct mtd_info *mtd, int chipnr)
 		if (!flctl->qos_request) {
 			ret = dev_pm_qos_add_request(&flctl->pdev->dev,
 							&flctl->pm_qos,
-							DEV_PM_QOS_LATENCY,
+							DEV_PM_QOS_RESUME_LATENCY,
 							100);
 			if (ret < 0)
 				dev_err(&flctl->pdev->dev,

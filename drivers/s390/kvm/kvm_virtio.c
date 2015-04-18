@@ -406,15 +406,8 @@ static void kvm_extint_handler(struct ext_code ext_code,
 
 	switch (param) {
 	case VIRTIO_PARAM_CONFIG_CHANGED:
-	{
-		struct virtio_driver *drv;
-		drv = container_of(vq->vdev->dev.driver,
-				   struct virtio_driver, driver);
-		if (drv->config_changed)
-			drv->config_changed(vq->vdev);
-
+		virtio_config_changed(vq->vdev);
 		break;
-	}
 	case VIRTIO_PARAM_DEV_ADD:
 		schedule_work(&hotplug_work);
 		break;
@@ -477,7 +470,7 @@ static int __init kvm_devices_init(void)
 	INIT_WORK(&hotplug_work, hotplug_devices);
 
 	irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
-	register_external_interrupt(0x2603, kvm_extint_handler);
+	register_external_irq(EXT_IRQ_CP_SERVICE, kvm_extint_handler);
 
 	scan_devices();
 	return 0;

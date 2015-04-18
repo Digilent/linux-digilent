@@ -42,7 +42,7 @@
  */
 
 #define DEBUG_SUBSYSTEM S_LLITE
-#include <lustre_lite.h>
+#include "../include/lustre_lite.h"
 #include "llite_internal.h"
 #include <linux/exportfs.h>
 
@@ -51,7 +51,9 @@ __u32 get_uuid2int(const char *name, int len)
 	__u32 key0 = 0x12a3fe2d, key1 = 0x37abe8f9;
 	while (len--) {
 		__u32 key = key1 + (key0 ^ (*name++ * 7152373));
-		if (key & 0x80000000) key -= 0x7fffffff;
+
+		if (key & 0x80000000)
+			key -= 0x7fffffff;
 		key1 = key0;
 		key0 = key;
 	}
@@ -98,14 +100,14 @@ struct inode *search_inode_for_lustre(struct super_block *sb,
 	if (inode)
 		return inode;
 
-	rc = ll_get_max_mdsize(sbi, &eadatalen);
+	rc = ll_get_default_mdsize(sbi, &eadatalen);
 	if (rc)
 		return ERR_PTR(rc);
 
 	/* Because inode is NULL, ll_prep_md_op_data can not
 	 * be used here. So we allocate op_data ourselves */
-	OBD_ALLOC_PTR(op_data);
-	if (op_data == NULL)
+	op_data = kzalloc(sizeof(*op_data), GFP_NOFS);
+	if (!op_data)
 		return ERR_PTR(-ENOMEM);
 
 	op_data->op_fid1 = *fid;
@@ -167,10 +169,10 @@ ll_iget_for_nfs(struct super_block *sb, struct lu_fid *fid, struct lu_fid *paren
 	}
 
 	result = d_obtain_alias(inode);
-	if (IS_ERR(result))
+	if (IS_ERR(result)) {
+		iput(inode);
 		return result;
-
-	ll_dops_init(result, 1, 0);
+	}
 
 	return result;
 }
@@ -234,11 +236,15 @@ static int ll_get_name(struct dentry *dentry, char *name,
 		.ctx.actor = ll_nfs_get_name_filldir,
 	};
 
-	if (!dir || !S_ISDIR(dir->i_mode))
-		GOTO(out, rc = -ENOTDIR);
+	if (!dir || !S_ISDIR(dir->i_mode)) {
+		rc = -ENOTDIR;
+		goto out;
+	}
 
-	if (!dir->i_fop)
-		GOTO(out, rc = -EINVAL);
+	if (!dir->i_fop) {
+		rc = -EINVAL;
+		goto out;
+	}
 
 	mutex_lock(&dir->i_mutex);
 	rc = ll_dir_read(dir, &lgd.ctx);
@@ -290,7 +296,7 @@ static struct dentry *ll_get_parent(struct dentry *dchild)
 	CDEBUG(D_INFO, "getting parent for (%lu,"DFID")\n",
 			dir->i_ino, PFID(ll_inode2fid(dir)));
 
-	rc = ll_get_max_mdsize(sbi, &lmmsize);
+	rc = ll_get_default_mdsize(sbi, &lmmsize);
 	if (rc != 0)
 		return ERR_PTR(rc);
 

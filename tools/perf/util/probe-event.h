@@ -2,6 +2,7 @@
 #define _PROBE_EVENT_H
 
 #include <stdbool.h>
+#include "intlist.h"
 #include "strlist.h"
 #include "strfilter.h"
 
@@ -76,13 +77,6 @@ struct perf_probe_event {
 	struct perf_probe_arg	*args;	/* Arguments */
 };
 
-
-/* Line number container */
-struct line_node {
-	struct list_head	list;
-	int			line;
-};
-
 /* Line range */
 struct line_range {
 	char			*file;		/* File name */
@@ -92,7 +86,7 @@ struct line_range {
 	int			offset;		/* Start line offset */
 	char			*path;		/* Real path name */
 	char			*comp_dir;	/* Compile directory */
-	struct list_head	line_list;	/* Visible lines */
+	struct intlist		*line_list;	/* Visible lines */
 };
 
 /* List of variables */
@@ -124,7 +118,7 @@ extern int parse_line_range_desc(const char *cmd, struct line_range *lr);
 extern void line_range__clear(struct line_range *lr);
 
 /* Initialize line range */
-extern void line_range__init(struct line_range *lr);
+extern int line_range__init(struct line_range *lr);
 
 /* Internal use: Return kernel/module path */
 extern const char *kernel_get_module_path(const char *module);
@@ -134,7 +128,8 @@ extern int add_perf_probe_events(struct perf_probe_event *pevs, int npevs,
 				 bool force_add);
 extern int del_perf_probe_events(struct strlist *dellist);
 extern int show_perf_probe_events(void);
-extern int show_line_range(struct line_range *lr, const char *module);
+extern int show_line_range(struct line_range *lr, const char *module,
+			   bool user);
 extern int show_available_vars(struct perf_probe_event *pevs, int npevs,
 			       int max_probe_points, const char *module,
 			       struct strfilter *filter, bool externs);

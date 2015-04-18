@@ -45,7 +45,7 @@ void uvd_v2_2_fence_emit(struct radeon_device *rdev,
 	radeon_ring_write(ring, PACKET0(UVD_CONTEXT_ID, 0));
 	radeon_ring_write(ring, fence->seq);
 	radeon_ring_write(ring, PACKET0(UVD_GPCOM_VCPU_DATA0, 0));
-	radeon_ring_write(ring, addr & 0xffffffff);
+	radeon_ring_write(ring, lower_32_bits(addr));
 	radeon_ring_write(ring, PACKET0(UVD_GPCOM_VCPU_DATA1, 0));
 	radeon_ring_write(ring, upper_32_bits(addr) & 0xff);
 	radeon_ring_write(ring, PACKET0(UVD_GPCOM_VCPU_CMD, 0));
@@ -71,6 +71,10 @@ int uvd_v2_2_resume(struct radeon_device *rdev)
 	uint64_t addr;
 	uint32_t chip_id, size;
 	int r;
+
+	/* RV770 uses V1.0 MC */
+	if (rdev->family == CHIP_RV770)
+		return uvd_v1_0_resume(rdev);
 
 	r = radeon_uvd_resume(rdev);
 	if (r)

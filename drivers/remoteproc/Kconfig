@@ -44,7 +44,7 @@ config STE_MODEM_RPROC
 config DA8XX_REMOTEPROC
 	tristate "DA8xx/OMAP-L13x remoteproc support"
 	depends on ARCH_DAVINCI_DA8XX
-	select CMA
+	select CMA if MMU
 	select REMOTEPROC
 	select RPMSG
 	help
@@ -85,5 +85,14 @@ config MB_REMOTEPROC
 	help
 	  Say y here to support Xilinx Microblaze remote processors
 	  on the Xilinx Zynq.
+
+config ZYNQMP_R5_REMOTEPROC
+	tristate "ZynqMP_r5 remoteproc support"
+	depends on ARM64
+	select REMOTEPROC
+	select RPMSG
+	help
+	  Say y here to support ZynqMP R5 remote processors via the remote
+	  processor framework.
 
 endmenu

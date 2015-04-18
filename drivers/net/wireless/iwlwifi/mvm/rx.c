@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,6 +32,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -60,7 +62,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *****************************************************************************/
 #include "iwl-trans.h"
-
 #include "mvm.h"
 #include "fw-api.h"
 
@@ -77,6 +78,15 @@ int iwl_mvm_rx_rx_phy_cmd(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 
 	memcpy(&mvm->last_phy_info, pkt->data, sizeof(mvm->last_phy_info));
 	mvm->ampdu_ref++;
+
+#ifdef CONFIG_IWLWIFI_DEBUGFS
+	if (mvm->last_phy_info.phy_flags & cpu_to_le16(RX_RES_PHY_FLAGS_AGG)) {
+		spin_lock(&mvm->drv_stats_lock);
+		mvm->drv_rx_stats.ampdu_count++;
+		spin_unlock(&mvm->drv_stats_lock);
+	}
+#endif
+
 	return 0;
 }
 
@@ -121,48 +131,7 @@ static void iwl_mvm_pass_packet_to_mac80211(struct iwl_mvm *mvm,
 
 	memcpy(IEEE80211_SKB_RXCB(skb), stats, sizeof(*stats));
 
-	ieee80211_rx_ni(mvm->hw, skb);
-}
-
-static void iwl_mvm_calc_rssi(struct iwl_mvm *mvm,
-			      struct iwl_rx_phy_info *phy_info,
-			      struct ieee80211_rx_status *rx_status)
-{
-	int rssi_a, rssi_b, rssi_a_dbm, rssi_b_dbm, max_rssi_dbm;
-	int rssi_all_band_a, rssi_all_band_b;
-	u32 agc_a, agc_b, max_agc;
-	u32 val;
-
-	val = le32_to_cpu(phy_info->non_cfg_phy[IWL_RX_INFO_AGC_IDX]);
-	agc_a = (val & IWL_OFDM_AGC_A_MSK) >> IWL_OFDM_AGC_A_POS;
-	agc_b = (val & IWL_OFDM_AGC_B_MSK) >> IWL_OFDM_AGC_B_POS;
-	max_agc = max_t(u32, agc_a, agc_b);
-
-	val = le32_to_cpu(phy_info->non_cfg_phy[IWL_RX_INFO_RSSI_AB_IDX]);
-	rssi_a = (val & IWL_OFDM_RSSI_INBAND_A_MSK) >> IWL_OFDM_RSSI_A_POS;
-	rssi_b = (val & IWL_OFDM_RSSI_INBAND_B_MSK) >> IWL_OFDM_RSSI_B_POS;
-	rssi_all_band_a = (val & IWL_OFDM_RSSI_ALLBAND_A_MSK) >>
-				IWL_OFDM_RSSI_ALLBAND_A_POS;
-	rssi_all_band_b = (val & IWL_OFDM_RSSI_ALLBAND_B_MSK) >>
-				IWL_OFDM_RSSI_ALLBAND_B_POS;
-
-	/*
-	 * dBm = rssi dB - agc dB - constant.
-	 * Higher AGC (higher radio gain) means lower signal.
-	 */
-	rssi_a_dbm = rssi_a - IWL_RSSI_OFFSET - agc_a;
-	rssi_b_dbm = rssi_b - IWL_RSSI_OFFSET - agc_b;
-	max_rssi_dbm = max_t(int, rssi_a_dbm, rssi_b_dbm);
-
-	IWL_DEBUG_STATS(mvm, "Rssi In A %d B %d Max %d AGCA %d AGCB %d\n",
-			rssi_a_dbm, rssi_b_dbm, max_rssi_dbm, agc_a, agc_b);
-
-	rx_status->signal = max_rssi_dbm;
-	rx_status->chains = (le16_to_cpu(phy_info->phy_flags) &
-				RX_RES_PHY_FLAGS_ANTENNA)
-					>> RX_RES_PHY_FLAGS_ANTENNA_POS;
-	rx_status->chain_signal[0] = rssi_a_dbm;
-	rx_status->chain_signal[1] = rssi_b_dbm;
+	ieee80211_rx(mvm->hw, skb);
 }
 
 /*
@@ -182,13 +151,13 @@ static void iwl_mvm_get_signal_strength(struct iwl_mvm *mvm,
 	    le32_to_cpu(phy_info->non_cfg_phy[IWL_RX_INFO_ENERGY_ANT_ABC_IDX]);
 	energy_a = (val & IWL_RX_INFO_ENERGY_ANT_A_MSK) >>
 						IWL_RX_INFO_ENERGY_ANT_A_POS;
-	energy_a = energy_a ? -energy_a : -256;
+	energy_a = energy_a ? -energy_a : S8_MIN;
 	energy_b = (val & IWL_RX_INFO_ENERGY_ANT_B_MSK) >>
 						IWL_RX_INFO_ENERGY_ANT_B_POS;
-	energy_b = energy_b ? -energy_b : -256;
+	energy_b = energy_b ? -energy_b : S8_MIN;
 	energy_c = (val & IWL_RX_INFO_ENERGY_ANT_C_MSK) >>
 						IWL_RX_INFO_ENERGY_ANT_C_POS;
-	energy_c = energy_c ? -energy_c : -256;
+	energy_c = energy_c ? -energy_c : S8_MIN;
 	max_energy = max(energy_a, energy_b);
 	max_energy = max(max_energy, energy_c);
 
@@ -277,6 +246,7 @@ int iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 	struct iwl_rx_packet *pkt = rxb_addr(rxb);
 	struct iwl_rx_phy_info *phy_info;
 	struct iwl_rx_mpdu_res_start *rx_res;
+	struct ieee80211_sta *sta;
 	u32 len;
 	u32 ampdu_status;
 	u32 rate_n_flags;
@@ -334,13 +304,33 @@ int iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 	 */
 	/*rx_status.flag |= RX_FLAG_MACTIME_MPDU;*/
 
-	if (mvm->fw->ucode_capa.flags & IWL_UCODE_TLV_FLAGS_RX_ENERGY_API)
-		iwl_mvm_get_signal_strength(mvm, phy_info, &rx_status);
-	else
-		iwl_mvm_calc_rssi(mvm, phy_info, &rx_status);
+	iwl_mvm_get_signal_strength(mvm, phy_info, &rx_status);
 
 	IWL_DEBUG_STATS_LIMIT(mvm, "Rssi %d, TSF %llu\n", rx_status.signal,
 			      (unsigned long long)rx_status.mactime);
+
+	rcu_read_lock();
+	/*
+	 * We have tx blocked stations (with CS bit). If we heard frames from
+	 * a blocked station on a new channel we can TX to it again.
+	 */
+	if (unlikely(mvm->csa_tx_block_bcn_timeout)) {
+		sta = ieee80211_find_sta(
+			rcu_dereference(mvm->csa_tx_blocked_vif), hdr->addr2);
+		if (sta)
+			iwl_mvm_sta_modify_disable_tx_ap(mvm, sta, false);
+	}
+
+	/* This is fine since we don't support multiple AP interfaces */
+	sta = ieee80211_find_sta_by_ifaddr(mvm->hw, hdr->addr2, NULL);
+	if (sta) {
+		struct iwl_mvm_sta *mvmsta;
+		mvmsta = iwl_mvm_sta_from_mac80211(sta);
+		rs_update_last_rssi(mvm, &mvmsta->lq_sta,
+				    &rx_status);
+	}
+
+	rcu_read_unlock();
 
 	/* set the preamble flag if appropriate */
 	if (phy_info->phy_flags & cpu_to_le16(RX_RES_PHY_FLAGS_SHORT_PREAMBLE))
@@ -364,31 +354,45 @@ int iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 		rx_status.flag |= RX_FLAG_40MHZ;
 		break;
 	case RATE_MCS_CHAN_WIDTH_80:
-		rx_status.flag |= RX_FLAG_80MHZ;
+		rx_status.vht_flag |= RX_VHT_FLAG_80MHZ;
 		break;
 	case RATE_MCS_CHAN_WIDTH_160:
-		rx_status.flag |= RX_FLAG_160MHZ;
+		rx_status.vht_flag |= RX_VHT_FLAG_160MHZ;
 		break;
 	}
 	if (rate_n_flags & RATE_MCS_SGI_MSK)
 		rx_status.flag |= RX_FLAG_SHORT_GI;
 	if (rate_n_flags & RATE_HT_MCS_GF_MSK)
 		rx_status.flag |= RX_FLAG_HT_GF;
+	if (rate_n_flags & RATE_MCS_LDPC_MSK)
+		rx_status.flag |= RX_FLAG_LDPC;
 	if (rate_n_flags & RATE_MCS_HT_MSK) {
+		u8 stbc = (rate_n_flags & RATE_MCS_HT_STBC_MSK) >>
+				RATE_MCS_STBC_POS;
 		rx_status.flag |= RX_FLAG_HT;
 		rx_status.rate_idx = rate_n_flags & RATE_HT_MCS_INDEX_MSK;
+		rx_status.flag |= stbc << RX_FLAG_STBC_SHIFT;
 	} else if (rate_n_flags & RATE_MCS_VHT_MSK) {
+		u8 stbc = (rate_n_flags & RATE_MCS_VHT_STBC_MSK) >>
+				RATE_MCS_STBC_POS;
 		rx_status.vht_nss =
 			((rate_n_flags & RATE_VHT_MCS_NSS_MSK) >>
 						RATE_VHT_MCS_NSS_POS) + 1;
 		rx_status.rate_idx = rate_n_flags & RATE_VHT_MCS_RATE_CODE_MSK;
 		rx_status.flag |= RX_FLAG_VHT;
+		rx_status.flag |= stbc << RX_FLAG_STBC_SHIFT;
+		if (rate_n_flags & RATE_MCS_BF_MSK)
+			rx_status.vht_flag |= RX_VHT_FLAG_BF;
 	} else {
 		rx_status.rate_idx =
 			iwl_mvm_legacy_rate_to_mac80211_idx(rate_n_flags,
 							    rx_status.band);
 	}
 
+#ifdef CONFIG_IWLWIFI_DEBUGFS
+	iwl_mvm_update_frame_stats(mvm, &mvm->drv_rx_stats, rate_n_flags,
+				   rx_status.flag & RX_FLAG_AMPDU_DETAILS);
+#endif
 	iwl_mvm_pass_packet_to_mac80211(mvm, hdr, len, ampdu_status,
 					rxb, &rx_status);
 	return 0;
@@ -496,10 +500,29 @@ int iwl_mvm_rx_statistics(struct iwl_mvm *mvm,
 		.mvm = mvm,
 	};
 
+	/*
+	 * set temperature debug enabled - ignore FW temperature updates
+	 * and use the user set temperature.
+	 */
+	if (mvm->temperature_test) {
+		if (mvm->temperature < le32_to_cpu(common->temperature))
+			IWL_DEBUG_TEMP(mvm,
+				       "Ignoring FW temperature update that is greater than the debug set temperature (debug temp = %d, fw temp = %d)\n",
+				       mvm->temperature,
+				       le32_to_cpu(common->temperature));
+		/*
+		 * skip iwl_mvm_tt_handler since we are in
+		 * temperature debug mode and we are ignoring
+		 * the new temperature value
+		 */
+		goto update;
+	}
+
 	if (mvm->temperature != le32_to_cpu(common->temperature)) {
 		mvm->temperature = le32_to_cpu(common->temperature);
 		iwl_mvm_tt_handler(mvm);
 	}
+update:
 	iwl_mvm_update_rx_statistics(mvm, stats);
 
 	ieee80211_iterate_active_interfaces(mvm->hw,

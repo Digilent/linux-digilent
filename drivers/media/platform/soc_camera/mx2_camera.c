@@ -741,7 +741,7 @@ static int mx2_start_streaming(struct vb2_queue *q, unsigned int count)
 	return 0;
 }
 
-static int mx2_stop_streaming(struct vb2_queue *q)
+static void mx2_stop_streaming(struct vb2_queue *q)
 {
 	struct soc_camera_device *icd = soc_camera_from_vb2q(q);
 	struct soc_camera_host *ici =
@@ -773,8 +773,6 @@ static int mx2_stop_streaming(struct vb2_queue *q)
 
 	dma_free_coherent(ici->v4l2_dev.dev,
 			  pcdev->discard_size, b, pcdev->discard_buffer_dma);
-
-	return 0;
 }
 
 static struct vb2_ops mx2_videobuf_ops = {
@@ -794,7 +792,7 @@ static int mx2_camera_init_videobuf(struct vb2_queue *q,
 	q->ops = &mx2_videobuf_ops;
 	q->mem_ops = &vb2_dma_contig_memops;
 	q->buf_struct_size = sizeof(struct mx2_buffer);
-	q->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 
 	return vb2_queue_init(q);
 }
@@ -811,10 +809,9 @@ static int mx2_camera_init_videobuf(struct vb2_queue *q,
 
 static int mx27_camera_emma_prp_reset(struct mx2_camera_dev *pcdev)
 {
-	u32 cntl;
 	int count = 0;
 
-	cntl = readl(pcdev->base_emma + PRP_CNTL);
+	readl(pcdev->base_emma + PRP_CNTL);
 	writel(PRP_CNTL_SWRST, pcdev->base_emma + PRP_CNTL);
 	while (count++ < 100) {
 		if (!(readl(pcdev->base_emma + PRP_CNTL) & PRP_CNTL_SWRST))
@@ -1005,7 +1002,7 @@ static int mx2_emmaprp_resize(struct mx2_camera_dev *pcdev,
 			      struct v4l2_mbus_framefmt *mf_in,
 			      struct v4l2_pix_format *pix_out, bool apply)
 {
-	int num, den;
+	unsigned int num, den;
 	unsigned long m;
 	int i, dir;
 

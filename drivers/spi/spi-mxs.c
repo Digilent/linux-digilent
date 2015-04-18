@@ -29,7 +29,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -86,7 +85,7 @@ static int mxs_spi_setup_transfer(struct spi_device *dev,
 		mxs_ssp_set_clk_rate(ssp, hz);
 		/*
 		 * Save requested rate, hz, rather than the actual rate,
-		 * ssp->clk_rate.  Otherwise we would set the rate every trasfer
+		 * ssp->clk_rate.  Otherwise we would set the rate every transfer
 		 * when the actual rate is not quite the same as requested rate.
 		 */
 		spi->sck = hz;
@@ -155,12 +154,14 @@ static int mxs_ssp_wait(struct mxs_spi *spi, int offset, int mask, bool set)
 static void mxs_ssp_dma_irq_callback(void *param)
 {
 	struct mxs_spi *spi = param;
+
 	complete(&spi->c);
 }
 
 static irqreturn_t mxs_ssp_irq_handler(int irq, void *dev_id)
 {
 	struct mxs_ssp *ssp = dev_id;
+
 	dev_err(ssp->dev, "%s[%i] CTRL1=%08x STATUS=%08x\n",
 		__func__, __LINE__,
 		readl(ssp->base + HW_SSP_CTRL1(ssp)),
@@ -190,7 +191,7 @@ static int mxs_spi_txrx_dma(struct mxs_spi *spi,
 	if (!len)
 		return -EINVAL;
 
-	dma_xfer = kzalloc(sizeof(*dma_xfer) * sgs, GFP_KERNEL);
+	dma_xfer = kcalloc(sgs, sizeof(*dma_xfer), GFP_KERNEL);
 	if (!dma_xfer)
 		return -ENOMEM;
 
@@ -371,7 +372,7 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 {
 	struct mxs_spi *spi = spi_master_get_devdata(master);
 	struct mxs_ssp *ssp = &spi->ssp;
-	struct spi_transfer *t, *tmp_t;
+	struct spi_transfer *t;
 	unsigned int flag;
 	int status = 0;
 
@@ -381,7 +382,7 @@ static int mxs_spi_transfer_one(struct spi_master *master,
 	writel(mxs_spi_cs_to_reg(m->spi->chip_select),
 	       ssp->base + HW_SSP_CTRL0 + STMP_OFFSET_REG_SET);
 
-	list_for_each_entry_safe(t, tmp_t, &m->transfers, transfer_list) {
+	list_for_each_entry(t, &m->transfers, transfer_list) {
 
 		status = mxs_spi_setup_transfer(m->spi, t);
 		if (status)
@@ -473,7 +474,7 @@ static int mxs_spi_probe(struct platform_device *pdev)
 	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq_err = platform_get_irq(pdev, 0);
 	if (irq_err < 0)
-		return -EINVAL;
+		return irq_err;
 
 	base = devm_ioremap_resource(&pdev->dev, iores);
 	if (IS_ERR(base))

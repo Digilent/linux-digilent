@@ -464,7 +464,6 @@ static void esd_usb2_write_bulk_callback(struct urb *urb)
 {
 	struct esd_tx_urb_context *context = urb->context;
 	struct esd_usb2_net_priv *priv;
-	struct esd_usb2 *dev;
 	struct net_device *netdev;
 	size_t size = sizeof(struct esd_usb2_msg);
 
@@ -472,7 +471,6 @@ static void esd_usb2_write_bulk_callback(struct urb *urb)
 
 	priv = context->priv;
 	netdev = priv->netdev;
-	dev = priv->usb2;
 
 	/* free up our allocated buffer */
 	usb_free_coherent(urb->dev, size,
@@ -888,6 +886,7 @@ static const struct net_device_ops esd_usb2_netdev_ops = {
 	.ndo_open = esd_usb2_open,
 	.ndo_stop = esd_usb2_close,
 	.ndo_start_xmit = esd_usb2_start_xmit,
+	.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct can_bittiming_const esd_usb2_bittiming_const = {
@@ -1024,6 +1023,7 @@ static int esd_usb2_probe_one_net(struct usb_interface *intf, int index)
 	netdev->netdev_ops = &esd_usb2_netdev_ops;
 
 	SET_NETDEV_DEV(netdev, &intf->dev);
+	netdev->dev_id = index;
 
 	err = register_candev(netdev);
 	if (err) {
@@ -1141,6 +1141,7 @@ static void esd_usb2_disconnect(struct usb_interface *intf)
 			}
 		}
 		unlink_all_urbs(dev);
+		kfree(dev);
 	}
 }
 

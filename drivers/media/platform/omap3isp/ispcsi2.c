@@ -12,16 +12,6 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 #include <linux/delay.h>
 #include <media/v4l2-common.h>
@@ -695,7 +685,7 @@ static void csi2_isr_buffer(struct isp_csi2_device *csi2)
 	if (buffer == NULL)
 		return;
 
-	csi2_set_outaddr(csi2, buffer->isp_addr);
+	csi2_set_outaddr(csi2, buffer->dma);
 	csi2_ctx_enable(isp, csi2, 0, 1);
 }
 
@@ -812,7 +802,7 @@ static int csi2_queue(struct isp_video *video, struct isp_buffer *buffer)
 	struct isp_device *isp = video->isp;
 	struct isp_csi2_device *csi2 = &isp->isp_csi2a;
 
-	csi2_set_outaddr(csi2, buffer->isp_addr);
+	csi2_set_outaddr(csi2, buffer->dma);
 
 	/*
 	 * If streaming was enabled before there was a buffer queued

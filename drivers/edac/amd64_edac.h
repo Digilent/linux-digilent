@@ -168,6 +168,8 @@
 #define PCI_DEVICE_ID_AMD_15H_NB_F2	0x1602
 #define PCI_DEVICE_ID_AMD_16H_NB_F1	0x1531
 #define PCI_DEVICE_ID_AMD_16H_NB_F2	0x1532
+#define PCI_DEVICE_ID_AMD_16H_M30H_NB_F1 0x1581
+#define PCI_DEVICE_ID_AMD_16H_M30H_NB_F2 0x1582
 
 /*
  * Function 1 - Address Map
@@ -300,6 +302,7 @@ enum amd_families {
 	F15_CPUS,
 	F15_M30H_CPUS,
 	F16_CPUS,
+	F16_M30H_CPUS,
 	NUM_FAMILIES,
 };
 
@@ -478,8 +481,6 @@ struct low_ops {
 	void (*map_sysaddr_to_csrow)	(struct mem_ctl_info *mci, u64 sys_addr,
 					 struct err_info *);
 	int (*dbam_to_cs)		(struct amd64_pvt *pvt, u8 dct, unsigned cs_mode);
-	int (*read_dct_pci_cfg)		(struct amd64_pvt *pvt, int offset,
-					 u32 *val, const char *func);
 };
 
 struct amd64_family_type {
@@ -498,9 +499,6 @@ int __amd64_write_pci_cfg_dword(struct pci_dev *pdev, int offset,
 
 #define amd64_write_pci_cfg(pdev, offset, val)	\
 	__amd64_write_pci_cfg_dword(pdev, offset, val, __func__)
-
-#define amd64_read_dct_pci_cfg(pvt, offset, val) \
-	pvt->ops->read_dct_pci_cfg(pvt, offset, val, __func__)
 
 int amd64_get_dram_hole_info(struct mem_ctl_info *mci, u64 *hole_base,
 			     u64 *hole_offset, u64 *hole_size);

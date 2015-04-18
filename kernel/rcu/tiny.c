@@ -12,8 +12,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  * Copyright IBM Corporation, 2008
  *
@@ -37,10 +37,6 @@
 #include <linux/prefetch.h>
 #include <linux/ftrace_event.h>
 
-#ifdef CONFIG_RCU_TRACE
-#include <trace/events/rcu.h>
-#endif /* #else #ifdef CONFIG_RCU_TRACE */
-
 #include "rcu.h"
 
 /* Forward declarations for tiny_plugin.h. */
@@ -55,7 +51,7 @@ static long long rcu_dynticks_nesting = DYNTICK_TASK_EXIT_IDLE;
 
 #include "tiny_plugin.h"
 
-/* Common code for rcu_idle_enter() and rcu_irq_exit(), see kernel/rcutree.c. */
+/* Common code for rcu_idle_enter() and rcu_irq_exit(), see kernel/rcu/tree.c. */
 static void rcu_idle_enter_common(long long newval)
 {
 	if (newval) {
@@ -66,7 +62,7 @@ static void rcu_idle_enter_common(long long newval)
 	}
 	RCU_TRACE(trace_rcu_dyntick(TPS("Start"),
 				    rcu_dynticks_nesting, newval));
-	if (!is_idle_task(current)) {
+	if (IS_ENABLED(CONFIG_RCU_TRACE) && !is_idle_task(current)) {
 		struct task_struct *idle __maybe_unused = idle_task(smp_processor_id());
 
 		RCU_TRACE(trace_rcu_dyntick(TPS("Entry error: not idle task"),
@@ -76,7 +72,7 @@ static void rcu_idle_enter_common(long long newval)
 			  current->pid, current->comm,
 			  idle->pid, idle->comm); /* must be idle task! */
 	}
-	rcu_sched_qs(0); /* implies rcu_bh_qsctr_inc(0) */
+	rcu_sched_qs(); /* implies rcu_bh_inc() */
 	barrier();
 	rcu_dynticks_nesting = newval;
 }
@@ -118,7 +114,7 @@ void rcu_irq_exit(void)
 }
 EXPORT_SYMBOL_GPL(rcu_irq_exit);
 
-/* Common code for rcu_idle_exit() and rcu_irq_enter(), see kernel/rcutree.c. */
+/* Common code for rcu_idle_exit() and rcu_irq_enter(), see kernel/rcu/tree.c. */
 static void rcu_idle_exit_common(long long oldval)
 {
 	if (oldval) {
@@ -127,7 +123,7 @@ static void rcu_idle_exit_common(long long oldval)
 		return;
 	}
 	RCU_TRACE(trace_rcu_dyntick(TPS("End"), oldval, rcu_dynticks_nesting));
-	if (!is_idle_task(current)) {
+	if (IS_ENABLED(CONFIG_RCU_TRACE) && !is_idle_task(current)) {
 		struct task_struct *idle __maybe_unused = idle_task(smp_processor_id());
 
 		RCU_TRACE(trace_rcu_dyntick(TPS("Exit error: not idle task"),
@@ -221,7 +217,7 @@ static int rcu_qsctr_help(struct rcu_ctrlblk *rcp)
  * are at it, given that any rcu quiescent state is also an rcu_bh
  * quiescent state.  Use "+" instead of "||" to defeat short circuiting.
  */
-void rcu_sched_qs(int cpu)
+void rcu_sched_qs(void)
 {
 	unsigned long flags;
 
@@ -235,7 +231,7 @@ void rcu_sched_qs(int cpu)
 /*
  * Record an rcu_bh quiescent state.
  */
-void rcu_bh_qs(int cpu)
+void rcu_bh_qs(void)
 {
 	unsigned long flags;
 
@@ -255,9 +251,11 @@ void rcu_check_callbacks(int cpu, int user)
 {
 	RCU_TRACE(check_cpu_stalls());
 	if (user || rcu_is_cpu_rrupt_from_idle())
-		rcu_sched_qs(cpu);
+		rcu_sched_qs();
 	else if (!in_softirq())
-		rcu_bh_qs(cpu);
+		rcu_bh_qs();
+	if (user)
+		rcu_note_voluntary_context_switch(current);
 }
 
 /*

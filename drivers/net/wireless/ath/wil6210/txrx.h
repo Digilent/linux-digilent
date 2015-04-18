@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Qualcomm Atheros, Inc.
+ * Copyright (c) 2012-2014 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -20,9 +20,9 @@
 #define BUF_SW_OWNED    (1)
 #define BUF_HW_OWNED    (0)
 
-/* size of max. Rx packet */
-#define RX_BUF_LEN      (2048)
-#define TX_BUF_LEN      (2048)
+/* size of max. Tx/Rx buffers, as supported by FW */
+#define RX_BUF_LEN      (2242)
+#define TX_BUF_LEN      (2242)
 /* how many bytes to reserve for rtap header? */
 #define WIL6210_RTAP_SIZE (128)
 
@@ -237,7 +237,6 @@ struct vring_tx_mac {
 #define DMA_CFG_DESC_TX_0_L4_TYPE_LEN 2
 #define DMA_CFG_DESC_TX_0_L4_TYPE_MSK 0xC0000000 /* L4 type: 0-UDP, 2-TCP */
 
-
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_MAC_LEN_POS 0
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_MAC_LEN_LEN 7
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_MAC_LEN_MSK 0x7F /* MAC hdr len */
@@ -245,7 +244,6 @@ struct vring_tx_mac {
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_L3T_IPV4_POS 7
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_L3T_IPV4_LEN 1
 #define DMA_CFG_DESC_TX_OFFLOAD_CFG_L3T_IPV4_MSK 0x80 /* 1-IPv4, 0-IPv6 */
-
 
 #define TX_DMA_STATUS_DU         BIT(0)
 
@@ -347,7 +345,6 @@ struct vring_rx_mac {
 #define RX_DMA_ERROR_L3_ERR   BIT(4)
 #define RX_DMA_ERROR_L4_ERR   BIT(5)
 
-
 /* Status field */
 #define RX_DMA_STATUS_DU         BIT(0)
 #define RX_DMA_STATUS_ERROR      BIT(2)
@@ -435,5 +432,12 @@ static inline struct vring_rx_desc *wil_skb_rxdesc(struct sk_buff *skb)
 {
 	return (void *)skb->cb;
 }
+
+void wil_netif_rx_any(struct sk_buff *skb, struct net_device *ndev);
+void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb);
+struct wil_tid_ampdu_rx *wil_tid_ampdu_rx_alloc(struct wil6210_priv *wil,
+						int size, u16 ssn);
+void wil_tid_ampdu_rx_free(struct wil6210_priv *wil,
+			   struct wil_tid_ampdu_rx *r);
 
 #endif /* WIL6210_TXRX_H */

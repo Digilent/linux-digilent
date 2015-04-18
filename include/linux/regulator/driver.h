@@ -203,6 +203,8 @@ enum regulator_type {
  *
  * @name: Identifying name for the regulator.
  * @supply_name: Identifying the regulator supply
+ * @of_match: Name used to identify regulator in DT.
+ * @regulators_node: Name of node containing regulator definitions in DT.
  * @id: Numerical identifier for the regulator.
  * @ops: Regulator operations table.
  * @irq: Interrupt number for the regulator.
@@ -218,6 +220,8 @@ enum regulator_type {
  * @linear_min_sel: Minimal selector for starting linear mapping
  * @fixed_uV: Fixed voltage of rails.
  * @ramp_delay: Time to settle down after voltage change (unit: uV/us)
+ * @linear_ranges: A constant table of possible voltage ranges.
+ * @n_linear_ranges: Number of entries in the @linear_ranges table.
  * @volt_table: Voltage mapping table (if table based mapping)
  *
  * @vsel_reg: Register for selector when using regulator_regmap_X_voltage_
@@ -228,20 +232,27 @@ enum regulator_type {
  *                output when using regulator_set_voltage_sel_regmap
  * @enable_reg: Register for control when using regmap enable/disable ops
  * @enable_mask: Mask for control when using regmap enable/disable ops
+ * @enable_val: Enabling value for control when using regmap enable/disable ops
+ * @disable_val: Disabling value for control when using regmap enable/disable ops
  * @enable_is_inverted: A flag to indicate set enable_mask bits to disable
  *                      when using regulator_enable_regmap and friends APIs.
  * @bypass_reg: Register for control when using regmap set_bypass
  * @bypass_mask: Mask for control when using regmap set_bypass
+ * @bypass_val_on: Enabling value for control when using regmap set_bypass
+ * @bypass_val_off: Disabling value for control when using regmap set_bypass
  *
  * @enable_time: Time taken for initial enable of regulator (in uS).
+ * @off_on_delay: guard time (in uS), before re-enabling a regulator
  */
 struct regulator_desc {
 	const char *name;
 	const char *supply_name;
+	const char *of_match;
+	const char *regulators_node;
 	int id;
 	bool continuous_voltage_range;
 	unsigned n_voltages;
-	struct regulator_ops *ops;
+	const struct regulator_ops *ops;
 	int irq;
 	enum regulator_type type;
 	struct module *owner;
@@ -263,11 +274,17 @@ struct regulator_desc {
 	unsigned int apply_bit;
 	unsigned int enable_reg;
 	unsigned int enable_mask;
+	unsigned int enable_val;
+	unsigned int disable_val;
 	bool enable_is_inverted;
 	unsigned int bypass_reg;
 	unsigned int bypass_mask;
+	unsigned int bypass_val_on;
+	unsigned int bypass_val_off;
 
 	unsigned int enable_time;
+
+	unsigned int off_on_delay;
 };
 
 /**
@@ -340,6 +357,9 @@ struct regulator_dev {
 
 	struct regulator_enable_gpio *ena_pin;
 	unsigned int ena_gpio_state:1;
+
+	/* time when this regulator was disabled last time */
+	unsigned long last_off_jiffy;
 };
 
 struct regulator_dev *

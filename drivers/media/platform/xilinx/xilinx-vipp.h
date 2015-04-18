@@ -1,9 +1,11 @@
 /*
  * Xilinx Video IP Composite Device
  *
- * Copyright (C) 2013 Ideas on Board SPRL
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -29,7 +31,7 @@
  * @entities: entities in the graph as a list of xvip_graph_entity
  * @num_subdevs: number of subdevs in the pipeline
  * @dmas: list of DMA channels at the pipeline output and input
- * @ctrl_handler: control handler
+ * @v4l2_caps: V4L2 capabilities of the whole device (see VIDIOC_QUERYCAP)
  */
 struct xvip_composite_device {
 	struct v4l2_device v4l2_dev;
@@ -41,8 +43,7 @@ struct xvip_composite_device {
 	unsigned int num_subdevs;
 
 	struct list_head dmas;
-
-	struct v4l2_ctrl_handler ctrl_handler;
+	u32 v4l2_caps;
 };
 
 #endif /* __XILINX_VIPP_H__ */

@@ -112,7 +112,7 @@ static unsigned long ti_clk_divider_recalc_rate(struct clk_hw *hw,
 		return parent_rate;
 	}
 
-	return parent_rate / div;
+	return DIV_ROUND_UP(parent_rate, div);
 }
 
 /*
@@ -182,7 +182,7 @@ static int ti_clk_divider_bestdiv(struct clk_hw *hw, unsigned long rate,
 		}
 		parent_rate = __clk_round_rate(__clk_get_parent(hw->clk),
 				MULT_ROUND_UP(rate, i));
-		now = parent_rate / i;
+		now = DIV_ROUND_UP(parent_rate, i);
 		if (now <= rate && now > best) {
 			bestdiv = i;
 			best = now;
@@ -205,18 +205,23 @@ static long ti_clk_divider_round_rate(struct clk_hw *hw, unsigned long rate,
 	int div;
 	div = ti_clk_divider_bestdiv(hw, rate, prate);
 
-	return *prate / div;
+	return DIV_ROUND_UP(*prate, div);
 }
 
 static int ti_clk_divider_set_rate(struct clk_hw *hw, unsigned long rate,
 				   unsigned long parent_rate)
 {
-	struct clk_divider *divider = to_clk_divider(hw);
+	struct clk_divider *divider;
 	unsigned int div, value;
 	unsigned long flags = 0;
 	u32 val;
 
-	div = parent_rate / rate;
+	if (!hw || !rate)
+		return -EINVAL;
+
+	divider = to_clk_divider(hw);
+
+	div = DIV_ROUND_UP(parent_rate, rate);
 	value = _get_val(divider, div);
 
 	if (value > div_mask(divider))
@@ -295,8 +300,8 @@ static struct clk *_register_divider(struct device *dev, const char *name,
 	return clk;
 }
 
-static struct clk_div_table
-__init *ti_clk_get_div_table(struct device_node *node)
+static struct clk_div_table *
+__init ti_clk_get_div_table(struct device_node *node)
 {
 	struct clk_div_table *table;
 	const __be32 *divspec;

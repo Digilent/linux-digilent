@@ -50,8 +50,12 @@
 #include "qla_target.h"
 #include "tcm_qla2xxx.h"
 
-struct workqueue_struct *tcm_qla2xxx_free_wq;
-struct workqueue_struct *tcm_qla2xxx_cmd_wq;
+static struct workqueue_struct *tcm_qla2xxx_free_wq;
+static struct workqueue_struct *tcm_qla2xxx_cmd_wq;
+
+/* Local pointer to allocated TCM configfs fabric module */
+static struct target_fabric_configfs *tcm_qla2xxx_fabric_configfs;
+static struct target_fabric_configfs *tcm_qla2xxx_npiv_fabric_configfs;
 
 /*
  * Parse WWN.
@@ -386,6 +390,11 @@ static void tcm_qla2xxx_complete_free(struct work_struct *work)
 {
 	struct qla_tgt_cmd *cmd = container_of(work, struct qla_tgt_cmd, work);
 
+	cmd->cmd_in_wq = 0;
+
+	WARN_ON(cmd->cmd_flags &  BIT_16);
+
+	cmd->cmd_flags |= BIT_16;
 	transport_generic_free_cmd(&cmd->se_cmd, 0);
 }
 
@@ -396,6 +405,7 @@ static void tcm_qla2xxx_complete_free(struct work_struct *work)
  */
 static void tcm_qla2xxx_free_cmd(struct qla_tgt_cmd *cmd)
 {
+	cmd->cmd_in_wq = 1;
 	INIT_WORK(&cmd->work, tcm_qla2xxx_complete_free);
 	queue_work(tcm_qla2xxx_free_wq, &cmd->work);
 }
@@ -405,6 +415,13 @@ static void tcm_qla2xxx_free_cmd(struct qla_tgt_cmd *cmd)
  */
 static int tcm_qla2xxx_check_stop_free(struct se_cmd *se_cmd)
 {
+	struct qla_tgt_cmd *cmd;
+
+	if ((se_cmd->se_cmd_flags & SCF_SCSI_TMR_CDB) == 0) {
+		cmd = container_of(se_cmd, struct qla_tgt_cmd, se_cmd);
+		cmd->cmd_flags |= BIT_14;
+	}
+
 	return target_put_sess_cmd(se_cmd->se_sess, se_cmd);
 }
 
@@ -472,6 +489,11 @@ static int tcm_qla2xxx_write_pending(struct se_cmd *se_cmd)
 	cmd->sg_cnt = se_cmd->t_data_nents;
 	cmd->sg = se_cmd->t_data_sg;
 
+	cmd->prot_sg_cnt = se_cmd->t_prot_nents;
+	cmd->prot_sg = se_cmd->t_prot_sg;
+	cmd->blk_sz  = se_cmd->se_dev->dev_attrib.block_size;
+	se_cmd->pi_err = 0;
+
 	/*
 	 * qla_target.c:qlt_rdy_to_xfer() will call pci_map_sg() to setup
 	 * the SGL mappings into PCIe memory for incoming FCP WRITE data.
@@ -506,8 +528,13 @@ static void tcm_qla2xxx_set_default_node_attrs(struct se_node_acl *nacl)
 
 static u32 tcm_qla2xxx_get_task_tag(struct se_cmd *se_cmd)
 {
-	struct qla_tgt_cmd *cmd = container_of(se_cmd,
-				struct qla_tgt_cmd, se_cmd);
+	struct qla_tgt_cmd *cmd;
+
+	/* check for task mgmt cmd */
+	if (se_cmd->se_cmd_flags & SCF_SCSI_TMR_CDB)
+		return 0xffffffff;
+
+	cmd = container_of(se_cmd, struct qla_tgt_cmd, se_cmd);
 
 	return cmd->tag;
 }
@@ -557,6 +584,8 @@ static void tcm_qla2xxx_handle_data_work(struct work_struct *work)
 	 * Ensure that the complete FCP WRITE payload has been received.
 	 * Otherwise return an exception via CHECK_CONDITION status.
 	 */
+	cmd->cmd_in_wq = 0;
+	cmd->cmd_flags |= BIT_11;
 	if (!cmd->write_data_transferred) {
 		/*
 		 * Check if se_cmd has already been aborted via LUN_RESET, and
@@ -567,8 +596,13 @@ static void tcm_qla2xxx_handle_data_work(struct work_struct *work)
 			return;
 		}
 
-		transport_generic_request_failure(&cmd->se_cmd,
-						  TCM_CHECK_CONDITION_ABORT_CMD);
+		if (cmd->se_cmd.pi_err)
+			transport_generic_request_failure(&cmd->se_cmd,
+				cmd->se_cmd.pi_err);
+		else
+			transport_generic_request_failure(&cmd->se_cmd,
+				TCM_CHECK_CONDITION_ABORT_CMD);
+
 		return;
 	}
 
@@ -580,7 +614,30 @@ static void tcm_qla2xxx_handle_data_work(struct work_struct *work)
  */
 static void tcm_qla2xxx_handle_data(struct qla_tgt_cmd *cmd)
 {
+	cmd->cmd_flags |= BIT_10;
+	cmd->cmd_in_wq = 1;
 	INIT_WORK(&cmd->work, tcm_qla2xxx_handle_data_work);
+	queue_work(tcm_qla2xxx_free_wq, &cmd->work);
+}
+
+static void tcm_qla2xxx_handle_dif_work(struct work_struct *work)
+{
+	struct qla_tgt_cmd *cmd = container_of(work, struct qla_tgt_cmd, work);
+
+	/* take an extra kref to prevent cmd free too early.
+	 * need to wait for SCSI status/check condition to
+	 * finish responding generate by transport_generic_request_failure.
+	 */
+	kref_get(&cmd->se_cmd.cmd_kref);
+	transport_generic_request_failure(&cmd->se_cmd, cmd->se_cmd.pi_err);
+}
+
+/*
+ * Called from qla_target.c:qlt_do_ctio_completion()
+ */
+static void tcm_qla2xxx_handle_dif_err(struct qla_tgt_cmd *cmd)
+{
+	INIT_WORK(&cmd->work, tcm_qla2xxx_handle_dif_work);
 	queue_work(tcm_qla2xxx_free_wq, &cmd->work);
 }
 
@@ -602,6 +659,7 @@ static int tcm_qla2xxx_queue_data_in(struct se_cmd *se_cmd)
 	struct qla_tgt_cmd *cmd = container_of(se_cmd,
 				struct qla_tgt_cmd, se_cmd);
 
+	cmd->cmd_flags |= BIT_4;
 	cmd->bufflen = se_cmd->data_length;
 	cmd->dma_data_direction = target_reverse_dma_direction(se_cmd);
 	cmd->aborted = (se_cmd->transport_state & CMD_T_ABORTED);
@@ -609,6 +667,12 @@ static int tcm_qla2xxx_queue_data_in(struct se_cmd *se_cmd)
 	cmd->sg_cnt = se_cmd->t_data_nents;
 	cmd->sg = se_cmd->t_data_sg;
 	cmd->offset = 0;
+	cmd->cmd_flags |= BIT_3;
+
+	cmd->prot_sg_cnt = se_cmd->t_prot_nents;
+	cmd->prot_sg = se_cmd->t_prot_sg;
+	cmd->blk_sz  = se_cmd->se_dev->dev_attrib.block_size;
+	se_cmd->pi_err = 0;
 
 	/*
 	 * Now queue completed DATA_IN the qla2xxx LLD and response ring
@@ -629,6 +693,11 @@ static int tcm_qla2xxx_queue_status(struct se_cmd *se_cmd)
 	cmd->offset = 0;
 	cmd->dma_data_direction = target_reverse_dma_direction(se_cmd);
 	cmd->aborted = (se_cmd->transport_state & CMD_T_ABORTED);
+	if (cmd->cmd_flags &  BIT_5) {
+		pr_crit("Bit_5 already set for cmd = %p.\n", cmd);
+		dump_stack();
+	}
+	cmd->cmd_flags |= BIT_5;
 
 	if (se_cmd->data_direction == DMA_FROM_DEVICE) {
 		/*
@@ -684,9 +753,19 @@ static void tcm_qla2xxx_queue_tm_rsp(struct se_cmd *se_cmd)
 	qlt_xmit_tm_rsp(mcmd);
 }
 
-/* Local pointer to allocated TCM configfs fabric module */
-struct target_fabric_configfs *tcm_qla2xxx_fabric_configfs;
-struct target_fabric_configfs *tcm_qla2xxx_npiv_fabric_configfs;
+static void tcm_qla2xxx_aborted_task(struct se_cmd *se_cmd)
+{
+	struct qla_tgt_cmd *cmd = container_of(se_cmd,
+				struct qla_tgt_cmd, se_cmd);
+	struct scsi_qla_host *vha = cmd->vha;
+	struct qla_hw_data *ha = vha->hw;
+
+	if (!cmd->sg_mapped)
+		return;
+
+	pci_unmap_sg(ha->pdev, cmd->sg, cmd->sg_cnt, cmd->dma_data_direction);
+	cmd->sg_mapped = 0;
+}
 
 static void tcm_qla2xxx_clear_sess_lookup(struct tcm_qla2xxx_lport *,
 			struct tcm_qla2xxx_nacl *, struct qla_tgt_sess *);
@@ -707,7 +786,16 @@ static void tcm_qla2xxx_clear_nacl_from_fcport_map(struct qla_tgt_sess *sess)
 	pr_debug("fc_rport domain: port_id 0x%06x\n", nacl->nport_id);
 
 	node = btree_remove32(&lport->lport_fcport_map, nacl->nport_id);
-	WARN_ON(node && (node != se_nacl));
+	if (WARN_ON(node && (node != se_nacl))) {
+		/*
+		 * The nacl no longer matches what we think it should be.
+		 * Most likely a new dynamic acl has been added while
+		 * someone dropped the hardware lock.  It clearly is a
+		 * bug elsewhere, but this bit can't make things worse.
+		 */
+		btree_insert32(&lport->lport_fcport_map, nacl->nport_id,
+			       node, GFP_ATOMIC);
+	}
 
 	pr_debug("Removed from fcport_map: %p for WWNN: 0x%016LX, port_id: 0x%06x\n",
 	    se_nacl, nacl->nport_wwnn, nacl->nport_id);
@@ -1451,6 +1539,8 @@ static int tcm_qla2xxx_check_initiator_node_acl(
 	struct qla_tgt_sess *sess = qla_tgt_sess;
 	unsigned char port_name[36];
 	unsigned long flags;
+	int num_tags = (ha->fw_xcb_count) ? ha->fw_xcb_count :
+		       TCM_QLA2XXX_DEFAULT_TAGS;
 
 	lport = vha->vha_tgt.target_lport_ptr;
 	if (!lport) {
@@ -1468,7 +1558,9 @@ static int tcm_qla2xxx_check_initiator_node_acl(
 	}
 	se_tpg = &tpg->se_tpg;
 
-	se_sess = transport_init_session();
+	se_sess = transport_init_session_tags(num_tags,
+					      sizeof(struct qla_tgt_cmd),
+					      TARGET_PROT_NORMAL);
 	if (IS_ERR(se_sess)) {
 		pr_err("Unable to initialize struct se_session\n");
 		return PTR_ERR(se_sess);
@@ -1586,6 +1678,7 @@ static void tcm_qla2xxx_update_sess(struct qla_tgt_sess *sess, port_id_t s_id,
 static struct qla_tgt_func_tmpl tcm_qla2xxx_template = {
 	.handle_cmd		= tcm_qla2xxx_handle_cmd,
 	.handle_data		= tcm_qla2xxx_handle_data,
+	.handle_dif_err		= tcm_qla2xxx_handle_dif_err,
 	.handle_tmr		= tcm_qla2xxx_handle_tmr,
 	.free_cmd		= tcm_qla2xxx_free_cmd,
 	.free_mcmd		= tcm_qla2xxx_free_mcmd,
@@ -1877,6 +1970,7 @@ static struct target_core_fabric_ops tcm_qla2xxx_ops = {
 	.queue_data_in			= tcm_qla2xxx_queue_data_in,
 	.queue_status			= tcm_qla2xxx_queue_status,
 	.queue_tm_rsp			= tcm_qla2xxx_queue_tm_rsp,
+	.aborted_task			= tcm_qla2xxx_aborted_task,
 	/*
 	 * Setup function pointers for generic logic in
 	 * target_core_fabric_configfs.c
@@ -1926,6 +2020,7 @@ static struct target_core_fabric_ops tcm_qla2xxx_npiv_ops = {
 	.queue_data_in			= tcm_qla2xxx_queue_data_in,
 	.queue_status			= tcm_qla2xxx_queue_status,
 	.queue_tm_rsp			= tcm_qla2xxx_queue_tm_rsp,
+	.aborted_task			= tcm_qla2xxx_aborted_task,
 	/*
 	 * Setup function pointers for generic logic in
 	 * target_core_fabric_configfs.c

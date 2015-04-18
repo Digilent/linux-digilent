@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2013 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -15,6 +15,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include "flow.h"
 #include "datapath.h"
@@ -40,6 +42,7 @@
 #include <linux/icmp.h>
 #include <linux/icmpv6.h>
 #include <linux/rculist.h>
+#include <net/geneve.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/ndisc.h>
@@ -86,22 +89,33 @@ static void update_range__(struct sw_flow_match *match,
 		}                                                           \
 	} while (0)
 
-#define SW_FLOW_KEY_MEMCPY(match, field, value_p, len, is_mask) \
-	do { \
-		update_range__(match, offsetof(struct sw_flow_key, field),  \
-				len, is_mask);                              \
-		if (is_mask) {						    \
-			if ((match)->mask)				    \
-				memcpy(&(match)->mask->key.field, value_p, len);\
-		} else {                                                    \
-			memcpy(&(match)->key->field, value_p, len);         \
-		}                                                           \
+#define SW_FLOW_KEY_MEMCPY_OFFSET(match, offset, value_p, len, is_mask)	    \
+	do {								    \
+		update_range__(match, offset, len, is_mask);		    \
+		if (is_mask)						    \
+			memcpy((u8 *)&(match)->mask->key + offset, value_p, \
+			       len);					    \
+		else							    \
+			memcpy((u8 *)(match)->key + offset, value_p, len);  \
 	} while (0)
 
-static u16 range_n_bytes(const struct sw_flow_key_range *range)
-{
-	return range->end - range->start;
-}
+#define SW_FLOW_KEY_MEMCPY(match, field, value_p, len, is_mask)		      \
+	SW_FLOW_KEY_MEMCPY_OFFSET(match, offsetof(struct sw_flow_key, field), \
+				  value_p, len, is_mask)
+
+#define SW_FLOW_KEY_MEMSET_FIELD(match, field, value, is_mask) \
+	do { \
+		update_range__(match, offsetof(struct sw_flow_key, field),  \
+				     sizeof((match)->key->field), is_mask); \
+		if (is_mask) {						    \
+			if ((match)->mask)				    \
+				memset((u8 *)&(match)->mask->key.field, value,\
+				       sizeof((match)->mask->key.field));   \
+		} else {                                                    \
+			memset((u8 *)&(match)->key->field, value,           \
+			       sizeof((match)->key->field));                \
+		}                                                           \
+	} while (0)
 
 static bool match_validate(const struct sw_flow_match *match,
 			   u64 key_attrs, u64 mask_attrs)
@@ -131,7 +145,7 @@ static bool match_validate(const struct sw_flow_match *match,
 	if (match->key->eth.type == htons(ETH_P_ARP)
 			|| match->key->eth.type == htons(ETH_P_RARP)) {
 		key_expected |= 1 << OVS_KEY_ATTR_ARP;
-		if (match->mask && (match->mask->key.eth.type == htons(0xffff)))
+		if (match->mask && (match->mask->key.tp.src == htons(0xff)))
 			mask_allowed |= 1 << OVS_KEY_ATTR_ARP;
 	}
 
@@ -202,11 +216,11 @@ static bool match_validate(const struct sw_flow_match *match,
 				if (match->mask && (match->mask->key.ip.proto == 0xff))
 					mask_allowed |= 1 << OVS_KEY_ATTR_ICMPV6;
 
-				if (match->key->ipv6.tp.src ==
+				if (match->key->tp.src ==
 						htons(NDISC_NEIGHBOUR_SOLICITATION) ||
-				    match->key->ipv6.tp.src == htons(NDISC_NEIGHBOUR_ADVERTISEMENT)) {
+				    match->key->tp.src == htons(NDISC_NEIGHBOUR_ADVERTISEMENT)) {
 					key_expected |= 1 << OVS_KEY_ATTR_ND;
-					if (match->mask && (match->mask->key.ipv6.tp.src == htons(0xffff)))
+					if (match->mask && (match->mask->key.tp.src == htons(0xffff)))
 						mask_allowed |= 1 << OVS_KEY_ATTR_ND;
 				}
 			}
@@ -216,14 +230,14 @@ static bool match_validate(const struct sw_flow_match *match,
 	if ((key_attrs & key_expected) != key_expected) {
 		/* Key attributes check failed. */
 		OVS_NLERR("Missing expected key attributes (key_attrs=%llx, expected=%llx).\n",
-				key_attrs, key_expected);
+				(unsigned long long)key_attrs, (unsigned long long)key_expected);
 		return false;
 	}
 
 	if ((mask_attrs & mask_allowed) != mask_attrs) {
 		/* Mask attributes check failed. */
 		OVS_NLERR("Contain more than allowed mask fields (mask_attrs=%llx, mask_allowed=%llx).\n",
-				mask_attrs, mask_allowed);
+				(unsigned long long)mask_attrs, (unsigned long long)mask_allowed);
 		return false;
 	}
 
@@ -249,6 +263,8 @@ static const int ovs_key_lens[OVS_KEY_ATTR_MAX + 1] = {
 	[OVS_KEY_ATTR_ICMPV6] = sizeof(struct ovs_key_icmpv6),
 	[OVS_KEY_ATTR_ARP] = sizeof(struct ovs_key_arp),
 	[OVS_KEY_ATTR_ND] = sizeof(struct ovs_key_nd),
+	[OVS_KEY_ATTR_RECIRC_ID] = sizeof(u32),
+	[OVS_KEY_ATTR_DP_HASH] = sizeof(u32),
 	[OVS_KEY_ATTR_TUNNEL] = -1,
 };
 
@@ -261,20 +277,6 @@ static bool is_all_zero(const u8 *fp, size_t size)
 
 	for (i = 0; i < size; i++)
 		if (fp[i])
-			return false;
-
-	return true;
-}
-
-static bool is_all_set(const u8 *fp, size_t size)
-{
-	int i;
-
-	if (!fp)
-		return false;
-
-	for (i = 0; i < size; i++)
-		if (fp[i] != 0xff)
 			return false;
 
 	return true;
@@ -345,6 +347,7 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
 	int rem;
 	bool ttl = false;
 	__be16 tun_flags = 0;
+	unsigned long opt_key_offset;
 
 	nla_for_each_nested(a, attr, rem) {
 		int type = nla_type(a);
@@ -356,6 +359,8 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
 			[OVS_TUNNEL_KEY_ATTR_TTL] = 1,
 			[OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT] = 0,
 			[OVS_TUNNEL_KEY_ATTR_CSUM] = 0,
+			[OVS_TUNNEL_KEY_ATTR_OAM] = 0,
+			[OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS] = -1,
 		};
 
 		if (type > OVS_TUNNEL_KEY_ATTR_MAX) {
@@ -364,7 +369,8 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
 			return -EINVAL;
 		}
 
-		if (ovs_tunnel_key_lens[type] != nla_len(a)) {
+		if (ovs_tunnel_key_lens[type] != nla_len(a) &&
+		    ovs_tunnel_key_lens[type] != -1) {
 			OVS_NLERR("IPv4 tunnel attribute type has unexpected "
 				  " length (type=%d, length=%d, expected=%d).\n",
 				  type, nla_len(a), ovs_tunnel_key_lens[type]);
@@ -400,7 +406,63 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
 		case OVS_TUNNEL_KEY_ATTR_CSUM:
 			tun_flags |= TUNNEL_CSUM;
 			break;
+		case OVS_TUNNEL_KEY_ATTR_OAM:
+			tun_flags |= TUNNEL_OAM;
+			break;
+		case OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS:
+			tun_flags |= TUNNEL_OPTIONS_PRESENT;
+			if (nla_len(a) > sizeof(match->key->tun_opts)) {
+				OVS_NLERR("Geneve option length exceeds maximum size (len %d, max %zu).\n",
+					  nla_len(a),
+					  sizeof(match->key->tun_opts));
+				return -EINVAL;
+			}
+
+			if (nla_len(a) % 4 != 0) {
+				OVS_NLERR("Geneve option length is not a multiple of 4 (len %d).\n",
+					  nla_len(a));
+				return -EINVAL;
+			}
+
+			/* We need to record the length of the options passed
+			 * down, otherwise packets with the same format but
+			 * additional options will be silently matched.
+			 */
+			if (!is_mask) {
+				SW_FLOW_KEY_PUT(match, tun_opts_len, nla_len(a),
+						false);
+			} else {
+				/* This is somewhat unusual because it looks at
+				 * both the key and mask while parsing the
+				 * attributes (and by extension assumes the key
+				 * is parsed first). Normally, we would verify
+				 * that each is the correct length and that the
+				 * attributes line up in the validate function.
+				 * However, that is difficult because this is
+				 * variable length and we won't have the
+				 * information later.
+				 */
+				if (match->key->tun_opts_len != nla_len(a)) {
+					OVS_NLERR("Geneve option key length (%d) is different from mask length (%d).",
+						  match->key->tun_opts_len,
+						  nla_len(a));
+					return -EINVAL;
+				}
+
+				SW_FLOW_KEY_PUT(match, tun_opts_len, 0xff,
+						true);
+			}
+
+			opt_key_offset = (unsigned long)GENEVE_OPTS(
+					  (struct sw_flow_key *)0,
+					  nla_len(a));
+			SW_FLOW_KEY_MEMCPY_OFFSET(match, opt_key_offset,
+						  nla_data(a), nla_len(a),
+						  is_mask);
+			break;
 		default:
+			OVS_NLERR("Unknown IPv4 tunnel attribute (%d).\n",
+				  type);
 			return -EINVAL;
 		}
 	}
@@ -427,45 +489,80 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
 	return 0;
 }
 
+static int __ipv4_tun_to_nlattr(struct sk_buff *skb,
+				const struct ovs_key_ipv4_tunnel *output,
+				const struct geneve_opt *tun_opts,
+				int swkey_tun_opts_len)
+{
+	if (output->tun_flags & TUNNEL_KEY &&
+	    nla_put_be64(skb, OVS_TUNNEL_KEY_ATTR_ID, output->tun_id))
+		return -EMSGSIZE;
+	if (output->ipv4_src &&
+	    nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_SRC, output->ipv4_src))
+		return -EMSGSIZE;
+	if (output->ipv4_dst &&
+	    nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_DST, output->ipv4_dst))
+		return -EMSGSIZE;
+	if (output->ipv4_tos &&
+	    nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TOS, output->ipv4_tos))
+		return -EMSGSIZE;
+	if (nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TTL, output->ipv4_ttl))
+		return -EMSGSIZE;
+	if ((output->tun_flags & TUNNEL_DONT_FRAGMENT) &&
+	    nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT))
+		return -EMSGSIZE;
+	if ((output->tun_flags & TUNNEL_CSUM) &&
+	    nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_CSUM))
+		return -EMSGSIZE;
+	if ((output->tun_flags & TUNNEL_OAM) &&
+	    nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_OAM))
+		return -EMSGSIZE;
+	if (tun_opts &&
+	    nla_put(skb, OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS,
+		    swkey_tun_opts_len, tun_opts))
+		return -EMSGSIZE;
+
+	return 0;
+}
+
+
 static int ipv4_tun_to_nlattr(struct sk_buff *skb,
-			      const struct ovs_key_ipv4_tunnel *tun_key,
-			      const struct ovs_key_ipv4_tunnel *output)
+			      const struct ovs_key_ipv4_tunnel *output,
+			      const struct geneve_opt *tun_opts,
+			      int swkey_tun_opts_len)
 {
 	struct nlattr *nla;
+	int err;
 
 	nla = nla_nest_start(skb, OVS_KEY_ATTR_TUNNEL);
 	if (!nla)
 		return -EMSGSIZE;
 
-	if (output->tun_flags & TUNNEL_KEY &&
-	    nla_put_be64(skb, OVS_TUNNEL_KEY_ATTR_ID, output->tun_id))
-		return -EMSGSIZE;
-	if (output->ipv4_src &&
-		nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_SRC, output->ipv4_src))
-		return -EMSGSIZE;
-	if (output->ipv4_dst &&
-		nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_DST, output->ipv4_dst))
-		return -EMSGSIZE;
-	if (output->ipv4_tos &&
-		nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TOS, output->ipv4_tos))
-		return -EMSGSIZE;
-	if (nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TTL, output->ipv4_ttl))
-		return -EMSGSIZE;
-	if ((output->tun_flags & TUNNEL_DONT_FRAGMENT) &&
-		nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT))
-		return -EMSGSIZE;
-	if ((output->tun_flags & TUNNEL_CSUM) &&
-		nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_CSUM))
-		return -EMSGSIZE;
+	err = __ipv4_tun_to_nlattr(skb, output, tun_opts, swkey_tun_opts_len);
+	if (err)
+		return err;
 
 	nla_nest_end(skb, nla);
 	return 0;
 }
 
-
 static int metadata_from_nlattrs(struct sw_flow_match *match,  u64 *attrs,
 				 const struct nlattr **a, bool is_mask)
 {
+	if (*attrs & (1 << OVS_KEY_ATTR_DP_HASH)) {
+		u32 hash_val = nla_get_u32(a[OVS_KEY_ATTR_DP_HASH]);
+
+		SW_FLOW_KEY_PUT(match, ovs_flow_hash, hash_val, is_mask);
+		*attrs &= ~(1 << OVS_KEY_ATTR_DP_HASH);
+	}
+
+	if (*attrs & (1 << OVS_KEY_ATTR_RECIRC_ID)) {
+		u32 recirc_id = nla_get_u32(a[OVS_KEY_ATTR_RECIRC_ID]);
+
+		SW_FLOW_KEY_PUT(match, recirc_id, recirc_id, is_mask);
+		*attrs &= ~(1 << OVS_KEY_ATTR_RECIRC_ID);
+	}
+
 	if (*attrs & (1 << OVS_KEY_ATTR_PRIORITY)) {
 		SW_FLOW_KEY_PUT(match, phy.priority,
 			  nla_get_u32(a[OVS_KEY_ATTR_PRIORITY]), is_mask);
@@ -501,9 +598,8 @@ static int metadata_from_nlattrs(struct sw_flow_match *match,  u64 *attrs,
 	return 0;
 }
 
-static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple,
-				u64 attrs, const struct nlattr **a,
-				bool is_mask)
+static int ovs_key_from_nlattrs(struct sw_flow_match *match, u64 attrs,
+				const struct nlattr **a, bool is_mask)
 {
 	int err;
 	u64 orig_attrs = attrs;
@@ -560,11 +656,6 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		SW_FLOW_KEY_PUT(match, eth.type, htons(ETH_P_802_2), is_mask);
 	}
 
-	if (is_mask && exact_5tuple) {
-		if (match->mask->key.eth.type != htons(0xffff))
-			*exact_5tuple = false;
-	}
-
 	if (attrs & (1 << OVS_KEY_ATTR_IPV4)) {
 		const struct ovs_key_ipv4 *ipv4_key;
 
@@ -587,13 +678,6 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		SW_FLOW_KEY_PUT(match, ipv4.addr.dst,
 				ipv4_key->ipv4_dst, is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_IPV4);
-
-		if (is_mask && exact_5tuple && *exact_5tuple) {
-			if (ipv4_key->ipv4_proto != 0xff ||
-			    ipv4_key->ipv4_src != htonl(0xffffffff) ||
-			    ipv4_key->ipv4_dst != htonl(0xffffffff))
-				*exact_5tuple = false;
-		}
 	}
 
 	if (attrs & (1 << OVS_KEY_ATTR_IPV6)) {
@@ -605,6 +689,13 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 				ipv6_key->ipv6_frag, OVS_FRAG_TYPE_MAX);
 			return -EINVAL;
 		}
+
+		if (!is_mask && ipv6_key->ipv6_label & htonl(0xFFF00000)) {
+			OVS_NLERR("IPv6 flow label %x is out of range (max=%x).\n",
+				  ntohl(ipv6_key->ipv6_label), (1 << 20) - 1);
+			return -EINVAL;
+		}
+
 		SW_FLOW_KEY_PUT(match, ipv6.label,
 				ipv6_key->ipv6_label, is_mask);
 		SW_FLOW_KEY_PUT(match, ip.proto,
@@ -625,13 +716,6 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 				is_mask);
 
 		attrs &= ~(1 << OVS_KEY_ATTR_IPV6);
-
-		if (is_mask && exact_5tuple && *exact_5tuple) {
-			if (ipv6_key->ipv6_proto != 0xff ||
-			    !is_all_set((u8 *)ipv6_key->ipv6_src, sizeof(match->key->ipv6.addr.src)) ||
-			    !is_all_set((u8 *)ipv6_key->ipv6_dst, sizeof(match->key->ipv6.addr.dst)))
-				*exact_5tuple = false;
-		}
 	}
 
 	if (attrs & (1 << OVS_KEY_ATTR_ARP)) {
@@ -662,32 +746,18 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		const struct ovs_key_tcp *tcp_key;
 
 		tcp_key = nla_data(a[OVS_KEY_ATTR_TCP]);
-		if (orig_attrs & (1 << OVS_KEY_ATTR_IPV4)) {
-			SW_FLOW_KEY_PUT(match, ipv4.tp.src,
-					tcp_key->tcp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv4.tp.dst,
-					tcp_key->tcp_dst, is_mask);
-		} else {
-			SW_FLOW_KEY_PUT(match, ipv6.tp.src,
-					tcp_key->tcp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv6.tp.dst,
-					tcp_key->tcp_dst, is_mask);
-		}
+		SW_FLOW_KEY_PUT(match, tp.src, tcp_key->tcp_src, is_mask);
+		SW_FLOW_KEY_PUT(match, tp.dst, tcp_key->tcp_dst, is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_TCP);
-
-		if (is_mask && exact_5tuple && *exact_5tuple &&
-		    (tcp_key->tcp_src != htons(0xffff) ||
-		     tcp_key->tcp_dst != htons(0xffff)))
-			*exact_5tuple = false;
 	}
 
 	if (attrs & (1 << OVS_KEY_ATTR_TCP_FLAGS)) {
 		if (orig_attrs & (1 << OVS_KEY_ATTR_IPV4)) {
-			SW_FLOW_KEY_PUT(match, ipv4.tp.flags,
+			SW_FLOW_KEY_PUT(match, tp.flags,
 					nla_get_be16(a[OVS_KEY_ATTR_TCP_FLAGS]),
 					is_mask);
 		} else {
-			SW_FLOW_KEY_PUT(match, ipv6.tp.flags,
+			SW_FLOW_KEY_PUT(match, tp.flags,
 					nla_get_be16(a[OVS_KEY_ATTR_TCP_FLAGS]),
 					is_mask);
 		}
@@ -698,40 +768,17 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		const struct ovs_key_udp *udp_key;
 
 		udp_key = nla_data(a[OVS_KEY_ATTR_UDP]);
-		if (orig_attrs & (1 << OVS_KEY_ATTR_IPV4)) {
-			SW_FLOW_KEY_PUT(match, ipv4.tp.src,
-					udp_key->udp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv4.tp.dst,
-					udp_key->udp_dst, is_mask);
-		} else {
-			SW_FLOW_KEY_PUT(match, ipv6.tp.src,
-					udp_key->udp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv6.tp.dst,
-					udp_key->udp_dst, is_mask);
-		}
+		SW_FLOW_KEY_PUT(match, tp.src, udp_key->udp_src, is_mask);
+		SW_FLOW_KEY_PUT(match, tp.dst, udp_key->udp_dst, is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_UDP);
-
-		if (is_mask && exact_5tuple && *exact_5tuple &&
-		    (udp_key->udp_src != htons(0xffff) ||
-		     udp_key->udp_dst != htons(0xffff)))
-			*exact_5tuple = false;
 	}
 
 	if (attrs & (1 << OVS_KEY_ATTR_SCTP)) {
 		const struct ovs_key_sctp *sctp_key;
 
 		sctp_key = nla_data(a[OVS_KEY_ATTR_SCTP]);
-		if (orig_attrs & (1 << OVS_KEY_ATTR_IPV4)) {
-			SW_FLOW_KEY_PUT(match, ipv4.tp.src,
-					sctp_key->sctp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv4.tp.dst,
-					sctp_key->sctp_dst, is_mask);
-		} else {
-			SW_FLOW_KEY_PUT(match, ipv6.tp.src,
-					sctp_key->sctp_src, is_mask);
-			SW_FLOW_KEY_PUT(match, ipv6.tp.dst,
-					sctp_key->sctp_dst, is_mask);
-		}
+		SW_FLOW_KEY_PUT(match, tp.src, sctp_key->sctp_src, is_mask);
+		SW_FLOW_KEY_PUT(match, tp.dst, sctp_key->sctp_dst, is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_SCTP);
 	}
 
@@ -739,9 +786,9 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		const struct ovs_key_icmp *icmp_key;
 
 		icmp_key = nla_data(a[OVS_KEY_ATTR_ICMP]);
-		SW_FLOW_KEY_PUT(match, ipv4.tp.src,
+		SW_FLOW_KEY_PUT(match, tp.src,
 				htons(icmp_key->icmp_type), is_mask);
-		SW_FLOW_KEY_PUT(match, ipv4.tp.dst,
+		SW_FLOW_KEY_PUT(match, tp.dst,
 				htons(icmp_key->icmp_code), is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_ICMP);
 	}
@@ -750,9 +797,9 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 		const struct ovs_key_icmpv6 *icmpv6_key;
 
 		icmpv6_key = nla_data(a[OVS_KEY_ATTR_ICMPV6]);
-		SW_FLOW_KEY_PUT(match, ipv6.tp.src,
+		SW_FLOW_KEY_PUT(match, tp.src,
 				htons(icmpv6_key->icmpv6_type), is_mask);
-		SW_FLOW_KEY_PUT(match, ipv6.tp.dst,
+		SW_FLOW_KEY_PUT(match, tp.dst,
 				htons(icmpv6_key->icmpv6_code), is_mask);
 		attrs &= ~(1 << OVS_KEY_ATTR_ICMPV6);
 	}
@@ -778,13 +825,26 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 	return 0;
 }
 
-static void sw_flow_mask_set(struct sw_flow_mask *mask,
-			     struct sw_flow_key_range *range, u8 val)
+static void nlattr_set(struct nlattr *attr, u8 val, bool is_attr_mask_key)
 {
-	u8 *m = (u8 *)&mask->key + range->start;
+	struct nlattr *nla;
+	int rem;
 
-	mask->range = *range;
-	memset(m, val, range_n_bytes(range));
+	/* The nlattr stream should already have been validated */
+	nla_for_each_nested(nla, attr, rem) {
+		/* We assume that ovs_key_lens[type] == -1 means that type is a
+		 * nested attribute
+		 */
+		if (is_attr_mask_key && ovs_key_lens[nla_type(nla)] == -1)
+			nlattr_set(nla, val, false);
+		else
+			memset(nla_data(nla), val, nla_len(nla));
+	}
+}
+
+static void mask_set_nlattr(struct nlattr *attr, u8 val)
+{
+	nlattr_set(attr, val, true);
 }
 
 /**
@@ -800,12 +860,12 @@ static void sw_flow_mask_set(struct sw_flow_mask *mask,
  * attribute specifies the mask field of the wildcarded flow.
  */
 int ovs_nla_get_match(struct sw_flow_match *match,
-		      bool *exact_5tuple,
 		      const struct nlattr *key,
 		      const struct nlattr *mask)
 {
 	const struct nlattr *a[OVS_KEY_ATTR_MAX + 1];
 	const struct nlattr *encap;
+	struct nlattr *newmask = NULL;
 	u64 key_attrs = 0;
 	u64 mask_attrs = 0;
 	bool encap_valid = false;
@@ -848,25 +908,48 @@ int ovs_nla_get_match(struct sw_flow_match *match,
 		}
 	}
 
-	err = ovs_key_from_nlattrs(match, NULL, key_attrs, a, false);
+	err = ovs_key_from_nlattrs(match, key_attrs, a, false);
 	if (err)
 		return err;
 
-	if (exact_5tuple)
-		*exact_5tuple = true;
+	if (match->mask && !mask) {
+		/* Create an exact match mask. We need to set to 0xff all the
+		 * 'match->mask' fields that have been touched in 'match->key'.
+		 * We cannot simply memset 'match->mask', because padding bytes
+		 * and fields not specified in 'match->key' should be left to 0.
+		 * Instead, we use a stream of netlink attributes, copied from
+		 * 'key' and set to 0xff: ovs_key_from_nlattrs() will take care
+		 * of filling 'match->mask' appropriately.
+		 */
+		newmask = kmemdup(key, nla_total_size(nla_len(key)),
+				  GFP_KERNEL);
+		if (!newmask)
+			return -ENOMEM;
+
+		mask_set_nlattr(newmask, 0xff);
+
+		/* The userspace does not send tunnel attributes that are 0,
+		 * but we should not wildcard them nonetheless.
+		 */
+		if (match->key->tun_key.ipv4_dst)
+			SW_FLOW_KEY_MEMSET_FIELD(match, tun_key, 0xff, true);
+
+		mask = newmask;
+	}
 
 	if (mask) {
 		err = parse_flow_mask_nlattrs(mask, a, &mask_attrs);
 		if (err)
-			return err;
+			goto free_newmask;
 
-		if (mask_attrs & 1 << OVS_KEY_ATTR_ENCAP)  {
+		if (mask_attrs & 1 << OVS_KEY_ATTR_ENCAP) {
 			__be16 eth_type = 0;
 			__be16 tci = 0;
 
 			if (!encap_valid) {
 				OVS_NLERR("Encap mask attribute is set for non-VLAN frame.\n");
-				return  -EINVAL;
+				err = -EINVAL;
+				goto free_newmask;
 			}
 
 			mask_attrs &= ~(1 << OVS_KEY_ATTR_ENCAP);
@@ -877,10 +960,13 @@ int ovs_nla_get_match(struct sw_flow_match *match,
 				mask_attrs &= ~(1 << OVS_KEY_ATTR_ETHERTYPE);
 				encap = a[OVS_KEY_ATTR_ENCAP];
 				err = parse_flow_mask_nlattrs(encap, a, &mask_attrs);
+				if (err)
+					goto free_newmask;
 			} else {
 				OVS_NLERR("VLAN frames must have an exact match on the TPID (mask=%x).\n",
 						ntohs(eth_type));
-				return -EINVAL;
+				err = -EINVAL;
+				goto free_newmask;
 			}
 
 			if (a[OVS_KEY_ATTR_VLAN])
@@ -888,28 +974,27 @@ int ovs_nla_get_match(struct sw_flow_match *match,
 
 			if (!(tci & htons(VLAN_TAG_PRESENT))) {
 				OVS_NLERR("VLAN tag present bit must have an exact match (tci_mask=%x).\n", ntohs(tci));
-				return -EINVAL;
+				err = -EINVAL;
+				goto free_newmask;
 			}
 		}
 
-		err = ovs_key_from_nlattrs(match, exact_5tuple, mask_attrs, a, true);
+		err = ovs_key_from_nlattrs(match, mask_attrs, a, true);
 		if (err)
-			return err;
-	} else {
-		/* Populate exact match flow's key mask. */
-		if (match->mask)
-			sw_flow_mask_set(match->mask, &match->range, 0xff);
+			goto free_newmask;
 	}
 
 	if (!match_validate(match, key_attrs, mask_attrs))
-		return -EINVAL;
+		err = -EINVAL;
 
-	return 0;
+free_newmask:
+	kfree(newmask);
+	return err;
 }
 
 /**
  * ovs_nla_get_flow_metadata - parses Netlink attributes into a flow key.
- * @flow: Receives extracted in_port, priority, tun_key and skb_mark.
+ * @key: Receives extracted in_port, priority, tun_key and skb_mark.
  * @attr: Netlink attribute holding nested %OVS_KEY_ATTR_* Netlink attribute
  * sequence.
  *
@@ -919,32 +1004,24 @@ int ovs_nla_get_match(struct sw_flow_match *match,
  * extracted from the packet itself.
  */
 
-int ovs_nla_get_flow_metadata(struct sw_flow *flow,
-			      const struct nlattr *attr)
+int ovs_nla_get_flow_metadata(const struct nlattr *attr,
+			      struct sw_flow_key *key)
 {
-	struct ovs_key_ipv4_tunnel *tun_key = &flow->key.tun_key;
 	const struct nlattr *a[OVS_KEY_ATTR_MAX + 1];
+	struct sw_flow_match match;
 	u64 attrs = 0;
 	int err;
-	struct sw_flow_match match;
-
-	flow->key.phy.in_port = DP_MAX_PORTS;
-	flow->key.phy.priority = 0;
-	flow->key.phy.skb_mark = 0;
-	memset(tun_key, 0, sizeof(flow->key.tun_key));
 
 	err = parse_flow_nlattrs(attr, a, &attrs);
 	if (err)
 		return -EINVAL;
 
 	memset(&match, 0, sizeof(match));
-	match.key = &flow->key;
+	match.key = key;
 
-	err = metadata_from_nlattrs(&match, &attrs, a, false);
-	if (err)
-		return err;
+	key->phy.in_port = DP_MAX_PORTS;
 
-	return 0;
+	return metadata_from_nlattrs(&match, &attrs, a, false);
 }
 
 int ovs_nla_put_flow(const struct sw_flow_key *swkey,
@@ -954,12 +1031,25 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 	struct nlattr *nla, *encap;
 	bool is_mask = (swkey != output);
 
+	if (nla_put_u32(skb, OVS_KEY_ATTR_RECIRC_ID, output->recirc_id))
+		goto nla_put_failure;
+
+	if (nla_put_u32(skb, OVS_KEY_ATTR_DP_HASH, output->ovs_flow_hash))
+		goto nla_put_failure;
+
 	if (nla_put_u32(skb, OVS_KEY_ATTR_PRIORITY, output->phy.priority))
 		goto nla_put_failure;
 
-	if ((swkey->tun_key.ipv4_dst || is_mask) &&
-	    ipv4_tun_to_nlattr(skb, &swkey->tun_key, &output->tun_key))
-		goto nla_put_failure;
+	if ((swkey->tun_key.ipv4_dst || is_mask)) {
+		const struct geneve_opt *opts = NULL;
+
+		if (output->tun_key.tun_flags & TUNNEL_OPTIONS_PRESENT)
+			opts = GENEVE_OPTS(output, swkey->tun_opts_len);
+
+		if (ipv4_tun_to_nlattr(skb, &output->tun_key, opts,
+				       swkey->tun_opts_len))
+			goto nla_put_failure;
+	}
 
 	if (swkey->phy.in_port == DP_MAX_PORTS) {
 		if (is_mask && (output->phy.in_port == 0xffff))
@@ -982,8 +1072,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 		goto nla_put_failure;
 
 	eth_key = nla_data(nla);
-	memcpy(eth_key->eth_src, output->eth.src, ETH_ALEN);
-	memcpy(eth_key->eth_dst, output->eth.dst, ETH_ALEN);
+	ether_addr_copy(eth_key->eth_src, output->eth.src);
+	ether_addr_copy(eth_key->eth_dst, output->eth.dst);
 
 	if (swkey->eth.tci || swkey->eth.type == htons(ETH_P_8021Q)) {
 		__be16 eth_type;
@@ -1055,8 +1145,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 		arp_key->arp_sip = output->ipv4.addr.src;
 		arp_key->arp_tip = output->ipv4.addr.dst;
 		arp_key->arp_op = htons(output->ip.proto);
-		memcpy(arp_key->arp_sha, output->ipv4.arp.sha, ETH_ALEN);
-		memcpy(arp_key->arp_tha, output->ipv4.arp.tha, ETH_ALEN);
+		ether_addr_copy(arp_key->arp_sha, output->ipv4.arp.sha);
+		ether_addr_copy(arp_key->arp_tha, output->ipv4.arp.tha);
 	}
 
 	if ((swkey->eth.type == htons(ETH_P_IP) ||
@@ -1070,19 +1160,11 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 			if (!nla)
 				goto nla_put_failure;
 			tcp_key = nla_data(nla);
-			if (swkey->eth.type == htons(ETH_P_IP)) {
-				tcp_key->tcp_src = output->ipv4.tp.src;
-				tcp_key->tcp_dst = output->ipv4.tp.dst;
-				if (nla_put_be16(skb, OVS_KEY_ATTR_TCP_FLAGS,
-						 output->ipv4.tp.flags))
-					goto nla_put_failure;
-			} else if (swkey->eth.type == htons(ETH_P_IPV6)) {
-				tcp_key->tcp_src = output->ipv6.tp.src;
-				tcp_key->tcp_dst = output->ipv6.tp.dst;
-				if (nla_put_be16(skb, OVS_KEY_ATTR_TCP_FLAGS,
-						 output->ipv6.tp.flags))
-					goto nla_put_failure;
-			}
+			tcp_key->tcp_src = output->tp.src;
+			tcp_key->tcp_dst = output->tp.dst;
+			if (nla_put_be16(skb, OVS_KEY_ATTR_TCP_FLAGS,
+					 output->tp.flags))
+				goto nla_put_failure;
 		} else if (swkey->ip.proto == IPPROTO_UDP) {
 			struct ovs_key_udp *udp_key;
 
@@ -1090,13 +1172,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 			if (!nla)
 				goto nla_put_failure;
 			udp_key = nla_data(nla);
-			if (swkey->eth.type == htons(ETH_P_IP)) {
-				udp_key->udp_src = output->ipv4.tp.src;
-				udp_key->udp_dst = output->ipv4.tp.dst;
-			} else if (swkey->eth.type == htons(ETH_P_IPV6)) {
-				udp_key->udp_src = output->ipv6.tp.src;
-				udp_key->udp_dst = output->ipv6.tp.dst;
-			}
+			udp_key->udp_src = output->tp.src;
+			udp_key->udp_dst = output->tp.dst;
 		} else if (swkey->ip.proto == IPPROTO_SCTP) {
 			struct ovs_key_sctp *sctp_key;
 
@@ -1104,13 +1181,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 			if (!nla)
 				goto nla_put_failure;
 			sctp_key = nla_data(nla);
-			if (swkey->eth.type == htons(ETH_P_IP)) {
-				sctp_key->sctp_src = swkey->ipv4.tp.src;
-				sctp_key->sctp_dst = swkey->ipv4.tp.dst;
-			} else if (swkey->eth.type == htons(ETH_P_IPV6)) {
-				sctp_key->sctp_src = swkey->ipv6.tp.src;
-				sctp_key->sctp_dst = swkey->ipv6.tp.dst;
-			}
+			sctp_key->sctp_src = output->tp.src;
+			sctp_key->sctp_dst = output->tp.dst;
 		} else if (swkey->eth.type == htons(ETH_P_IP) &&
 			   swkey->ip.proto == IPPROTO_ICMP) {
 			struct ovs_key_icmp *icmp_key;
@@ -1119,8 +1191,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 			if (!nla)
 				goto nla_put_failure;
 			icmp_key = nla_data(nla);
-			icmp_key->icmp_type = ntohs(output->ipv4.tp.src);
-			icmp_key->icmp_code = ntohs(output->ipv4.tp.dst);
+			icmp_key->icmp_type = ntohs(output->tp.src);
+			icmp_key->icmp_code = ntohs(output->tp.dst);
 		} else if (swkey->eth.type == htons(ETH_P_IPV6) &&
 			   swkey->ip.proto == IPPROTO_ICMPV6) {
 			struct ovs_key_icmpv6 *icmpv6_key;
@@ -1130,8 +1202,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 			if (!nla)
 				goto nla_put_failure;
 			icmpv6_key = nla_data(nla);
-			icmpv6_key->icmpv6_type = ntohs(output->ipv6.tp.src);
-			icmpv6_key->icmpv6_code = ntohs(output->ipv6.tp.dst);
+			icmpv6_key->icmpv6_type = ntohs(output->tp.src);
+			icmpv6_key->icmpv6_code = ntohs(output->tp.dst);
 
 			if (icmpv6_key->icmpv6_type == NDISC_NEIGHBOUR_SOLICITATION ||
 			    icmpv6_key->icmpv6_type == NDISC_NEIGHBOUR_ADVERTISEMENT) {
@@ -1143,8 +1215,8 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 				nd_key = nla_data(nla);
 				memcpy(nd_key->nd_target, &output->ipv6.nd.target,
 							sizeof(nd_key->nd_target));
-				memcpy(nd_key->nd_sll, output->ipv6.nd.sll, ETH_ALEN);
-				memcpy(nd_key->nd_tll, output->ipv6.nd.tll, ETH_ALEN);
+				ether_addr_copy(nd_key->nd_sll, output->ipv6.nd.sll);
+				ether_addr_copy(nd_key->nd_tll, output->ipv6.nd.tll);
 			}
 		}
 	}
@@ -1218,13 +1290,14 @@ out:
 	return  (struct nlattr *) ((unsigned char *)(*sfa) + next_offset);
 }
 
-static int add_action(struct sw_flow_actions **sfa, int attrtype, void *data, int len)
+static struct nlattr *__add_action(struct sw_flow_actions **sfa,
+				   int attrtype, void *data, int len)
 {
 	struct nlattr *a;
 
 	a = reserve_sfa_size(sfa, nla_attr_size(len));
 	if (IS_ERR(a))
-		return PTR_ERR(a);
+		return a;
 
 	a->nla_type = attrtype;
 	a->nla_len = nla_attr_size(len);
@@ -1232,6 +1305,18 @@ static int add_action(struct sw_flow_actions **sfa, int attrtype, void *data, in
 	if (data)
 		memcpy(nla_data(a), data, len);
 	memset((unsigned char *) a + a->nla_len, 0, nla_padlen(len));
+
+	return a;
+}
+
+static int add_action(struct sw_flow_actions **sfa, int attrtype,
+		      void *data, int len)
+{
+	struct nlattr *a;
+
+	a = __add_action(sfa, attrtype, data, len);
+	if (IS_ERR(a))
+		return PTR_ERR(a);
 
 	return 0;
 }
@@ -1309,13 +1394,10 @@ static int validate_and_copy_sample(const struct nlattr *attr,
 
 static int validate_tp_port(const struct sw_flow_key *flow_key)
 {
-	if (flow_key->eth.type == htons(ETH_P_IP)) {
-		if (flow_key->ipv4.tp.src || flow_key->ipv4.tp.dst)
-			return 0;
-	} else if (flow_key->eth.type == htons(ETH_P_IPV6)) {
-		if (flow_key->ipv6.tp.src || flow_key->ipv6.tp.dst)
-			return 0;
-	}
+	if ((flow_key->eth.type == htons(ETH_P_IP) ||
+	     flow_key->eth.type == htons(ETH_P_IPV6)) &&
+	    (flow_key->tp.src || flow_key->tp.dst))
+		return 0;
 
 	return -EINVAL;
 }
@@ -1341,6 +1423,8 @@ static int validate_and_copy_set_tun(const struct nlattr *attr,
 {
 	struct sw_flow_match match;
 	struct sw_flow_key key;
+	struct ovs_tunnel_info *tun_info;
+	struct nlattr *a;
 	int err, start;
 
 	ovs_match_init(&match, &key, NULL);
@@ -1348,12 +1432,56 @@ static int validate_and_copy_set_tun(const struct nlattr *attr,
 	if (err)
 		return err;
 
+	if (key.tun_opts_len) {
+		struct geneve_opt *option = GENEVE_OPTS(&key,
+							key.tun_opts_len);
+		int opts_len = key.tun_opts_len;
+		bool crit_opt = false;
+
+		while (opts_len > 0) {
+			int len;
+
+			if (opts_len < sizeof(*option))
+				return -EINVAL;
+
+			len = sizeof(*option) + option->length * 4;
+			if (len > opts_len)
+				return -EINVAL;
+
+			crit_opt |= !!(option->type & GENEVE_CRIT_OPT_TYPE);
+
+			option = (struct geneve_opt *)((u8 *)option + len);
+			opts_len -= len;
+		};
+
+		key.tun_key.tun_flags |= crit_opt ? TUNNEL_CRIT_OPT : 0;
+	};
+
 	start = add_nested_action_start(sfa, OVS_ACTION_ATTR_SET);
 	if (start < 0)
 		return start;
 
-	err = add_action(sfa, OVS_KEY_ATTR_IPV4_TUNNEL, &match.key->tun_key,
-			sizeof(match.key->tun_key));
+	a = __add_action(sfa, OVS_KEY_ATTR_TUNNEL_INFO, NULL,
+			 sizeof(*tun_info) + key.tun_opts_len);
+	if (IS_ERR(a))
+		return PTR_ERR(a);
+
+	tun_info = nla_data(a);
+	tun_info->tunnel = key.tun_key;
+	tun_info->options_len = key.tun_opts_len;
+
+	if (tun_info->options_len) {
+		/* We need to store the options in the action itself since
+		 * everything else will go away after flow setup. We can append
+		 * it to tun_info and then point there.
+		 */
+		memcpy((tun_info + 1), GENEVE_OPTS(&key, key.tun_opts_len),
+		       key.tun_opts_len);
+		tun_info->options = (struct geneve_opt *)(tun_info + 1);
+	} else {
+		tun_info->options = NULL;
+	}
+
 	add_nested_action_end(*sfa, start);
 
 	return err;
@@ -1503,11 +1631,13 @@ int ovs_nla_copy_actions(const struct nlattr *attr,
 		/* Expected argument lengths, (u32)-1 for variable length. */
 		static const u32 action_lens[OVS_ACTION_ATTR_MAX + 1] = {
 			[OVS_ACTION_ATTR_OUTPUT] = sizeof(u32),
+			[OVS_ACTION_ATTR_RECIRC] = sizeof(u32),
 			[OVS_ACTION_ATTR_USERSPACE] = (u32)-1,
 			[OVS_ACTION_ATTR_PUSH_VLAN] = sizeof(struct ovs_action_push_vlan),
 			[OVS_ACTION_ATTR_POP_VLAN] = 0,
 			[OVS_ACTION_ATTR_SET] = (u32)-1,
-			[OVS_ACTION_ATTR_SAMPLE] = (u32)-1
+			[OVS_ACTION_ATTR_SAMPLE] = (u32)-1,
+			[OVS_ACTION_ATTR_HASH] = sizeof(struct ovs_action_hash)
 		};
 		const struct ovs_action_push_vlan *vlan;
 		int type = nla_type(a);
@@ -1534,6 +1664,18 @@ int ovs_nla_copy_actions(const struct nlattr *attr,
 				return -EINVAL;
 			break;
 
+		case OVS_ACTION_ATTR_HASH: {
+			const struct ovs_action_hash *act_hash = nla_data(a);
+
+			switch (act_hash->hash_alg) {
+			case OVS_HASH_ALG_L4:
+				break;
+			default:
+				return  -EINVAL;
+			}
+
+			break;
+		}
 
 		case OVS_ACTION_ATTR_POP_VLAN:
 			break;
@@ -1544,6 +1686,9 @@ int ovs_nla_copy_actions(const struct nlattr *attr,
 				return -EINVAL;
 			if (!(vlan->vlan_tci & htons(VLAN_TAG_PRESENT)))
 				return -EINVAL;
+			break;
+
+		case OVS_ACTION_ATTR_RECIRC:
 			break;
 
 		case OVS_ACTION_ATTR_SET:
@@ -1619,17 +1764,22 @@ static int set_action_to_attr(const struct nlattr *a, struct sk_buff *skb)
 	int err;
 
 	switch (key_type) {
-	case OVS_KEY_ATTR_IPV4_TUNNEL:
+	case OVS_KEY_ATTR_TUNNEL_INFO: {
+		struct ovs_tunnel_info *tun_info = nla_data(ovs_key);
+
 		start = nla_nest_start(skb, OVS_ACTION_ATTR_SET);
 		if (!start)
 			return -EMSGSIZE;
 
-		err = ipv4_tun_to_nlattr(skb, nla_data(ovs_key),
-					     nla_data(ovs_key));
+		err = ipv4_tun_to_nlattr(skb, &tun_info->tunnel,
+					 tun_info->options_len ?
+						tun_info->options : NULL,
+					 tun_info->options_len);
 		if (err)
 			return err;
 		nla_nest_end(skb, start);
 		break;
+	}
 	default:
 		if (nla_put(skb, OVS_ACTION_ATTR_SET, nla_len(a), ovs_key))
 			return -EMSGSIZE;

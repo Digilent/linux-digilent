@@ -56,7 +56,8 @@ enum mlx4_qp_optpar {
 	MLX4_QP_OPTPAR_RNR_RETRY		= 1 << 13,
 	MLX4_QP_OPTPAR_ACK_TIMEOUT		= 1 << 14,
 	MLX4_QP_OPTPAR_SCHED_QUEUE		= 1 << 16,
-	MLX4_QP_OPTPAR_COUNTER_INDEX		= 1 << 20
+	MLX4_QP_OPTPAR_COUNTER_INDEX		= 1 << 20,
+	MLX4_QP_OPTPAR_VLAN_STRIPPING		= 1 << 21,
 };
 
 enum mlx4_qp_state {
@@ -270,9 +271,14 @@ enum {
 
 struct mlx4_wqe_ctrl_seg {
 	__be32			owner_opcode;
-	__be16			vlan_tag;
-	u8			ins_vlan;
-	u8			fence_size;
+	union {
+		struct {
+			__be16			vlan_tag;
+			u8			ins_vlan;
+			u8			fence_size;
+		};
+		__be32			bf_qpn;
+	};
 	/*
 	 * High 24 bits are SRC remote buffer; low 8 bits are flags:
 	 * [7]   SO (strong ordering)
@@ -416,6 +422,24 @@ struct mlx4_wqe_inline_seg {
 	__be32			byte_count;
 };
 
+enum mlx4_update_qp_attr {
+	MLX4_UPDATE_QP_SMAC		= 1 << 0,
+	MLX4_UPDATE_QP_VSD		= 1 << 2,
+	MLX4_UPDATE_QP_SUPPORTED_ATTRS	= (1 << 2) - 1
+};
+
+enum mlx4_update_qp_params_flags {
+	MLX4_UPDATE_QP_PARAMS_FLAGS_VSD_ENABLE		= 1 << 0,
+};
+
+struct mlx4_update_qp_params {
+	u8	smac_index;
+	u32	flags;
+};
+
+int mlx4_update_qp(struct mlx4_dev *dev, u32 qpn,
+		   enum mlx4_update_qp_attr attr,
+		   struct mlx4_update_qp_params *params);
 int mlx4_qp_modify(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 		   enum mlx4_qp_state cur_state, enum mlx4_qp_state new_state,
 		   struct mlx4_qp_context *context, enum mlx4_qp_optpar optpar,

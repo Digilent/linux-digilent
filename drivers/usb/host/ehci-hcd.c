@@ -724,15 +724,15 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 #ifdef CONFIG_USB_ZYNQ_PHY
 	if(hcd->phy) {
 		/* A device */
-		if (hcd->phy->otg->default_a &&
-			(hcd->phy->state == OTG_STATE_A_PERIPHERAL)) {
+		if (hcd->usb_phy->otg->default_a &&
+			(hcd->usb_phy->state == OTG_STATE_A_PERIPHERAL)) {
 			spin_unlock(&ehci->lock);
 			return IRQ_NONE;
 		}
 		/* B device */
-		if (!hcd->phy->otg->default_a &&
-			((hcd->phy->state != OTG_STATE_B_WAIT_ACON) &&
-			(hcd->phy->state != OTG_STATE_B_HOST))) {
+		if (!hcd->usb_phy->otg->default_a &&
+			((hcd->usb_phy->state != OTG_STATE_B_WAIT_ACON) &&
+			(hcd->usb_phy->state != OTG_STATE_B_HOST))) {
 			spin_unlock(&ehci->lock);
 			return IRQ_NONE;
 		}
@@ -834,7 +834,7 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 				continue;
 
 			/* start 20 msec resume signaling from this port,
-			 * and make khubd collect PORT_STAT_C_SUSPEND to
+			 * and make hub_wq collect PORT_STAT_C_SUSPEND to
 			 * stop that signaling.  Use 5 ms extra for safety,
 			 * like usb_port_resume() does.
 			 */
@@ -1011,8 +1011,6 @@ rescan:
 	}
 
 	qh->exception = 1;
-	if (ehci->rh_state < EHCI_RH_RUNNING)
-		qh->qh_state = QH_STATE_IDLE;
 	switch (qh->qh_state) {
 	case QH_STATE_LINKED:
 		WARN_ON(!list_empty(&qh->qtd_list));

@@ -36,7 +36,7 @@ nva3_therm_fan_sense(struct nouveau_therm *therm)
 	u32 tach = nv_rd32(therm, 0x00e728) & 0x0000ffff;
 	u32 ctrl = nv_rd32(therm, 0x00e720);
 	if (ctrl & 0x00000001)
-		return tach * 60;
+		return tach * 60 / 2;
 	return -ENODEV;
 }
 
@@ -50,6 +50,8 @@ nva3_therm_init(struct nouveau_object *object)
 	ret = nouveau_therm_init(&priv->base.base);
 	if (ret)
 		return ret;
+
+	nv84_sensor_setup(&priv->base.base);
 
 	/* enable fan tach, count revolutions per-second */
 	nv_mask(priv, 0x00e720, 0x00000003, 0x00000002);

@@ -38,6 +38,37 @@ extern void dce6_afmt_select_pin(struct drm_encoder *encoder);
 extern void dce6_afmt_write_latency_fields(struct drm_encoder *encoder,
 					   struct drm_display_mode *mode);
 
+/* enable the audio stream */
+static void dce4_audio_enable(struct radeon_device *rdev,
+			      struct r600_audio_pin *pin,
+			      u8 enable_mask)
+{
+	u32 tmp = RREG32(AZ_HOT_PLUG_CONTROL);
+
+	if (!pin)
+		return;
+
+	if (enable_mask) {
+		tmp |= AUDIO_ENABLED;
+		if (enable_mask & 1)
+			tmp |= PIN0_AUDIO_ENABLED;
+		if (enable_mask & 2)
+			tmp |= PIN1_AUDIO_ENABLED;
+		if (enable_mask & 4)
+			tmp |= PIN2_AUDIO_ENABLED;
+		if (enable_mask & 8)
+			tmp |= PIN3_AUDIO_ENABLED;
+	} else {
+		tmp &= ~(AUDIO_ENABLED |
+			 PIN0_AUDIO_ENABLED |
+			 PIN1_AUDIO_ENABLED |
+			 PIN2_AUDIO_ENABLED |
+			 PIN3_AUDIO_ENABLED);
+	}
+
+	WREG32(AZ_HOT_PLUG_CONTROL, tmp);
+}
+
 /*
  * update the N and CTS parameters for a given pixel clock rate
  */
@@ -102,7 +133,7 @@ static void dce4_afmt_write_speaker_allocation(struct drm_encoder *encoder)
 	struct drm_connector *connector;
 	struct radeon_connector *radeon_connector = NULL;
 	u32 tmp;
-	u8 *sadb;
+	u8 *sadb = NULL;
 	int sad_count;
 
 	list_for_each_entry(connector, &encoder->dev->mode_config.connector_list, head) {
@@ -117,10 +148,10 @@ static void dce4_afmt_write_speaker_allocation(struct drm_encoder *encoder)
 		return;
 	}
 
-	sad_count = drm_edid_to_speaker_allocation(radeon_connector->edid, &sadb);
-	if (sad_count <= 0) {
-		DRM_ERROR("Couldn't read Speaker Allocation Data Block: %d\n", sad_count);
-		return;
+	sad_count = drm_edid_to_speaker_allocation(radeon_connector_edid(connector), &sadb);
+	if (sad_count < 0) {
+		DRM_DEBUG("Couldn't read Speaker Allocation Data Block: %d\n", sad_count);
+		sad_count = 0;
 	}
 
 	/* program the speaker allocation */
@@ -172,7 +203,7 @@ static void evergreen_hdmi_write_sad_regs(struct drm_encoder *encoder)
 		return;
 	}
 
-	sad_count = drm_edid_to_sad(radeon_connector->edid, &sads);
+	sad_count = drm_edid_to_sad(radeon_connector_edid(connector), &sads);
 	if (sad_count <= 0) {
 		DRM_ERROR("Couldn't read SADs: %d\n", sad_count);
 		return;
@@ -293,10 +324,13 @@ void evergreen_hdmi_setmode(struct drm_encoder *encoder, struct drm_display_mode
 	struct radeon_device *rdev = dev->dev_private;
 	struct radeon_encoder *radeon_encoder = to_radeon_encoder(encoder);
 	struct radeon_encoder_atom_dig *dig = radeon_encoder->enc_priv;
+	struct drm_connector *connector = radeon_get_connector_for_encoder(encoder);
 	u8 buffer[HDMI_INFOFRAME_HEADER_SIZE + HDMI_AVI_INFOFRAME_SIZE];
 	struct hdmi_avi_infoframe frame;
 	uint32_t offset;
 	ssize_t err;
+	uint32_t val;
+	int bpc = 8;
 
 	if (!dig || !dig->afmt)
 		return;
@@ -306,13 +340,19 @@ void evergreen_hdmi_setmode(struct drm_encoder *encoder, struct drm_display_mode
 		return;
 	offset = dig->afmt->offset;
 
+	/* hdmi deep color mode general control packets setup, if bpc > 8 */
+	if (encoder->crtc) {
+		struct radeon_crtc *radeon_crtc = to_radeon_crtc(encoder->crtc);
+		bpc = radeon_crtc->bpc;
+	}
+
 	/* disable audio prior to setting up hw */
 	if (ASIC_IS_DCE6(rdev)) {
 		dig->afmt->pin = dce6_audio_get_pin(rdev);
-		dce6_audio_enable(rdev, dig->afmt->pin, false);
+		dce6_audio_enable(rdev, dig->afmt->pin, 0);
 	} else {
 		dig->afmt->pin = r600_audio_get_pin(rdev);
-		r600_audio_enable(rdev, dig->afmt->pin, false);
+		dce4_audio_enable(rdev, dig->afmt->pin, 0);
 	}
 
 	evergreen_audio_set_dto(encoder, mode->clock);
@@ -321,6 +361,35 @@ void evergreen_hdmi_setmode(struct drm_encoder *encoder, struct drm_display_mode
 	       HDMI_NULL_SEND); /* send null packets when required */
 
 	WREG32(AFMT_AUDIO_CRC_CONTROL + offset, 0x1000);
+
+	val = RREG32(HDMI_CONTROL + offset);
+	val &= ~HDMI_DEEP_COLOR_ENABLE;
+	val &= ~HDMI_DEEP_COLOR_DEPTH_MASK;
+
+	switch (bpc) {
+		case 0:
+		case 6:
+		case 8:
+		case 16:
+		default:
+			DRM_DEBUG("%s: Disabling hdmi deep color for %d bpc.\n",
+					 connector->name, bpc);
+			break;
+		case 10:
+			val |= HDMI_DEEP_COLOR_ENABLE;
+			val |= HDMI_DEEP_COLOR_DEPTH(HDMI_30BIT_DEEP_COLOR);
+			DRM_DEBUG("%s: Enabling hdmi deep color 30 for 10 bpc.\n",
+					 connector->name);
+			break;
+		case 12:
+			val |= HDMI_DEEP_COLOR_ENABLE;
+			val |= HDMI_DEEP_COLOR_DEPTH(HDMI_36BIT_DEEP_COLOR);
+			DRM_DEBUG("%s: Enabling hdmi deep color 36 for 12 bpc.\n",
+					 connector->name);
+			break;
+	}
+
+	WREG32(HDMI_CONTROL + offset, val);
 
 	WREG32(HDMI_VBI_PACKET_CONTROL + offset,
 	       HDMI_NULL_SEND | /* send null packets when required */
@@ -348,9 +417,13 @@ void evergreen_hdmi_setmode(struct drm_encoder *encoder, struct drm_display_mode
 
 	/* fglrx clears sth in AFMT_AUDIO_PACKET_CONTROL2 here */
 
-	WREG32(HDMI_ACR_PACKET_CONTROL + offset,
-	       HDMI_ACR_SOURCE | /* select SW CTS value */
-	       HDMI_ACR_AUTO_SEND); /* allow hw to sent ACR packets when required */
+	if (bpc > 8)
+		WREG32(HDMI_ACR_PACKET_CONTROL + offset,
+		       HDMI_ACR_AUTO_SEND); /* allow hw to sent ACR packets when required */
+	else
+		WREG32(HDMI_ACR_PACKET_CONTROL + offset,
+		       HDMI_ACR_SOURCE | /* select SW CTS value */
+		       HDMI_ACR_AUTO_SEND); /* allow hw to sent ACR packets when required */
 
 	evergreen_hdmi_update_ACR(encoder, mode->clock);
 
@@ -421,13 +494,15 @@ void evergreen_hdmi_setmode(struct drm_encoder *encoder, struct drm_display_mode
 
 	/* enable audio after to setting up hw */
 	if (ASIC_IS_DCE6(rdev))
-		dce6_audio_enable(rdev, dig->afmt->pin, true);
+		dce6_audio_enable(rdev, dig->afmt->pin, 1);
 	else
-		r600_audio_enable(rdev, dig->afmt->pin, true);
+		dce4_audio_enable(rdev, dig->afmt->pin, 0xf);
 }
 
 void evergreen_hdmi_enable(struct drm_encoder *encoder, bool enable)
 {
+	struct drm_device *dev = encoder->dev;
+	struct radeon_device *rdev = dev->dev_private;
 	struct radeon_encoder *radeon_encoder = to_radeon_encoder(encoder);
 	struct radeon_encoder_atom_dig *dig = radeon_encoder->enc_priv;
 
@@ -439,6 +514,14 @@ void evergreen_hdmi_enable(struct drm_encoder *encoder, bool enable)
 		return;
 	if (!enable && !dig->afmt->enabled)
 		return;
+
+	if (!enable && dig->afmt->pin) {
+		if (ASIC_IS_DCE6(rdev))
+			dce6_audio_enable(rdev, dig->afmt->pin, 0);
+		else
+			dce4_audio_enable(rdev, dig->afmt->pin, 0);
+		dig->afmt->pin = NULL;
+	}
 
 	dig->afmt->enabled = enable;
 

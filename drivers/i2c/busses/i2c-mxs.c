@@ -307,6 +307,9 @@ static int mxs_i2c_pio_wait_xfer_end(struct mxs_i2c_dev *i2c)
 	unsigned long timeout = jiffies + msecs_to_jiffies(1000);
 
 	while (readl(i2c->regs + MXS_I2C_CTRL0) & MXS_I2C_CTRL0_RUN) {
+		if (readl(i2c->regs + MXS_I2C_CTRL1) &
+				MXS_I2C_CTRL1_NO_SLAVE_ACK_IRQ)
+			return -ENXIO;
 		if (time_after(jiffies, timeout))
 			return -ETIMEDOUT;
 		cond_resched();
@@ -429,7 +432,7 @@ static int mxs_i2c_pio_setup_xfer(struct i2c_adapter *adap,
 		ret = mxs_i2c_pio_wait_xfer_end(i2c);
 		if (ret) {
 			dev_err(i2c->dev,
-				"PIO: Failed to send SELECT command!\n");
+				"PIO: Failed to send READ command!\n");
 			goto cleanup;
 		}
 
@@ -806,7 +809,6 @@ static int mxs_i2c_probe(struct platform_device *pdev)
 	struct mxs_i2c_dev *i2c;
 	struct i2c_adapter *adap;
 	struct resource *res;
-	resource_size_t res_size;
 	int err, irq;
 
 	i2c = devm_kzalloc(dev, sizeof(struct mxs_i2c_dev), GFP_KERNEL);
@@ -819,18 +821,13 @@ static int mxs_i2c_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	i2c->regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(i2c->regs))
+		return PTR_ERR(i2c->regs);
+
 	irq = platform_get_irq(pdev, 0);
-
-	if (!res || irq < 0)
-		return -ENOENT;
-
-	res_size = resource_size(res);
-	if (!devm_request_mem_region(dev, res->start, res_size, res->name))
-		return -EBUSY;
-
-	i2c->regs = devm_ioremap_nocache(dev, res->start, res_size);
-	if (!i2c->regs)
-		return -EBUSY;
+	if (irq < 0)
+		return irq;
 
 	err = devm_request_irq(dev, irq, mxs_i2c_isr, 0, dev_name(dev), i2c);
 	if (err)

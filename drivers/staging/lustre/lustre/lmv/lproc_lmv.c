@@ -37,9 +37,9 @@
 #define DEBUG_SUBSYSTEM S_CLASS
 
 #include <linux/seq_file.h>
-#include <asm/statfs.h>
-#include <lprocfs_status.h>
-#include <obd_class.h>
+#include <linux/statfs.h>
+#include "../include/lprocfs_status.h"
+#include "../include/obd_class.h"
 
 static int lmv_numobd_seq_show(struct seq_file *m, void *v)
 {
@@ -58,7 +58,7 @@ static const char *placement_name[] = {
 	[PLACEMENT_INVAL_POLICY]  = "INVAL"
 };
 
-static placement_policy_t placement_name2policy(char *name, int len)
+static enum placement_policy placement_name2policy(char *name, int len)
 {
 	int		     i;
 
@@ -69,7 +69,7 @@ static placement_policy_t placement_name2policy(char *name, int len)
 	return PLACEMENT_INVAL_POLICY;
 }
 
-static const char *placement_policy2name(placement_policy_t placement)
+static const char *placement_policy2name(enum placement_policy placement)
 {
 	LASSERT(placement < PLACEMENT_MAX_POLICY);
 	return placement_name[placement];
@@ -87,13 +87,14 @@ static int lmv_placement_seq_show(struct seq_file *m, void *v)
 
 #define MAX_POLICY_STRING_SIZE 64
 
-static ssize_t lmv_placement_seq_write(struct file *file, const char *buffer,
-				   size_t count, loff_t *off)
+static ssize_t lmv_placement_seq_write(struct file *file,
+					const char __user *buffer,
+					size_t count, loff_t *off)
 {
 	struct obd_device *dev = ((struct seq_file *)file->private_data)->private;
 	char		     dummy[MAX_POLICY_STRING_SIZE + 1];
 	int		      len = count;
-	placement_policy_t       policy;
+	enum placement_policy       policy;
 	struct lmv_obd	  *lmv;
 
 	if (copy_from_user(dummy, buffer, MAX_POLICY_STRING_SIZE))
@@ -199,19 +200,19 @@ static int lmv_target_seq_open(struct inode *inode, struct file *file)
 LPROC_SEQ_FOPS_RO_TYPE(lmv, uuid);
 
 struct lprocfs_vars lprocfs_lmv_obd_vars[] = {
-	{ "numobd",	  &lmv_numobd_fops,	  0, 0 },
-	{ "placement",	  &lmv_placement_fops,    0, 0 },
-	{ "activeobd",	  &lmv_activeobd_fops,    0, 0 },
-	{ "uuid",	  &lmv_uuid_fops,	  0, 0 },
-	{ "desc_uuid",	  &lmv_desc_uuid_fops,    0, 0 },
-	{ 0 }
+	{ "numobd",	  &lmv_numobd_fops,	  NULL, 0 },
+	{ "placement",	  &lmv_placement_fops,    NULL, 0 },
+	{ "activeobd",	  &lmv_activeobd_fops,    NULL, 0 },
+	{ "uuid",	  &lmv_uuid_fops,	  NULL, 0 },
+	{ "desc_uuid",	  &lmv_desc_uuid_fops,    NULL, 0 },
+	{ NULL }
 };
 
 LPROC_SEQ_FOPS_RO_TYPE(lmv, numrefs);
 
 static struct lprocfs_vars lprocfs_lmv_module_vars[] = {
-	{ "num_refs",	   &lmv_numrefs_fops, 0, 0 },
-	{ 0 }
+	{ "num_refs",	   &lmv_numrefs_fops, NULL, 0 },
+	{ NULL }
 };
 
 struct file_operations lmv_proc_target_fops = {

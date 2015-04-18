@@ -21,6 +21,7 @@
 #include <linux/media.h>
 #include <linux/module.h>
 #include <linux/of_gpio.h>
+#include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
@@ -815,7 +816,7 @@ static void s5k5baf_hw_find_min_fiv(struct s5k5baf *state)
 				 "error setting frame interval: %d\n", err);
 			state->error = -EINVAL;
 		}
-	};
+	}
 	v4l2_err(&state->sd, "cannot find correct frame interval\n");
 	state->error = -ERANGE;
 }
@@ -1311,6 +1312,8 @@ static int s5k5baf_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 	struct s5k5baf *state = to_s5k5baf(sd);
 	const struct s5k5baf_pixfmt *pixfmt;
 	int ret = 0;
+
+	mf->field = V4L2_FIELD_NONE;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		*v4l2_subdev_get_try_format(fh, fmt->pad) = *mf;
@@ -1855,7 +1858,7 @@ static int s5k5baf_parse_device_node(struct s5k5baf *state, struct device *dev)
 	if (ret < 0)
 		return ret;
 
-	node_ep = v4l2_of_get_next_endpoint(node, NULL);
+	node_ep = of_graph_get_next_endpoint(node, NULL);
 	if (!node_ep) {
 		dev_err(dev, "no endpoint defined at node %s\n",
 			node->full_name);

@@ -262,12 +262,7 @@ static struct usbhs_phy_data phy_data[] __initdata = {
 
 static struct usbhs_omap_platform_data usbhs_bdata __initdata = {
 	.port_mode[0] = OMAP_EHCI_PORT_MODE_PHY,
-#if defined(CONFIG_PANEL_SHARP_LQ043T1DG01) || \
-		defined(CONFIG_PANEL_SHARP_LQ043T1DG01_MODULE)
-	.port_mode[1] = OMAP_USBHS_PORT_MODE_UNUSED,
-#else
 	.port_mode[1] = OMAP_EHCI_PORT_MODE_PHY,
-#endif
 };
 
 #ifdef CONFIG_OMAP_MUX
@@ -371,7 +366,6 @@ MACHINE_START(OMAP3517EVM, "OMAP3517/AM3517 EVM")
 	.map_io		= omap3_map_io,
 	.init_early	= am35xx_init_early,
 	.init_irq	= omap3_init_irq,
-	.handle_irq	= omap3_intc_handle_irq,
 	.init_machine	= am3517_evm_init,
 	.init_late	= am35xx_init_late,
 	.init_time	= omap3_sync32k_timer_init,

@@ -281,13 +281,6 @@ static void bmips_smp_finish(void)
 }
 
 /*
- * Runs on CPU0 after all CPUs have been booted
- */
-static void bmips_cpus_done(void)
-{
-}
-
-/*
  * BMIPS5000 raceless IPIs
  *
  * Each CPU has two inbound SW IRQs which are independent of all other CPUs.
@@ -353,7 +346,7 @@ static irqreturn_t bmips43xx_ipi_interrupt(int irq, void *dev_id)
 	int action, cpu = irq - IPI0_IRQ;
 
 	spin_lock_irqsave(&ipi_lock, flags);
-	action = __get_cpu_var(ipi_action_mask);
+	action = __this_cpu_read(ipi_action_mask);
 	per_cpu(ipi_action_mask, cpu) = 0;
 	clear_c0_cause(cpu ? C_SW1 : C_SW0);
 	spin_unlock_irqrestore(&ipi_lock, flags);
@@ -434,7 +427,6 @@ struct plat_smp_ops bmips43xx_smp_ops = {
 	.boot_secondary		= bmips_boot_secondary,
 	.smp_finish		= bmips_smp_finish,
 	.init_secondary		= bmips_init_secondary,
-	.cpus_done		= bmips_cpus_done,
 	.send_ipi_single	= bmips43xx_send_ipi_single,
 	.send_ipi_mask		= bmips43xx_send_ipi_mask,
 #ifdef CONFIG_HOTPLUG_CPU
@@ -449,7 +441,6 @@ struct plat_smp_ops bmips5000_smp_ops = {
 	.boot_secondary		= bmips_boot_secondary,
 	.smp_finish		= bmips_smp_finish,
 	.init_secondary		= bmips_init_secondary,
-	.cpus_done		= bmips_cpus_done,
 	.send_ipi_single	= bmips5000_send_ipi_single,
 	.send_ipi_mask		= bmips5000_send_ipi_mask,
 #ifdef CONFIG_HOTPLUG_CPU

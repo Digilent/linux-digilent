@@ -167,6 +167,9 @@ static struct page *balloon_next_page(struct page *page)
 
 static enum bp_state update_schedule(enum bp_state state)
 {
+	if (state == BP_ECANCELED)
+		return BP_ECANCELED;
+
 	if (state == BP_DONE) {
 		balloon_stats.schedule_delay = 1;
 		balloon_stats.retry_count = 1;
@@ -230,8 +233,8 @@ static enum bp_state reserve_additional_memory(long credit)
 	rc = add_memory(nid, hotplug_start_paddr, balloon_hotplug << PAGE_SHIFT);
 
 	if (rc) {
-		pr_info("%s: add_memory() failed: %i\n", __func__, rc);
-		return BP_EAGAIN;
+		pr_warn("Cannot add additional memory (%i)\n", rc);
+		return BP_ECANCELED;
 	}
 
 	balloon_hotplug -= credit;
@@ -426,20 +429,18 @@ static enum bp_state decrease_reservation(unsigned long nr_pages, gfp_t gfp)
 		 * p2m are consistent.
 		 */
 		if (!xen_feature(XENFEAT_auto_translated_physmap)) {
-			unsigned long p;
-			struct page   *scratch_page = get_balloon_scratch_page();
-
 			if (!PageHighMem(page)) {
+				struct page *scratch_page = get_balloon_scratch_page();
+
 				ret = HYPERVISOR_update_va_mapping(
 						(unsigned long)__va(pfn << PAGE_SHIFT),
 						pfn_pte(page_to_pfn(scratch_page),
 							PAGE_KERNEL_RO), 0);
 				BUG_ON(ret);
-			}
-			p = page_to_pfn(scratch_page);
-			__set_phys_to_machine(pfn, pfn_to_mfn(p));
 
-			put_balloon_scratch_page();
+				put_balloon_scratch_page();
+			}
+			__set_phys_to_machine(pfn, INVALID_P2M_ENTRY);
 		}
 #endif
 
@@ -604,19 +605,29 @@ static void __init balloon_add_region(unsigned long start_pfn,
 	}
 }
 
+static int alloc_balloon_scratch_page(int cpu)
+{
+	if (per_cpu(balloon_scratch_page, cpu) != NULL)
+		return 0;
+
+	per_cpu(balloon_scratch_page, cpu) = alloc_page(GFP_KERNEL);
+	if (per_cpu(balloon_scratch_page, cpu) == NULL) {
+		pr_warn("Failed to allocate balloon_scratch_page for cpu %d\n", cpu);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+
 static int balloon_cpu_notify(struct notifier_block *self,
 				    unsigned long action, void *hcpu)
 {
 	int cpu = (long)hcpu;
 	switch (action) {
 	case CPU_UP_PREPARE:
-		if (per_cpu(balloon_scratch_page, cpu) != NULL)
-			break;
-		per_cpu(balloon_scratch_page, cpu) = alloc_page(GFP_KERNEL);
-		if (per_cpu(balloon_scratch_page, cpu) == NULL) {
-			pr_warn("Failed to allocate balloon_scratch_page for cpu %d\n", cpu);
+		if (alloc_balloon_scratch_page(cpu))
 			return NOTIFY_BAD;
-		}
 		break;
 	default:
 		break;
@@ -636,15 +647,17 @@ static int __init balloon_init(void)
 		return -ENODEV;
 
 	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
-		for_each_online_cpu(cpu)
-		{
-			per_cpu(balloon_scratch_page, cpu) = alloc_page(GFP_KERNEL);
-			if (per_cpu(balloon_scratch_page, cpu) == NULL) {
-				pr_warn("Failed to allocate balloon_scratch_page for cpu %d\n", cpu);
+		register_cpu_notifier(&balloon_cpu_notifier);
+
+		get_online_cpus();
+		for_each_online_cpu(cpu) {
+			if (alloc_balloon_scratch_page(cpu)) {
+				put_online_cpus();
+				unregister_cpu_notifier(&balloon_cpu_notifier);
 				return -ENOMEM;
 			}
 		}
-		register_cpu_notifier(&balloon_cpu_notifier);
+		put_online_cpus();
 	}
 
 	pr_info("Initialising balloon driver\n");

@@ -120,7 +120,7 @@ static void update_fb(struct drm_crtc *crtc, struct drm_framebuffer *new_fb)
 
 	/* grab reference to incoming scanout fb: */
 	drm_framebuffer_reference(new_fb);
-	mdp4_crtc->base.fb = new_fb;
+	mdp4_crtc->base.primary->fb = new_fb;
 	mdp4_crtc->fb = new_fb;
 
 	if (old_fb)
@@ -182,7 +182,7 @@ static void pageflip_cb(struct msm_fence_cb *cb)
 	struct mdp4_crtc *mdp4_crtc =
 		container_of(cb, struct mdp4_crtc, pageflip_cb);
 	struct drm_crtc *crtc = &mdp4_crtc->base;
-	struct drm_framebuffer *fb = crtc->fb;
+	struct drm_framebuffer *fb = crtc->primary->fb;
 
 	if (!fb)
 		return;
@@ -216,8 +216,6 @@ static void unref_cursor_worker(struct drm_flip_work *work, void *val)
 static void mdp4_crtc_destroy(struct drm_crtc *crtc)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
-
-	mdp4_crtc->plane->funcs->destroy(mdp4_crtc->plane);
 
 	drm_crtc_cleanup(crtc);
 	drm_flip_work_cleanup(&mdp4_crtc->unref_fb_work);
@@ -275,14 +273,17 @@ static void blend_setup(struct drm_crtc *crtc)
 	};
 	bool alpha[4]= { false, false, false, false };
 
+	/* Don't rely on value read back from hw, but instead use our
+	 * own shadowed value.  Possibly disable/reenable looses the
+	 * previous value and goes back to power-on default?
+	 */
+	mixer_cfg = mdp4_kms->mixer_cfg;
+
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW0(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW1(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_HIGH0(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_HIGH1(ovlp), 0);
 
-	/* TODO single register for all CRTCs, so this won't work properly
-	 * when multiple CRTCs are active..
-	 */
 	for (i = 0; i < ARRAY_SIZE(mdp4_crtc->planes); i++) {
 		struct drm_plane *plane = mdp4_crtc->planes[i];
 		if (plane) {
@@ -293,7 +294,8 @@ static void blend_setup(struct drm_crtc *crtc)
 					to_mdp_format(msm_framebuffer_format(plane->fb));
 				alpha[idx-1] = format->alpha_enable;
 			}
-			mixer_cfg |= mixercfg(mdp4_crtc->mixer, pipe_id, stages[idx]);
+			mixer_cfg = mixercfg(mixer_cfg, mdp4_crtc->mixer,
+					pipe_id, stages[idx]);
 		}
 	}
 
@@ -322,6 +324,7 @@ static void blend_setup(struct drm_crtc *crtc)
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_HIGH1(ovlp, i), 0);
 	}
 
+	mdp4_kms->mixer_cfg = mixer_cfg;
 	mdp4_write(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG, mixer_cfg);
 }
 
@@ -348,14 +351,14 @@ static int mdp4_crtc_mode_set(struct drm_crtc *crtc,
 			mode->type, mode->flags);
 
 	/* grab extra ref for update_scanout() */
-	drm_framebuffer_reference(crtc->fb);
+	drm_framebuffer_reference(crtc->primary->fb);
 
-	ret = mdp4_plane_mode_set(mdp4_crtc->plane, crtc, crtc->fb,
+	ret = mdp4_plane_mode_set(mdp4_crtc->plane, crtc, crtc->primary->fb,
 			0, 0, mode->hdisplay, mode->vdisplay,
 			x << 16, y << 16,
 			mode->hdisplay << 16, mode->vdisplay << 16);
 	if (ret) {
-		drm_framebuffer_unreference(crtc->fb);
+		drm_framebuffer_unreference(crtc->primary->fb);
 		dev_err(crtc->dev->dev, "%s: failed to set mode on plane: %d\n",
 				mdp4_crtc->name, ret);
 		return ret;
@@ -368,7 +371,7 @@ static int mdp4_crtc_mode_set(struct drm_crtc *crtc,
 	/* take data from pipe: */
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_BASE(dma), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_SRC_STRIDE(dma),
-			crtc->fb->pitches[0]);
+			crtc->primary->fb->pitches[0]);
 	mdp4_write(mdp4_kms, REG_MDP4_DMA_DST_SIZE(dma),
 			MDP4_DMA_DST_SIZE_WIDTH(0) |
 			MDP4_DMA_DST_SIZE_HEIGHT(0));
@@ -378,7 +381,7 @@ static int mdp4_crtc_mode_set(struct drm_crtc *crtc,
 			MDP4_OVLP_SIZE_WIDTH(mode->hdisplay) |
 			MDP4_OVLP_SIZE_HEIGHT(mode->vdisplay));
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_STRIDE(ovlp),
-			crtc->fb->pitches[0]);
+			crtc->primary->fb->pitches[0]);
 
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_CFG(ovlp), 1);
 
@@ -388,8 +391,8 @@ static int mdp4_crtc_mode_set(struct drm_crtc *crtc,
 		mdp4_write(mdp4_kms, REG_MDP4_DMA_E_QUANT(2), 0x00ff0000);
 	}
 
-	update_fb(crtc, crtc->fb);
-	update_scanout(crtc, crtc->fb);
+	update_fb(crtc, crtc->primary->fb);
+	update_scanout(crtc, crtc->primary->fb);
 
 	return 0;
 }
@@ -399,6 +402,7 @@ static void mdp4_crtc_prepare(struct drm_crtc *crtc)
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	DBG("%s", mdp4_crtc->name);
 	/* make sure we hold a ref to mdp clks while setting up mode: */
+	drm_crtc_vblank_get(crtc);
 	mdp4_enable(get_kms(crtc));
 	mdp4_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
 }
@@ -409,6 +413,7 @@ static void mdp4_crtc_commit(struct drm_crtc *crtc)
 	crtc_flush(crtc);
 	/* drop the ref to mdp clk's that we got in prepare: */
 	mdp4_disable(get_kms(crtc));
+	drm_crtc_vblank_put(crtc);
 }
 
 static int mdp4_crtc_mode_set_base(struct drm_crtc *crtc, int x, int y,
@@ -420,19 +425,19 @@ static int mdp4_crtc_mode_set_base(struct drm_crtc *crtc, int x, int y,
 	int ret;
 
 	/* grab extra ref for update_scanout() */
-	drm_framebuffer_reference(crtc->fb);
+	drm_framebuffer_reference(crtc->primary->fb);
 
-	ret = mdp4_plane_mode_set(plane, crtc, crtc->fb,
+	ret = mdp4_plane_mode_set(plane, crtc, crtc->primary->fb,
 			0, 0, mode->hdisplay, mode->vdisplay,
 			x << 16, y << 16,
 			mode->hdisplay << 16, mode->vdisplay << 16);
 	if (ret) {
-		drm_framebuffer_unreference(crtc->fb);
+		drm_framebuffer_unreference(crtc->primary->fb);
 		return ret;
 	}
 
-	update_fb(crtc, crtc->fb);
-	update_scanout(crtc, crtc->fb);
+	update_fb(crtc, crtc->primary->fb);
+	update_scanout(crtc, crtc->primary->fb);
 
 	return 0;
 }
@@ -510,9 +515,8 @@ static void update_cursor(struct drm_crtc *crtc)
 					MDP4_DMA_CURSOR_BLEND_CONFIG_CURSOR_EN);
 		} else {
 			/* disable cursor: */
-			mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_BASE(dma), 0);
-			mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_BLEND_CONFIG(dma),
-					MDP4_DMA_CURSOR_BLEND_CONFIG_FORMAT(CURSOR_ARGB));
+			mdp4_write(mdp4_kms, REG_MDP4_DMA_CURSOR_BASE(dma),
+					mdp4_kms->blank_cursor_iova);
 		}
 
 		/* and drop the iova ref + obj rev when done scanning out: */
@@ -574,11 +578,9 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 
 	if (old_bo) {
 		/* drop our previous reference: */
-		msm_gem_put_iova(old_bo, mdp4_kms->id);
-		drm_gem_object_unreference_unlocked(old_bo);
+		drm_flip_work_queue(&mdp4_crtc->unref_cursor_work, old_bo);
 	}
 
-	crtc_flush(crtc);
 	request_pending(crtc, PENDING_CURSOR);
 
 	return 0;
@@ -675,7 +677,7 @@ void mdp4_crtc_set_config(struct drm_crtc *crtc, uint32_t config)
 }
 
 /* set interface for routing crtc->encoder: */
-void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf)
+void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
@@ -701,14 +703,12 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf)
 	if (intf == INTF_DSI_VIDEO) {
 		intf_sel &= ~MDP4_DISP_INTF_SEL_DSI_CMD;
 		intf_sel |= MDP4_DISP_INTF_SEL_DSI_VIDEO;
-		mdp4_crtc->mixer = 0;
 	} else if (intf == INTF_DSI_CMD) {
 		intf_sel &= ~MDP4_DISP_INTF_SEL_DSI_VIDEO;
 		intf_sel |= MDP4_DISP_INTF_SEL_DSI_CMD;
-		mdp4_crtc->mixer = 0;
-	} else if (intf == INTF_LCDC_DTV){
-		mdp4_crtc->mixer = 1;
 	}
+
+	mdp4_crtc->mixer = mixer;
 
 	blend_setup(crtc);
 
@@ -740,6 +740,9 @@ void mdp4_crtc_attach(struct drm_crtc *crtc, struct drm_plane *plane)
 
 void mdp4_crtc_detach(struct drm_crtc *crtc, struct drm_plane *plane)
 {
+	/* don't actually detatch our primary plane: */
+	if (to_mdp4_crtc(crtc)->plane == plane)
+		return;
 	set_attach(crtc, mdp4_plane_pipe(plane), NULL);
 }
 
@@ -791,7 +794,7 @@ struct drm_crtc *mdp4_crtc_init(struct drm_device *dev,
 
 	INIT_FENCE_CB(&mdp4_crtc->pageflip_cb, pageflip_cb);
 
-	drm_crtc_init(dev, crtc, &mdp4_crtc_funcs);
+	drm_crtc_init_with_planes(dev, crtc, plane, NULL, &mdp4_crtc_funcs);
 	drm_crtc_helper_add(crtc, &mdp4_crtc_helper_funcs);
 
 	mdp4_plane_install_properties(mdp4_crtc->plane, &crtc->base);

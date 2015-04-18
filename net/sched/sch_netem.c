@@ -117,6 +117,11 @@ struct netem_sched_data {
 		LOST_IN_BURST_PERIOD,
 	} _4_state_model;
 
+	enum {
+		GOOD_STATE = 1,
+		BAD_STATE,
+	} GE_state_model;
+
 	/* Correlated Loss Generation models */
 	struct clgstate {
 		/* state of the Markov chain */
@@ -272,15 +277,15 @@ static bool loss_gilb_ell(struct netem_sched_data *q)
 	struct clgstate *clg = &q->clg;
 
 	switch (clg->state) {
-	case 1:
+	case GOOD_STATE:
 		if (prandom_u32() < clg->a1)
-			clg->state = 2;
+			clg->state = BAD_STATE;
 		if (prandom_u32() < clg->a4)
 			return true;
 		break;
-	case 2:
+	case BAD_STATE:
 		if (prandom_u32() < clg->a2)
-			clg->state = 1;
+			clg->state = GOOD_STATE;
 		if (prandom_u32() > clg->a3)
 			return true;
 	}
@@ -424,12 +429,12 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	/* Drop packet? */
 	if (loss_event(q)) {
 		if (q->ecn && INET_ECN_set_ce(skb))
-			sch->qstats.drops++; /* mark packet */
+			qdisc_qstats_drop(sch); /* mark packet */
 		else
 			--count;
 	}
 	if (count == 0) {
-		sch->qstats.drops++;
+		qdisc_qstats_drop(sch);
 		kfree_skb(skb);
 		return NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
 	}
@@ -473,7 +478,7 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	if (unlikely(skb_queue_len(&sch->q) >= sch->limit))
 		return qdisc_reshape_fail(skb, sch);
 
-	sch->qstats.backlog += qdisc_pkt_len(skb);
+	qdisc_qstats_backlog_inc(sch, skb);
 
 	cb = netem_skb_cb(skb);
 	if (q->gap == 0 ||		/* not doing reordering */
@@ -544,15 +549,14 @@ static unsigned int netem_drop(struct Qdisc *sch)
 			sch->q.qlen--;
 			skb->next = NULL;
 			skb->prev = NULL;
-			len = qdisc_pkt_len(skb);
-			sch->qstats.backlog -= len;
+			qdisc_qstats_backlog_dec(sch, skb);
 			kfree_skb(skb);
 		}
 	}
 	if (!len && q->qdisc && q->qdisc->ops->drop)
 	    len = q->qdisc->ops->drop(q->qdisc);
 	if (len)
-		sch->qstats.drops++;
+		qdisc_qstats_drop(sch);
 
 	return len;
 }
@@ -570,7 +574,7 @@ tfifo_dequeue:
 	skb = __skb_dequeue(&sch->q);
 	if (skb) {
 deliver:
-		sch->qstats.backlog -= qdisc_pkt_len(skb);
+		qdisc_qstats_backlog_dec(sch, skb);
 		qdisc_unthrottled(sch);
 		qdisc_bstats_update(sch, skb);
 		return skb;
@@ -605,7 +609,7 @@ deliver:
 
 				if (unlikely(err != NET_XMIT_SUCCESS)) {
 					if (net_xmit_drop_count(err)) {
-						sch->qstats.drops++;
+						qdisc_qstats_drop(sch);
 						qdisc_tree_decrease_qlen(sch, 1);
 					}
 				}
@@ -643,12 +647,7 @@ static void netem_reset(struct Qdisc *sch)
 
 static void dist_free(struct disttable *d)
 {
-	if (d) {
-		if (is_vmalloc_addr(d))
-			vfree(d);
-		else
-			kfree(d);
-	}
+	kvfree(d);
 }
 
 /*
@@ -689,9 +688,8 @@ static int get_dist_table(struct Qdisc *sch, const struct nlattr *attr)
 	return 0;
 }
 
-static void get_correlation(struct Qdisc *sch, const struct nlattr *attr)
+static void get_correlation(struct netem_sched_data *q, const struct nlattr *attr)
 {
-	struct netem_sched_data *q = qdisc_priv(sch);
 	const struct tc_netem_corr *c = nla_data(attr);
 
 	init_crandom(&q->delay_cor, c->delay_corr);
@@ -699,27 +697,24 @@ static void get_correlation(struct Qdisc *sch, const struct nlattr *attr)
 	init_crandom(&q->dup_cor, c->dup_corr);
 }
 
-static void get_reorder(struct Qdisc *sch, const struct nlattr *attr)
+static void get_reorder(struct netem_sched_data *q, const struct nlattr *attr)
 {
-	struct netem_sched_data *q = qdisc_priv(sch);
 	const struct tc_netem_reorder *r = nla_data(attr);
 
 	q->reorder = r->probability;
 	init_crandom(&q->reorder_cor, r->correlation);
 }
 
-static void get_corrupt(struct Qdisc *sch, const struct nlattr *attr)
+static void get_corrupt(struct netem_sched_data *q, const struct nlattr *attr)
 {
-	struct netem_sched_data *q = qdisc_priv(sch);
 	const struct tc_netem_corrupt *r = nla_data(attr);
 
 	q->corrupt = r->probability;
 	init_crandom(&q->corrupt_cor, r->correlation);
 }
 
-static void get_rate(struct Qdisc *sch, const struct nlattr *attr)
+static void get_rate(struct netem_sched_data *q, const struct nlattr *attr)
 {
-	struct netem_sched_data *q = qdisc_priv(sch);
 	const struct tc_netem_rate *r = nla_data(attr);
 
 	q->rate = r->rate;
@@ -732,9 +727,8 @@ static void get_rate(struct Qdisc *sch, const struct nlattr *attr)
 		q->cell_size_reciprocal = (struct reciprocal_value) { 0 };
 }
 
-static int get_loss_clg(struct Qdisc *sch, const struct nlattr *attr)
+static int get_loss_clg(struct netem_sched_data *q, const struct nlattr *attr)
 {
-	struct netem_sched_data *q = qdisc_priv(sch);
 	const struct nlattr *la;
 	int rem;
 
@@ -752,7 +746,7 @@ static int get_loss_clg(struct Qdisc *sch, const struct nlattr *attr)
 
 			q->loss_model = CLG_4_STATES;
 
-			q->clg.state = 1;
+			q->clg.state = TX_IN_GAP_PERIOD;
 			q->clg.a1 = gi->p13;
 			q->clg.a2 = gi->p31;
 			q->clg.a3 = gi->p32;
@@ -770,7 +764,7 @@ static int get_loss_clg(struct Qdisc *sch, const struct nlattr *attr)
 			}
 
 			q->loss_model = CLG_GILB_ELL;
-			q->clg.state = 1;
+			q->clg.state = GOOD_STATE;
 			q->clg.a1 = ge->p;
 			q->clg.a2 = ge->r;
 			q->clg.a3 = ge->h;
@@ -821,6 +815,8 @@ static int netem_change(struct Qdisc *sch, struct nlattr *opt)
 	struct netem_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_NETEM_MAX + 1];
 	struct tc_netem_qopt *qopt;
+	struct clgstate old_clg;
+	int old_loss_model = CLG_RANDOM;
 	int ret;
 
 	if (opt == NULL)
@@ -830,6 +826,33 @@ static int netem_change(struct Qdisc *sch, struct nlattr *opt)
 	ret = parse_attr(tb, TCA_NETEM_MAX, opt, netem_policy, sizeof(*qopt));
 	if (ret < 0)
 		return ret;
+
+	/* backup q->clg and q->loss_model */
+	old_clg = q->clg;
+	old_loss_model = q->loss_model;
+
+	if (tb[TCA_NETEM_LOSS]) {
+		ret = get_loss_clg(q, tb[TCA_NETEM_LOSS]);
+		if (ret) {
+			q->loss_model = old_loss_model;
+			return ret;
+		}
+	} else {
+		q->loss_model = CLG_RANDOM;
+	}
+
+	if (tb[TCA_NETEM_DELAY_DIST]) {
+		ret = get_dist_table(sch, tb[TCA_NETEM_DELAY_DIST]);
+		if (ret) {
+			/* recover clg and loss_model, in case of
+			 * q->clg and q->loss_model were modified
+			 * in get_loss_clg()
+			 */
+			q->clg = old_clg;
+			q->loss_model = old_loss_model;
+			return ret;
+		}
+	}
 
 	sch->limit = qopt->limit;
 
@@ -848,22 +871,16 @@ static int netem_change(struct Qdisc *sch, struct nlattr *opt)
 		q->reorder = ~0;
 
 	if (tb[TCA_NETEM_CORR])
-		get_correlation(sch, tb[TCA_NETEM_CORR]);
-
-	if (tb[TCA_NETEM_DELAY_DIST]) {
-		ret = get_dist_table(sch, tb[TCA_NETEM_DELAY_DIST]);
-		if (ret)
-			return ret;
-	}
+		get_correlation(q, tb[TCA_NETEM_CORR]);
 
 	if (tb[TCA_NETEM_REORDER])
-		get_reorder(sch, tb[TCA_NETEM_REORDER]);
+		get_reorder(q, tb[TCA_NETEM_REORDER]);
 
 	if (tb[TCA_NETEM_CORRUPT])
-		get_corrupt(sch, tb[TCA_NETEM_CORRUPT]);
+		get_corrupt(q, tb[TCA_NETEM_CORRUPT]);
 
 	if (tb[TCA_NETEM_RATE])
-		get_rate(sch, tb[TCA_NETEM_RATE]);
+		get_rate(q, tb[TCA_NETEM_RATE]);
 
 	if (tb[TCA_NETEM_RATE64])
 		q->rate = max_t(u64, q->rate,
@@ -871,10 +888,6 @@ static int netem_change(struct Qdisc *sch, struct nlattr *opt)
 
 	if (tb[TCA_NETEM_ECN])
 		q->ecn = nla_get_u32(tb[TCA_NETEM_ECN]);
-
-	q->loss_model = CLG_RANDOM;
-	if (tb[TCA_NETEM_LOSS])
-		ret = get_loss_clg(sch, tb[TCA_NETEM_LOSS]);
 
 	return ret;
 }

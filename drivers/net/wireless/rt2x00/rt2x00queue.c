@@ -158,55 +158,29 @@ void rt2x00queue_align_frame(struct sk_buff *skb)
 	skb_trim(skb, frame_length);
 }
 
-void rt2x00queue_insert_l2pad(struct sk_buff *skb, unsigned int header_length)
+/*
+ * H/W needs L2 padding between the header and the paylod if header size
+ * is not 4 bytes aligned.
+ */
+void rt2x00queue_insert_l2pad(struct sk_buff *skb, unsigned int hdr_len)
 {
-	unsigned int payload_length = skb->len - header_length;
-	unsigned int header_align = ALIGN_SIZE(skb, 0);
-	unsigned int payload_align = ALIGN_SIZE(skb, header_length);
-	unsigned int l2pad = payload_length ? L2PAD_SIZE(header_length) : 0;
-
-	/*
-	 * Adjust the header alignment if the payload needs to be moved more
-	 * than the header.
-	 */
-	if (payload_align > header_align)
-		header_align += 4;
-
-	/* There is nothing to do if no alignment is needed */
-	if (!header_align)
-		return;
-
-	/* Reserve the amount of space needed in front of the frame */
-	skb_push(skb, header_align);
-
-	/*
-	 * Move the header.
-	 */
-	memmove(skb->data, skb->data + header_align, header_length);
-
-	/* Move the payload, if present and if required */
-	if (payload_length && payload_align)
-		memmove(skb->data + header_length + l2pad,
-			skb->data + header_length + l2pad + payload_align,
-			payload_length);
-
-	/* Trim the skb to the correct size */
-	skb_trim(skb, header_length + l2pad + payload_length);
-}
-
-void rt2x00queue_remove_l2pad(struct sk_buff *skb, unsigned int header_length)
-{
-	/*
-	 * L2 padding is only present if the skb contains more than just the
-	 * IEEE 802.11 header.
-	 */
-	unsigned int l2pad = (skb->len > header_length) ?
-				L2PAD_SIZE(header_length) : 0;
+	unsigned int l2pad = (skb->len > hdr_len) ? L2PAD_SIZE(hdr_len) : 0;
 
 	if (!l2pad)
 		return;
 
-	memmove(skb->data + l2pad, skb->data, header_length);
+	skb_push(skb, l2pad);
+	memmove(skb->data, skb->data + l2pad, hdr_len);
+}
+
+void rt2x00queue_remove_l2pad(struct sk_buff *skb, unsigned int hdr_len)
+{
+	unsigned int l2pad = (skb->len > hdr_len) ? L2PAD_SIZE(hdr_len) : 0;
+
+	if (!l2pad)
+		return;
+
+	memmove(skb->data + l2pad, skb->data, hdr_len);
 	skb_pull(skb, l2pad);
 }
 
@@ -754,8 +728,6 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (unlikely(!intf->beacon))
 		return -ENOBUFS;
 
-	mutex_lock(&intf->beacon_skb_mutex);
-
 	/*
 	 * Clean up the beacon skb.
 	 */
@@ -768,13 +740,11 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (rt2x00dev->ops->lib->clear_beacon)
 		rt2x00dev->ops->lib->clear_beacon(intf->beacon);
 
-	mutex_unlock(&intf->beacon_skb_mutex);
-
 	return 0;
 }
 
-int rt2x00queue_update_beacon_locked(struct rt2x00_dev *rt2x00dev,
-				     struct ieee80211_vif *vif)
+int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
+			      struct ieee80211_vif *vif)
 {
 	struct rt2x00_intf *intf = vif_to_intf(vif);
 	struct skb_frame_desc *skbdesc;
@@ -813,19 +783,6 @@ int rt2x00queue_update_beacon_locked(struct rt2x00_dev *rt2x00dev,
 
 	return 0;
 
-}
-
-int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
-			      struct ieee80211_vif *vif)
-{
-	struct rt2x00_intf *intf = vif_to_intf(vif);
-	int ret;
-
-	mutex_lock(&intf->beacon_skb_mutex);
-	ret = rt2x00queue_update_beacon_locked(rt2x00dev, vif);
-	mutex_unlock(&intf->beacon_skb_mutex);
-
-	return ret;
 }
 
 bool rt2x00queue_for_each_entry(struct data_queue *queue,

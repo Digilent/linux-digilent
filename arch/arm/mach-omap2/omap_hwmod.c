@@ -72,7 +72,7 @@
  *            | (../mach-omap2/omap_hwmod*)   |
  *            +-------------------------------+
  *            | OMAP clock/PRCM/register fns  |
- *            | (__raw_{read,write}l, clk*)   |
+ *            | ({read,write}l_relaxed, clk*) |
  *            +-------------------------------+
  *
  * Device drivers should not contain any OMAP-specific code or data in
@@ -769,8 +769,8 @@ static int _init_main_clk(struct omap_hwmod *oh)
 
 	oh->_clk = clk_get(NULL, oh->main_clk);
 	if (IS_ERR(oh->_clk)) {
-		pr_warning("omap_hwmod: %s: cannot clk_get main_clk %s\n",
-			   oh->name, oh->main_clk);
+		pr_warn("omap_hwmod: %s: cannot clk_get main_clk %s\n",
+			oh->name, oh->main_clk);
 		return -EINVAL;
 	}
 	/*
@@ -814,8 +814,8 @@ static int _init_interface_clks(struct omap_hwmod *oh)
 
 		c = clk_get(NULL, os->clk);
 		if (IS_ERR(c)) {
-			pr_warning("omap_hwmod: %s: cannot clk_get interface_clk %s\n",
-				   oh->name, os->clk);
+			pr_warn("omap_hwmod: %s: cannot clk_get interface_clk %s\n",
+				oh->name, os->clk);
 			ret = -EINVAL;
 			continue;
 		}
@@ -851,8 +851,8 @@ static int _init_opt_clks(struct omap_hwmod *oh)
 	for (i = oh->opt_clks_cnt, oc = oh->opt_clks; i > 0; i--, oc++) {
 		c = clk_get(NULL, oc->clk);
 		if (IS_ERR(c)) {
-			pr_warning("omap_hwmod: %s: cannot clk_get opt_clk %s\n",
-				   oh->name, oc->clk);
+			pr_warn("omap_hwmod: %s: cannot clk_get opt_clk %s\n",
+				oh->name, oc->clk);
 			ret = -EINVAL;
 			continue;
 		}
@@ -1576,7 +1576,7 @@ static int _init_clkdm(struct omap_hwmod *oh)
 
 	oh->clkdm = clkdm_lookup(oh->clkdm_name);
 	if (!oh->clkdm) {
-		pr_warning("omap_hwmod: %s: could not associate to clkdm %s\n",
+		pr_warn("omap_hwmod: %s: could not associate to clkdm %s\n",
 			oh->name, oh->clkdm_name);
 		return 0;
 	}
@@ -1616,7 +1616,7 @@ static int _init_clocks(struct omap_hwmod *oh, void *data)
 	if (!ret)
 		oh->_state = _HWMOD_STATE_CLKS_INITED;
 	else
-		pr_warning("omap_hwmod: %s: cannot _init_clocks\n", oh->name);
+		pr_warn("omap_hwmod: %s: cannot _init_clocks\n", oh->name);
 
 	return ret;
 }
@@ -1739,7 +1739,7 @@ static int _deassert_hardreset(struct omap_hwmod *oh, const char *name)
 	_disable_clocks(oh);
 
 	if (ret == -EBUSY)
-		pr_warning("omap_hwmod: %s: failed to hardreset\n", oh->name);
+		pr_warn("omap_hwmod: %s: failed to hardreset\n", oh->name);
 
 	if (!ret) {
 		/*
@@ -1953,8 +1953,8 @@ static int _ocp_softreset(struct omap_hwmod *oh)
 
 	c = _wait_softreset_complete(oh);
 	if (c == MAX_MODULE_SOFTRESET_WAIT) {
-		pr_warning("omap_hwmod: %s: softreset failed (waited %d usec)\n",
-			   oh->name, MAX_MODULE_SOFTRESET_WAIT);
+		pr_warn("omap_hwmod: %s: softreset failed (waited %d usec)\n",
+			oh->name, MAX_MODULE_SOFTRESET_WAIT);
 		ret = -ETIMEDOUT;
 		goto dis_opt_clks;
 	} else {
@@ -2065,7 +2065,7 @@ static void _reconfigure_io_chain(void)
 
 	spin_lock_irqsave(&io_chain_lock, flags);
 
-	if (cpu_is_omap34xx() && omap3_has_io_chain_ctrl())
+	if (cpu_is_omap34xx())
 		omap3xxx_prm_reconfigure_io_chain();
 	else if (cpu_is_omap44xx())
 		omap44xx_prm_reconfigure_io_chain();
@@ -2185,6 +2185,8 @@ static int _enable(struct omap_hwmod *oh)
 			 oh->mux->pads_dynamic))) {
 		omap_hwmod_mux(oh->mux, _HWMOD_STATE_ENABLED);
 		_reconfigure_io_chain();
+	} else if (oh->flags & HWMOD_RECONFIG_IO_CHAIN) {
+		_reconfigure_io_chain();
 	}
 
 	_add_initiator_dep(oh, mpu_oh);
@@ -2290,6 +2292,8 @@ static int _idle(struct omap_hwmod *oh)
 	/* Mux pins for device idle if populated */
 	if (oh->mux && oh->mux->pads_dynamic) {
 		omap_hwmod_mux(oh->mux, _HWMOD_STATE_IDLE);
+		_reconfigure_io_chain();
+	} else if (oh->flags & HWMOD_RECONFIG_IO_CHAIN) {
 		_reconfigure_io_chain();
 	}
 
@@ -2546,11 +2550,12 @@ static int __init _init(struct omap_hwmod *oh, void *data)
 		return -EINVAL;
 	}
 
-	if (np)
+	if (np) {
 		if (of_find_property(np, "ti,no-reset-on-init", NULL))
 			oh->flags |= HWMOD_INIT_NO_RESET;
 		if (of_find_property(np, "ti,no-idle-on-init", NULL))
 			oh->flags |= HWMOD_INIT_NO_IDLE;
+	}
 
 	oh->_state = _HWMOD_STATE_INITIALIZED;
 
@@ -2613,8 +2618,8 @@ static int __init _setup_reset(struct omap_hwmod *oh)
 	if (oh->rst_lines_cnt == 0) {
 		r = _enable(oh);
 		if (r) {
-			pr_warning("omap_hwmod: %s: cannot be enabled for reset (%d)\n",
-				   oh->name, oh->_state);
+			pr_warn("omap_hwmod: %s: cannot be enabled for reset (%d)\n",
+				oh->name, oh->_state);
 			return -EINVAL;
 		}
 	}
@@ -3229,17 +3234,17 @@ static int _am33xx_is_hardreset_asserted(struct omap_hwmod *oh,
 u32 omap_hwmod_read(struct omap_hwmod *oh, u16 reg_offs)
 {
 	if (oh->flags & HWMOD_16BIT_REG)
-		return __raw_readw(oh->_mpu_rt_va + reg_offs);
+		return readw_relaxed(oh->_mpu_rt_va + reg_offs);
 	else
-		return __raw_readl(oh->_mpu_rt_va + reg_offs);
+		return readl_relaxed(oh->_mpu_rt_va + reg_offs);
 }
 
 void omap_hwmod_write(u32 v, struct omap_hwmod *oh, u16 reg_offs)
 {
 	if (oh->flags & HWMOD_16BIT_REG)
-		__raw_writew(v, oh->_mpu_rt_va + reg_offs);
+		writew_relaxed(v, oh->_mpu_rt_va + reg_offs);
 	else
-		__raw_writel(v, oh->_mpu_rt_va + reg_offs);
+		writel_relaxed(v, oh->_mpu_rt_va + reg_offs);
 }
 
 /**
@@ -3342,6 +3347,9 @@ int __init omap_hwmod_register_links(struct omap_hwmod_ocp_if **ois)
 		return -EINVAL;
 
 	if (!ois)
+		return 0;
+
+	if (ois[0] == NULL) /* Empty list */
 		return 0;
 
 	if (!linkspace) {
@@ -4250,9 +4258,9 @@ void __init omap_hwmod_init(void)
 		soc_ops.enable_module = _omap4_enable_module;
 		soc_ops.disable_module = _omap4_disable_module;
 		soc_ops.wait_target_ready = _omap4_wait_target_ready;
-		soc_ops.assert_hardreset = _omap4_assert_hardreset;
-		soc_ops.deassert_hardreset = _omap4_deassert_hardreset;
-		soc_ops.is_hardreset_asserted = _omap4_is_hardreset_asserted;
+		soc_ops.assert_hardreset = _am33xx_assert_hardreset;
+		soc_ops.deassert_hardreset = _am33xx_deassert_hardreset;
+		soc_ops.is_hardreset_asserted = _am33xx_is_hardreset_asserted;
 		soc_ops.init_clkdm = _init_clkdm;
 	} else if (soc_is_am33xx()) {
 		soc_ops.enable_module = _am33xx_enable_module;

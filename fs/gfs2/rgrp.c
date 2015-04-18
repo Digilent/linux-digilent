@@ -7,6 +7,8 @@
  * of the GNU General Public License version 2.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/completion.h>
@@ -99,12 +101,12 @@ static inline void gfs2_setbit(const struct gfs2_rbm *rbm, bool do_clone,
 	cur_state = (*byte1 >> bit) & GFS2_BIT_MASK;
 
 	if (unlikely(!valid_change[new_state * 4 + cur_state])) {
-		printk(KERN_WARNING "GFS2: buf_blk = 0x%x old_state=%d, "
-		       "new_state=%d\n", rbm->offset, cur_state, new_state);
-		printk(KERN_WARNING "GFS2: rgrp=0x%llx bi_start=0x%x\n",
-		       (unsigned long long)rbm->rgd->rd_addr, bi->bi_start);
-		printk(KERN_WARNING "GFS2: bi_offset=0x%x bi_len=0x%x\n",
-		       bi->bi_offset, bi->bi_len);
+		pr_warn("buf_blk = 0x%x old_state=%d, new_state=%d\n",
+			rbm->offset, cur_state, new_state);
+		pr_warn("rgrp=0x%llx bi_start=0x%x\n",
+			(unsigned long long)rbm->rgd->rd_addr, bi->bi_start);
+		pr_warn("bi_offset=0x%x bi_len=0x%x\n",
+			bi->bi_offset, bi->bi_len);
 		dump_stack();
 		gfs2_consist_rgrpd(rbm->rgd);
 		return;
@@ -335,7 +337,7 @@ static bool gfs2_unaligned_extlen(struct gfs2_rbm *rbm, u32 n_unaligned, u32 *le
 
 /**
  * gfs2_free_extlen - Return extent length of free blocks
- * @rbm: Starting position
+ * @rrbm: Starting position
  * @len: Max length to check
  *
  * Starting at the block specified by the rbm, see how many free blocks
@@ -575,6 +577,13 @@ struct gfs2_rgrpd *gfs2_rgrpd_get_next(struct gfs2_rgrpd *rgd)
 	return rgd;
 }
 
+void check_and_update_goal(struct gfs2_inode *ip)
+{
+	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
+	if (!ip->i_goal || gfs2_blk2rgrpd(sdp, ip->i_goal, 1) == NULL)
+		ip->i_goal = ip->i_no_addr;
+}
+
 void gfs2_free_clones(struct gfs2_rgrpd *rgd)
 {
 	int x;
@@ -736,11 +745,11 @@ void gfs2_clear_rgrpd(struct gfs2_sbd *sdp)
 
 static void gfs2_rindex_print(const struct gfs2_rgrpd *rgd)
 {
-	printk(KERN_INFO "  ri_addr = %llu\n", (unsigned long long)rgd->rd_addr);
-	printk(KERN_INFO "  ri_length = %u\n", rgd->rd_length);
-	printk(KERN_INFO "  ri_data0 = %llu\n", (unsigned long long)rgd->rd_data0);
-	printk(KERN_INFO "  ri_data = %u\n", rgd->rd_data);
-	printk(KERN_INFO "  ri_bitbytes = %u\n", rgd->rd_bitbytes);
+	pr_info("ri_addr = %llu\n", (unsigned long long)rgd->rd_addr);
+	pr_info("ri_length = %u\n", rgd->rd_length);
+	pr_info("ri_data0 = %llu\n", (unsigned long long)rgd->rd_data0);
+	pr_info("ri_data = %u\n", rgd->rd_data);
+	pr_info("ri_bitbytes = %u\n", rgd->rd_bitbytes);
 }
 
 /**
@@ -1102,7 +1111,7 @@ static u32 count_unlinked(struct gfs2_rgrpd *rgd)
  * Returns: errno
  */
 
-int gfs2_rgrp_bh_get(struct gfs2_rgrpd *rgd)
+static int gfs2_rgrp_bh_get(struct gfs2_rgrpd *rgd)
 {
 	struct gfs2_sbd *sdp = rgd->rd_sbd;
 	struct gfs2_glock *gl = rgd->rd_gl;
@@ -1169,7 +1178,7 @@ fail:
 	return error;
 }
 
-int update_rgrp_lvb(struct gfs2_rgrpd *rgd)
+static int update_rgrp_lvb(struct gfs2_rgrpd *rgd)
 {
 	u32 rl_flags;
 
@@ -1908,6 +1917,7 @@ int gfs2_inplace_reserve(struct gfs2_inode *ip, const struct gfs2_alloc_parms *a
 	} else if (ip->i_rgd && rgrp_contains_block(ip->i_rgd, ip->i_goal)) {
 		rs->rs_rbm.rgd = begin = ip->i_rgd;
 	} else {
+		check_and_update_goal(ip);
 		rs->rs_rbm.rgd = begin = gfs2_blk2rgrpd(sdp, ip->i_goal, 1);
 	}
 	if (S_ISDIR(ip->i_inode.i_mode) && (ap->aflags & GFS2_AF_ORLOV))
@@ -1999,7 +2009,7 @@ next_rgrp:
 		}
 		/* Flushing the log may release space */
 		if (loops == 2)
-			gfs2_log_flush(sdp, NULL);
+			gfs2_log_flush(sdp, NULL, NORMAL_FLUSH);
 	}
 
 	return -ENOSPC;
@@ -2087,7 +2097,7 @@ static struct gfs2_rgrpd *rgblk_free(struct gfs2_sbd *sdp, u64 bstart,
 				     u32 blen, unsigned char new_state)
 {
 	struct gfs2_rbm rbm;
-	struct gfs2_bitmap *bi;
+	struct gfs2_bitmap *bi, *bi_prev = NULL;
 
 	rbm.rgd = gfs2_blk2rgrpd(sdp, bstart, 1);
 	if (!rbm.rgd) {
@@ -2096,18 +2106,22 @@ static struct gfs2_rgrpd *rgblk_free(struct gfs2_sbd *sdp, u64 bstart,
 		return NULL;
 	}
 
+	gfs2_rbm_from_block(&rbm, bstart);
 	while (blen--) {
-		gfs2_rbm_from_block(&rbm, bstart);
 		bi = rbm_bi(&rbm);
-		bstart++;
-		if (!bi->bi_clone) {
-			bi->bi_clone = kmalloc(bi->bi_bh->b_size,
-					       GFP_NOFS | __GFP_NOFAIL);
-			memcpy(bi->bi_clone + bi->bi_offset,
-			       bi->bi_bh->b_data + bi->bi_offset, bi->bi_len);
+		if (bi != bi_prev) {
+			if (!bi->bi_clone) {
+				bi->bi_clone = kmalloc(bi->bi_bh->b_size,
+						      GFP_NOFS | __GFP_NOFAIL);
+				memcpy(bi->bi_clone + bi->bi_offset,
+				       bi->bi_bh->b_data + bi->bi_offset,
+				       bi->bi_len);
+			}
+			gfs2_trans_add_meta(rbm.rgd->rd_gl, bi->bi_bh);
+			bi_prev = bi;
 		}
-		gfs2_trans_add_meta(rbm.rgd->rd_gl, bi->bi_bh);
 		gfs2_setbit(&rbm, false, new_state);
+		gfs2_rbm_incr(&rbm);
 	}
 
 	return rbm.rgd;
@@ -2278,7 +2292,7 @@ int gfs2_alloc_blocks(struct gfs2_inode *ip, u64 *bn, unsigned int *nblocks,
 		}
 	}
 	if (rbm.rgd->rd_free < *nblocks) {
-		printk(KERN_WARNING "nblocks=%u\n", *nblocks);
+		pr_warn("nblocks=%u\n", *nblocks);
 		goto rgrp_error;
 	}
 
@@ -2296,7 +2310,7 @@ int gfs2_alloc_blocks(struct gfs2_inode *ip, u64 *bn, unsigned int *nblocks,
 
 	gfs2_statfs_change(sdp, 0, -(s64)*nblocks, dinode ? 1 : 0);
 	if (dinode)
-		gfs2_trans_add_unrevoke(sdp, block, 1);
+		gfs2_trans_add_unrevoke(sdp, block, *nblocks);
 
 	gfs2_quota_change(ip, *nblocks, ip->i_inode.i_uid, ip->i_inode.i_gid);
 
@@ -2520,7 +2534,7 @@ void gfs2_rlist_alloc(struct gfs2_rgrp_list *rlist, unsigned int state)
 
 /**
  * gfs2_rlist_free - free a resource group list
- * @list: the list of resource groups
+ * @rlist: the list of resource groups
  *
  */
 

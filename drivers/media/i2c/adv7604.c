@@ -36,6 +36,7 @@
 #include <linux/v4l2-dv-timings.h>
 #include <linux/videodev2.h>
 #include <linux/workqueue.h>
+#include <linux/of_graph.h>
 
 #include <media/adv7604.h>
 #include <media/v4l2-ctrls.h>
@@ -1593,7 +1594,7 @@ static int adv7604_query_dv_timings(struct v4l2_subdev *sd,
 			bt->height += hdmi_read16(sd, 0x0b, 0xfff);
 			bt->il_vfrontporch = hdmi_read16(sd, 0x2c, 0x1fff) / 2;
 			bt->il_vsync = hdmi_read16(sd, 0x30, 0x1fff) / 2;
-			bt->vbackporch = hdmi_read16(sd, 0x34, 0x1fff) / 2;
+			bt->il_vbackporch = hdmi_read16(sd, 0x34, 0x1fff) / 2;
 		}
 		adv7604_fill_optional_dv_timings_fields(sd, timings);
 	} else {
@@ -1992,24 +1993,12 @@ static int adv7604_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 	return 0;
 }
 
-static int adv7604_get_edid(struct v4l2_subdev *sd, struct v4l2_subdev_edid *edid)
+static int adv7604_get_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
 {
 	struct adv7604_state *state = to_state(sd);
 	u8 *data = NULL;
 
-	if (edid->pad > ADV7604_PAD_HDMI_PORT_D)
-		return -EINVAL;
-	if (edid->blocks == 0)
-		return -EINVAL;
-	if (edid->blocks > 2)
-		return -EINVAL;
-	if (edid->start_block > 1)
-		return -EINVAL;
-	if (edid->start_block == 1)
-		edid->blocks = 1;
-
-	if (edid->blocks > state->edid.blocks)
-		edid->blocks = state->edid.blocks;
+	memset(edid->reserved, 0, sizeof(edid->reserved));
 
 	switch (edid->pad) {
 	case ADV7604_PAD_HDMI_PORT_A:
@@ -2021,14 +2010,24 @@ static int adv7604_get_edid(struct v4l2_subdev *sd, struct v4l2_subdev_edid *edi
 		break;
 	default:
 		return -EINVAL;
-		break;
 	}
-	if (!data)
+
+	if (edid->start_block == 0 && edid->blocks == 0) {
+		edid->blocks = data ? state->edid.blocks : 0;
+		return 0;
+	}
+
+	if (data == NULL)
 		return -ENODATA;
 
-	memcpy(edid->edid,
-	       data + edid->start_block * 128,
-	       edid->blocks * 128);
+	if (edid->start_block >= state->edid.blocks)
+		return -EINVAL;
+
+	if (edid->start_block + edid->blocks > state->edid.blocks)
+		edid->blocks = state->edid.blocks - edid->start_block;
+
+	memcpy(edid->edid, data + edid->start_block * 128, edid->blocks * 128);
+
 	return 0;
 }
 
@@ -2060,13 +2059,15 @@ static int get_edid_spa_location(const u8 *edid)
 	return -1;
 }
 
-static int adv7604_set_edid(struct v4l2_subdev *sd, struct v4l2_subdev_edid *edid)
+static int adv7604_set_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
 {
 	struct adv7604_state *state = to_state(sd);
 	const struct adv7604_chip_info *info = state->info;
 	int spa_loc;
 	int err;
 	int i;
+
+	memset(edid->reserved, 0, sizeof(edid->reserved));
 
 	if (edid->pad > ADV7604_PAD_HDMI_PORT_D)
 		return -EINVAL;
@@ -2163,7 +2164,6 @@ static int adv7604_set_edid(struct v4l2_subdev *sd, struct v4l2_subdev_edid *edi
 		v4l2_err(sd, "error enabling edid (0x%x)\n", state->edid.present);
 		return -EIO;
 	}
-
 
 	/* enable hotplug after 100 ms */
 	queue_delayed_work(state->work_queues,
@@ -2325,7 +2325,7 @@ static int adv7604_log_status(struct v4l2_subdev *sd)
 	v4l2_info(sd, "HDCP keys read: %s%s\n",
 			(hdmi_read(sd, 0x04) & 0x20) ? "yes" : "no",
 			(hdmi_read(sd, 0x04) & 0x10) ? "ERROR" : "");
-	if (!is_hdmi(sd)) {
+	if (is_hdmi(sd)) {
 		bool audio_pll_locked = hdmi_read(sd, 0x04) & 0x01;
 		bool audio_sample_packet_detect = hdmi_read(sd, 0x18) & 0x01;
 		bool audio_mute = io_read(sd, 0x65) & 0x40;
@@ -2588,8 +2588,11 @@ static const struct adv7604_reg_seq adv7604_recommended_settings_hdmi[] = {
 };
 
 static const struct adv7604_reg_seq adv7611_recommended_settings_hdmi[] = {
+	/* ADV7611 Register Settings Recommendations Rev 1.5, May 2014 */
 	{ ADV7604_REG(ADV7604_PAGE_CP, 0x6c), 0x00 },
-	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x6f), 0x0c },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x9b), 0x03 },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x6f), 0x08 },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x85), 0x1f },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x87), 0x70 },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x57), 0xda },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x58), 0x01 },
@@ -2672,8 +2675,7 @@ static struct i2c_device_id adv7604_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, adv7604_i2c_id);
 
-static struct of_device_id adv7604_of_id[] = {
-	{ .compatible = "adi,adv7604", .data = &adv7604_chip_info[ADV7604] },
+static struct of_device_id adv7604_of_id[] __maybe_unused = {
 	{ .compatible = "adi,adv7611", .data = &adv7604_chip_info[ADV7611] },
 	{ }
 };
@@ -2685,12 +2687,11 @@ static int adv7604_parse_dt(struct adv7604_state *state)
 	struct device_node *endpoint;
 	struct device_node *np;
 	unsigned int flags;
-	int ret;
 
 	np = state->i2c_clients[ADV7604_PAGE_IO]->dev.of_node;
 
 	/* Parse the endpoint. */
-	endpoint = v4l2_of_get_next_endpoint(np, NULL);
+	endpoint = of_graph_get_next_endpoint(np, NULL);
 	if (!endpoint)
 		return -EINVAL;
 
@@ -2713,17 +2714,6 @@ static int adv7604_parse_dt(struct adv7604_state *state)
 		state->pdata.op_656_range = 1;
 	}
 
-	/* Parse device-specific properties. */
-	state->pdata.disable_pwrdnb =
-		of_property_read_bool(np, "adi,disable-power-down");
-	state->pdata.disable_cable_det_rst =
-		of_property_read_bool(np, "adi,disable-cable-reset");
-
-	ret = of_property_read_u32(np, "adi,default-input",
-				   &state->pdata.default_input);
-	if (ret < 0)
-		state->pdata.default_input = -1;
-
 	/* Disable the interrupt for now as no DT-based board uses it. */
 	state->pdata.int1_config = ADV7604_INT1_CONFIG_DISABLED;
 
@@ -2741,7 +2731,10 @@ static int adv7604_parse_dt(struct adv7604_state *state)
 	state->pdata.i2c_addresses[ADV7604_PAGE_CP] = 0x22;
 	state->pdata.i2c_addresses[ADV7604_PAGE_VDP] = 0x24;
 
-	/* HACK: Hardcode the remaining platform data fields. */
+	/* Hardcode the remaining platform data fields. */
+	state->pdata.disable_pwrdnb = 0;
+	state->pdata.disable_cable_det_rst = 0;
+	state->pdata.default_input = 0;
 	state->pdata.blank_data = 1;
 	state->pdata.alt_data_sat = 1;
 	state->pdata.op_format_mode_sel = ADV7604_OP_FORMAT_MODE0;

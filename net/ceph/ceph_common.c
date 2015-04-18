@@ -72,6 +72,8 @@ const char *ceph_msg_type_name(int type)
 	case CEPH_MSG_MON_SUBSCRIBE_ACK: return "mon_subscribe_ack";
 	case CEPH_MSG_STATFS: return "statfs";
 	case CEPH_MSG_STATFS_REPLY: return "statfs_reply";
+	case CEPH_MSG_MON_GET_VERSION: return "mon_get_version";
+	case CEPH_MSG_MON_GET_VERSION_REPLY: return "mon_get_version_reply";
 	case CEPH_MSG_MDS_MAP: return "mds_map";
 	case CEPH_MSG_CLIENT_SESSION: return "client_session";
 	case CEPH_MSG_CLIENT_RECONNECT: return "client_reconnect";
@@ -291,17 +293,20 @@ static int get_secret(struct ceph_crypto_key *dst, const char *name) {
 		key_err = PTR_ERR(ukey);
 		switch (key_err) {
 		case -ENOKEY:
-			pr_warning("ceph: Mount failed due to key not found: %s\n", name);
+			pr_warn("ceph: Mount failed due to key not found: %s\n",
+				name);
 			break;
 		case -EKEYEXPIRED:
-			pr_warning("ceph: Mount failed due to expired key: %s\n", name);
+			pr_warn("ceph: Mount failed due to expired key: %s\n",
+				name);
 			break;
 		case -EKEYREVOKED:
-			pr_warning("ceph: Mount failed due to revoked key: %s\n", name);
+			pr_warn("ceph: Mount failed due to revoked key: %s\n",
+				name);
 			break;
 		default:
-			pr_warning("ceph: Mount failed due to unknown key error"
-			       " %d: %s\n", key_err, name);
+			pr_warn("ceph: Mount failed due to unknown key error %d: %s\n",
+				key_err, name);
 		}
 		err = -EPERM;
 		goto out;
@@ -431,7 +436,7 @@ ceph_parse_options(char *options, const char *dev_name,
 
 			/* misc */
 		case Opt_osdtimeout:
-			pr_warning("ignoring deprecated osdtimeout option\n");
+			pr_warn("ignoring deprecated osdtimeout option\n");
 			break;
 		case Opt_osdkeepalivetimeout:
 			opt->osd_keepalive_timeout = intval;

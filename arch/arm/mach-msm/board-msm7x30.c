@@ -40,8 +40,7 @@
 #include "proc_comm.h"
 #include "common.h"
 
-static void __init msm7x30_fixup(struct tag *tag, char **cmdline,
-		struct meminfo *mi)
+static void __init msm7x30_fixup(struct tag *tag, char **cmdline)
 {
 	for (; tag->hdr.size; tag = tag_next(tag))
 		if (tag->hdr.tag == ATAG_MEM && tag->u.mem.start == 0x200000) {
@@ -95,7 +94,7 @@ static int hsusb_phy_clk_reset(struct clk *phy_clk)
 
 static struct msm_otg_platform_data msm_otg_pdata = {
 	.phy_init_seq		= hsusb_phy_init_seq,
-	.mode                   = USB_PERIPHERAL,
+	.mode                   = USB_DR_MODE_PERIPHERAL,
 	.otg_control		= OTG_PHY_CONTROL,
 	.link_clk_reset		= hsusb_link_clk_reset,
 	.phy_clk_reset		= hsusb_phy_clk_reset,
@@ -125,7 +124,7 @@ struct msm_gpiomux_config msm_gpiomux_configs[GPIOMUX_NGPIOS] = {
 static struct platform_device *devices[] __initdata = {
 	&msm_clock_7x30,
 	&msm_device_gpio_7x30,
-#if defined(CONFIG_SERIAL_MSM) || defined(CONFIG_MSM_SERIAL_DEBUGGER)
+#if defined(CONFIG_SERIAL_MSM)
         &msm_device_uart2,
 #endif
 	&msm_device_smd,

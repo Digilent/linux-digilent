@@ -848,7 +848,7 @@ int dccp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		default:
 			dccp_pr_debug("packet_type=%s\n",
 				      dccp_packet_name(dh->dccph_type));
-			sk_eat_skb(sk, skb, false);
+			sk_eat_skb(sk, skb);
 		}
 verify_sock_status:
 		if (sock_flag(sk, SOCK_DONE)) {
@@ -905,7 +905,7 @@ verify_sock_status:
 			len = skb->len;
 	found_fin_ok:
 		if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb, false);
+			sk_eat_skb(sk, skb);
 		break;
 	} while (1);
 out:
@@ -1082,16 +1082,17 @@ void dccp_shutdown(struct sock *sk, int how)
 
 EXPORT_SYMBOL_GPL(dccp_shutdown);
 
-static inline int dccp_mib_init(void)
+static inline int __init dccp_mib_init(void)
 {
-	return snmp_mib_init((void __percpu **)dccp_statistics,
-			     sizeof(struct dccp_mib),
-			     __alignof__(struct dccp_mib));
+	dccp_statistics = alloc_percpu(struct dccp_mib);
+	if (!dccp_statistics)
+		return -ENOMEM;
+	return 0;
 }
 
 static inline void dccp_mib_exit(void)
 {
-	snmp_mib_free((void __percpu **)dccp_statistics);
+	free_percpu(dccp_statistics);
 }
 
 static int thash_entries;
@@ -1114,7 +1115,7 @@ static int __init dccp_init(void)
 
 	BUILD_BUG_ON(sizeof(struct dccp_skb_cb) >
 		     FIELD_SIZEOF(struct sk_buff, cb));
-	rc = percpu_counter_init(&dccp_orphan_count, 0);
+	rc = percpu_counter_init(&dccp_orphan_count, 0, GFP_KERNEL);
 	if (rc)
 		goto out_fail;
 	rc = -ENOBUFS;

@@ -22,6 +22,7 @@
 #include <linux/clk.h>
 #include <linux/cpufreq.h>
 #include <linux/module.h>
+#include <linux/component.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -32,7 +33,7 @@
 #include <asm/sizes.h>
 
 
-#if defined(CONFIG_COMPILE_TEST) && !defined(CONFIG_ARCH_MSM)
+#if defined(CONFIG_COMPILE_TEST) && !defined(CONFIG_ARCH_QCOM)
 /* stubs we need for compile-test: */
 static inline struct device *msm_iommu_get_ctx(const char *ctx_name)
 {
@@ -50,10 +51,14 @@ static inline struct device *msm_iommu_get_ctx(const char *ctx_name)
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/msm_drm.h>
+#include <drm/drm_gem.h>
 
 struct msm_kms;
 struct msm_gpu;
 struct msm_mmu;
+struct msm_rd_state;
+struct msm_perf_state;
+struct msm_gem_submit;
 
 #define NUM_DOMAINS 2    /* one for KMS, then one per gpu core (?) */
 
@@ -69,6 +74,9 @@ struct msm_drm_private {
 
 	struct msm_kms *kms;
 
+	/* subordinate devices, if present: */
+	struct platform_device *hdmi_pdev, *gpu_pdev;
+
 	/* when we have more than one 'msm_gpu' these need to be an array: */
 	struct msm_gpu *gpu;
 	struct msm_file_private *lastctx;
@@ -77,6 +85,9 @@ struct msm_drm_private {
 
 	uint32_t next_fence, completed_fence;
 	wait_queue_head_t fence_event;
+
+	struct msm_rd_state *rd;
+	struct msm_perf_state *perf;
 
 	/* list of GEM objects: */
 	struct list_head inactive_list;
@@ -160,7 +171,7 @@ struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj);
 void *msm_gem_prime_vmap(struct drm_gem_object *obj);
 void msm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr);
 struct drm_gem_object *msm_gem_prime_import_sg_table(struct drm_device *dev,
-		size_t size, struct sg_table *sg);
+		struct dma_buf_attachment *attach, struct sg_table *sg);
 int msm_gem_prime_pin(struct drm_gem_object *obj);
 void msm_gem_prime_unpin(struct drm_gem_object *obj);
 void *msm_gem_vaddr_locked(struct drm_gem_object *obj);
@@ -200,6 +211,15 @@ void __exit hdmi_unregister(void);
 void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m);
 void msm_gem_describe_objects(struct list_head *list, struct seq_file *m);
 void msm_framebuffer_describe(struct drm_framebuffer *fb, struct seq_file *m);
+int msm_debugfs_late_init(struct drm_device *dev);
+int msm_rd_debugfs_init(struct drm_minor *minor);
+void msm_rd_debugfs_cleanup(struct drm_minor *minor);
+void msm_rd_dump_submit(struct msm_gem_submit *submit);
+int msm_perf_debugfs_init(struct drm_minor *minor);
+void msm_perf_debugfs_cleanup(struct drm_minor *minor);
+#else
+static inline int msm_debugfs_late_init(struct drm_device *dev) { return 0; }
+static inline void msm_rd_dump_submit(struct msm_gem_submit *submit) {}
 #endif
 
 void __iomem *msm_ioremap(struct platform_device *pdev, const char *name,

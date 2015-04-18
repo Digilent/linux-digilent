@@ -1,9 +1,11 @@
 /*
  * Xilinx Color Filter Array
  *
- * Copyright (C) 2013 - 2014 Xilinx, Inc.
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Author: Hyun Woo Kwon <hyunk@xilinx.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -285,7 +287,6 @@ static int xcfa_parse_of(struct xcfa_device *xcfa)
 static int xcfa_probe(struct platform_device *pdev)
 {
 	struct xcfa_device *xcfa;
-	struct resource *res;
 	struct v4l2_subdev *subdev;
 	struct v4l2_mbus_framefmt *default_format;
 	int ret;
@@ -300,10 +301,9 @@ static int xcfa_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xcfa->xvip.iomem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(xcfa->xvip.iomem))
-		return PTR_ERR(xcfa->xvip.iomem);
+	ret = xvip_init_resources(&xcfa->xvip);
+	if (ret < 0)
+		return ret;
 
 	/* Reset and initialize the core */
 	xvip_reset(&xcfa->xvip);
@@ -337,7 +337,7 @@ static int xcfa_probe(struct platform_device *pdev)
 	subdev->entity.ops = &xcfa_media_ops;
 	ret = media_entity_init(&subdev->entity, 2, xcfa->pads, 0);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	platform_set_drvdata(pdev, xcfa);
 
@@ -353,6 +353,7 @@ static int xcfa_probe(struct platform_device *pdev)
 
 error:
 	media_entity_cleanup(&subdev->entity);
+	xvip_cleanup_resources(&xcfa->xvip);
 	return ret;
 }
 
@@ -364,20 +365,21 @@ static int xcfa_remove(struct platform_device *pdev)
 	v4l2_async_unregister_subdev(subdev);
 	media_entity_cleanup(&subdev->entity);
 
+	xvip_cleanup_resources(&xcfa->xvip);
+
 	return 0;
 }
 
 static SIMPLE_DEV_PM_OPS(xcfa_pm_ops, xcfa_pm_suspend, xcfa_pm_resume);
 
 static const struct of_device_id xcfa_of_id_table[] = {
-	{ .compatible = "xlnx,axi-cfa-7.0" },
+	{ .compatible = "xlnx,v-cfa-7.0" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, xcfa_of_id_table);
 
 static struct platform_driver xcfa_driver = {
 	.driver			= {
-		.owner		= THIS_MODULE,
 		.name		= "xilinx-cfa",
 		.pm		= &xcfa_pm_ops,
 		.of_match_table	= xcfa_of_id_table,

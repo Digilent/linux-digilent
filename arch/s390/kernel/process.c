@@ -61,30 +61,6 @@ unsigned long thread_saved_pc(struct task_struct *tsk)
 	return sf->gprs[8];
 }
 
-void arch_cpu_idle(void)
-{
-	local_mcck_disable();
-	if (test_thread_flag(TIF_MCCK_PENDING)) {
-		local_mcck_enable();
-		local_irq_enable();
-		return;
-	}
-	/* Halt the cpu and keep track of cpu time accounting. */
-	vtime_stop_cpu();
-	local_irq_enable();
-}
-
-void arch_cpu_idle_exit(void)
-{
-	if (test_thread_flag(TIF_MCCK_PENDING))
-		s390_handle_mcck();
-}
-
-void arch_cpu_idle_dead(void)
-{
-	cpu_die();
-}
-
 extern void __kprobes kernel_thread_starter(void);
 
 /*
@@ -123,7 +99,6 @@ int copy_thread(unsigned long clone_flags, unsigned long new_stackp,
 	memset(&p->thread.per_user, 0, sizeof(p->thread.per_user));
 	memset(&p->thread.per_event, 0, sizeof(p->thread.per_event));
 	clear_tsk_thread_flag(p, TIF_SINGLE_STEP);
-	clear_tsk_thread_flag(p, TIF_PER_TRAP);
 	/* Initialize per thread user and system timer values */
 	ti = task_thread_info(p);
 	ti->user_timer = 0;
@@ -152,6 +127,7 @@ int copy_thread(unsigned long clone_flags, unsigned long new_stackp,
 	}
 	frame->childregs = *current_pt_regs();
 	frame->childregs.gprs[2] = 0;	/* child returns 0 on fork. */
+	frame->childregs.flags = 0;
 	if (new_stackp)
 		frame->childregs.gprs[15] = new_stackp;
 

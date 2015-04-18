@@ -42,10 +42,10 @@
 #include <linux/pagemap.h>
 #include <linux/errno.h>	/* error codes */
 #include <linux/dma-mapping.h>  /* dma */
-
+#include <linux/clk.h>
+#include <linux/of.h>
 
 #include "xlnk-ioctl.h"
-#include "xlnk-event-tracer-type.h"
 #include "xlnk.h"
 
 #ifdef CONFIG_XILINX_DMA_APF
@@ -102,9 +102,6 @@ static void xlnk_vma_close(struct vm_area_struct *vma);
 
 static int xlnk_init_bufpool(void);
 
-static void xlnk_start_benchmark_counter(void);
-static int xlnk_dump_events(unsigned long buf);
-static int xlnk_get_event_size(unsigned long buf);
 
 static int xlnk_shutdown(unsigned long buf);
 static int xlnk_recover_resource(unsigned long buf);
@@ -187,8 +184,8 @@ static void xlnk_devpacks_free(unsigned long base)
 	devpack = xlnk_devpacks_find(base);
 	if (devpack) {
 		platform_device_unregister(&devpack->pdev);
-		kfree(devpack);
 		xlnk_devpacks_delete(devpack);
+		kfree(devpack);
 	}
 }
 
@@ -201,16 +198,59 @@ static void xlnk_devpacks_free_all(void)
 		devpack = xlnk_devpacks[i];
 		if (devpack) {
 			platform_device_unregister(&devpack->pdev);
-			kfree(devpack);
 			xlnk_devpacks_delete(devpack);
+			kfree(devpack);
 		}
+	}
+}
+
+/**
+ * struct xlnk_data - data specific to xlnk
+ * @numxclks:	number of clocks available
+ * @clks:	pointer to array of clocks
+ *
+ * This struct should contain all the data specific to xlnk
+ */
+struct xlnk_data {
+	int numxclks;
+	struct clk **clks;
+};
+
+/**
+ * xlnk_clk_control() - turn all xlnk clocks on or off
+ * @turn_on:	false - turn off (disable), true - turn on (enable)
+ *
+ * This function obtains a list of available clocks from the driver data
+ * and enables or disables all of them based on the value of turn_on
+ */
+static void xlnk_clk_control(bool turn_on)
+{
+	struct xlnk_data *xlnk_dat;
+	int i;
+
+	xlnk_dat = platform_get_drvdata(xlnk_pdev);
+	for (i = 0; i < xlnk_dat->numxclks; i++) {
+		if (IS_ERR(xlnk_dat->clks[i]))
+			continue;
+		if (turn_on)
+			clk_prepare_enable(xlnk_dat->clks[i]);
+		else
+			clk_disable_unprepare(xlnk_dat->clks[i]);
 	}
 }
 
 static int xlnk_probe(struct platform_device *pdev)
 {
-	int err;
+	int err, i;
+	const char *clkname;
+	struct clk **clks;
+	struct xlnk_data *xlnk_dat;
 	dev_t dev = 0;
+
+	xlnk_dev_buf = NULL;
+	xlnk_dev_size = 0;
+	xlnk_dev_vmas = 0;
+	xlnk_bufpool = NULL;
 
 	/* use 2.6 device model */
 	err = alloc_chrdev_region(&dev, 0, 1, driver_name);
@@ -250,7 +290,38 @@ static int xlnk_probe(struct platform_device *pdev)
 
 	xlnk_pdev = pdev;
 	xlnk_dev = &pdev->dev;
+	xlnk_dat = devm_kzalloc(xlnk_dev,
+				sizeof(*xlnk_dat),
+				GFP_KERNEL);
+	if (!xlnk_dat)
+		return -ENOMEM;
 
+	xlnk_dat->numxclks = of_property_count_strings(xlnk_dev->of_node,
+							"clock-names");
+	if (xlnk_dat->numxclks > 0) {
+		clks = devm_kmalloc_array(xlnk_dev,
+					xlnk_dat->numxclks,
+					sizeof(struct clk *),
+					GFP_KERNEL);
+		if (!clks)
+			return -ENOMEM;
+
+		xlnk_dat->clks = clks;
+		for (i = 0; i < xlnk_dat->numxclks; i++) {
+			of_property_read_string_index(xlnk_dev->of_node,
+						"clock-names",
+						i,
+						&clkname);
+			if (clkname) {
+				clks[i] = devm_clk_get(xlnk_dev, clkname);
+				if (IS_ERR(clks[i]))
+					dev_warn(xlnk_dev,
+						"Unable to get clk\n");
+			} else
+				dev_warn(xlnk_dev, "Unable to get clock\n");
+		}
+	}
+	platform_set_drvdata(xlnk_pdev, xlnk_dat);
 	if (xlnk_pdev)
 		pr_info("xlnk_pdev is not null\n");
 	else
@@ -258,9 +329,6 @@ static int xlnk_probe(struct platform_device *pdev)
 
 	xlnk_devpacks_init();
 
-#ifdef CONFIG_ARCH_ZYNQ
-	xlnk_start_benchmark_counter();
-#endif
 
 	return 0;
 
@@ -360,11 +428,17 @@ static int xlnk_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static const struct of_device_id xlnk_match[] = {
+	{ .compatible = "xlnx,xlnk-1.0", },
+	{}
+};
+MODULE_DEVICE_TABLE(of, xlnk_match);
 
 static struct platform_driver xlnk_driver = {
 	.driver = {
-		   .name = DRIVER_NAME,
-		   },
+		.name = DRIVER_NAME,
+		.of_match_table = xlnk_match,
+	},
 	.probe = xlnk_probe,
 	.remove = xlnk_remove,
 	.suspend = XLNK_SUSPEND,
@@ -372,18 +446,6 @@ static struct platform_driver xlnk_driver = {
 };
 
 static u64 dma_mask = 0xFFFFFFFFUL;
-
-static struct platform_device xlnk_device = {
-	.name = "xlnk",
-	.id = 0,
-	.dev = {
-		.platform_data = NULL,
-		.dma_mask = &dma_mask,
-		.coherent_dma_mask = 0xFFFFFFFF,
-	},
-	.resource = NULL,
-	.num_resources = 0,
-};
 
 /*
  * This function is called when an application opens handle to the
@@ -395,6 +457,7 @@ static int xlnk_open(struct inode *ip, struct file *filp)
 
 	if ((filp->f_flags & O_ACCMODE) == O_WRONLY)
 		xlnk_dev_size = 0;
+	xlnk_clk_control(true);
 
 	return status;
 }
@@ -450,8 +513,8 @@ static ssize_t xlnk_write(struct file *filp, const char __user *buf,
  */
 static int xlnk_release(struct inode *ip, struct file *filp)
 {
-	int status = 0;
-	return status;
+	xlnk_clk_control(false);
+	return 0;
 }
 
 
@@ -1033,7 +1096,6 @@ static long xlnk_ioctl(struct file *filp, unsigned int code,
 {
 	int status = 0;
 
-	xlnk_record_event(XLNK_ET_KERNEL_ENTER_IOCTL);
 
 	if (_IOC_TYPE(code) != XLNK_IOC_MAGIC)
 		return -ENOTTY;
@@ -1072,14 +1134,8 @@ static long xlnk_ioctl(struct file *filp, unsigned int code,
 	case XLNK_IOCDEVUNREGISTER:
 		status = xlnk_devunregister_ioctl(filp, code, args);
 		break;
-	case XLNK_IOCGETEVENTSIZE:
-		status = xlnk_get_event_size(args);
-		break;
 	case XLNK_IOCCACHECTRL:
 		status = xlnk_cachecontrol_ioctl(filp, code, args);
-		break;
-	case XLNK_IOCDUMPEVENTS:
-		status = xlnk_dump_events(args);
 		break;
 	case XLNK_IOCSHUTDOWN:
 		status = xlnk_shutdown(args);
@@ -1089,7 +1145,6 @@ static long xlnk_ioctl(struct file *filp, unsigned int code,
 		break;
 	}
 
-	xlnk_record_event(XLNK_ET_KERNEL_LEAVE_IOCTL);
 	return status;
 }
 
@@ -1142,87 +1197,7 @@ static void xlnk_vma_close(struct vm_area_struct *vma)
 }
 
 
-#ifdef CONFIG_ARCH_ZYNQ
 
-/*
- * Xidane XLNK benchmark counter support
- */
-static u32 __iomem *bc_virt;
-
-
-/* Zynq global counter */
-static const unsigned long bc_phyaddr = 0xF8F00200;
-static const unsigned long bc_to_cpu_shift = 1;
-static const unsigned long bc_csr_size = 16;
-static const unsigned long bc_ctr_offset = 2;
-static const unsigned long bc_ctr_start = 1;
-static const unsigned long bc_data_offset;
-
-
-static void xlnk_start_benchmark_counter(void)
-{
-	bc_virt = ioremap(bc_phyaddr, bc_csr_size);
-	if (bc_virt) {
-		iowrite32(bc_ctr_start, bc_virt + bc_ctr_offset);
-		pr_info("xlnk: benchmark counter started\n");
-		/* iounmap(bc_virt); */
-	}
-}
-
-#define XLNK_EVENT_TRACER_ENTRY_NUM 60000
-static struct event_tracer {
-	u32 event_id;
-	u32 event_time;
-} xlnk_et[XLNK_EVENT_TRACER_ENTRY_NUM];
-
-static unsigned long xlnk_et_index;
-static unsigned long xlnk_et_numbers_to_dump;
-
-void xlnk_record_event(u32 event_id)
-{
-	if (xlnk_et_index >= XLNK_EVENT_TRACER_ENTRY_NUM)
-		return;
-
-	xlnk_et[xlnk_et_index].event_id = event_id;
-	xlnk_et[xlnk_et_index].event_time = ioread32(bc_virt +
-						bc_data_offset) <<
-						bc_to_cpu_shift;
-	xlnk_et_index++;
-}
-EXPORT_SYMBOL(xlnk_record_event);
-
-static int xlnk_get_event_size(unsigned long args)
-{
-	unsigned long __user *datap = (unsigned long __user *)args;
-
-	/* take a snapshot of current index and only copy this
-	 * size to user space thru xlnk_dump_events(), as the snapshot
-	 * value determine the dynamically created user space event
-	 * trace buffer size  but the xlnk_et_index could keep going up
-	 * with any xlnk_record_event() calls after this function
-	 */
-	xlnk_et_numbers_to_dump = xlnk_et_index;
-	put_user(xlnk_et_numbers_to_dump, datap);
-	return 0;
-}
-
-static int xlnk_dump_events(unsigned long buf)
-{
-	/* only dump the number of event traces reported thru
-	 * xlnk_get_event_size() and ignore the rest to avoid
-	 * buffer overflow issue
-	 */
-	if (copy_to_user((void __user *)buf, xlnk_et,
-		xlnk_et_numbers_to_dump * sizeof(struct event_tracer)))
-		return -EFAULT;
-
-	/* clear up event pool so it's ready to use again */
-	xlnk_et_index = 0;
-	xlnk_et_numbers_to_dump = 0;
-
-	return 0;
-}
-#endif
 
 
 static int xlnk_shutdown(unsigned long buf)
@@ -1239,28 +1214,7 @@ static int xlnk_recover_resource(unsigned long buf)
 	return 0;
 }
 
-static int __init xlnk_init(void)
-{
-	pr_info("%s driver initializing\n", DRIVER_NAME);
-
-	xlnk_dev_buf = NULL;
-	xlnk_dev_size = 0;
-	xlnk_dev_vmas = 0;
-	xlnk_bufpool = NULL;
-
-	platform_device_register(&xlnk_device);
-
-	return platform_driver_register(&xlnk_driver);
-}
-
-static void __exit xlnk_exit(void)
-{
-	platform_driver_unregister(&xlnk_driver);
-}
-
-/* APF driver initialization and de-initialization functions */
-module_init(xlnk_init);
-module_exit(xlnk_exit);
+module_platform_driver(xlnk_driver);
 
 MODULE_DESCRIPTION("Xilinx APF driver");
 MODULE_LICENSE("GPL");

@@ -36,7 +36,7 @@ struct extent_status;
 
 #define show_map_flags(flags) __print_flags(flags, "|",			\
 	{ EXT4_GET_BLOCKS_CREATE,		"CREATE" },		\
-	{ EXT4_GET_BLOCKS_UNINIT_EXT,		"UNINIT" },		\
+	{ EXT4_GET_BLOCKS_UNWRIT_EXT,		"UNWRIT" },		\
 	{ EXT4_GET_BLOCKS_DELALLOC_RESERVE,	"DELALLOC" },		\
 	{ EXT4_GET_BLOCKS_PRE_IO,		"PRE_IO" },		\
 	{ EXT4_GET_BLOCKS_CONVERT,		"CONVERT" },		\
@@ -51,7 +51,6 @@ struct extent_status;
 	{ EXT4_MAP_MAPPED,	"M" },			\
 	{ EXT4_MAP_UNWRITTEN,	"U" },			\
 	{ EXT4_MAP_BOUNDARY,	"B" },			\
-	{ EXT4_MAP_UNINIT,	"u" },			\
 	{ EXT4_MAP_FROM_CLUSTER, "C" })
 
 #define show_free_flags(flags) __print_flags(flags, "|",	\
@@ -67,6 +66,13 @@ struct extent_status;
 	{ EXTENT_STATUS_UNWRITTEN,	"U" },			\
 	{ EXTENT_STATUS_DELAYED,	"D" },			\
 	{ EXTENT_STATUS_HOLE,		"H" })
+
+#define show_falloc_mode(mode) __print_flags(mode, "|",		\
+	{ FALLOC_FL_KEEP_SIZE,		"KEEP_SIZE"},		\
+	{ FALLOC_FL_PUNCH_HOLE,		"PUNCH_HOLE"},		\
+	{ FALLOC_FL_NO_HIDE_STALE,	"NO_HIDE_STALE"},	\
+	{ FALLOC_FL_COLLAPSE_RANGE,	"COLLAPSE_RANGE"},	\
+	{ FALLOC_FL_ZERO_RANGE,		"ZERO_RANGE"})
 
 
 TRACE_EVENT(ext4_free_inode,
@@ -1328,7 +1334,7 @@ TRACE_EVENT(ext4_direct_IO_exit,
 		  __entry->rw, __entry->ret)
 );
 
-TRACE_EVENT(ext4_fallocate_enter,
+DECLARE_EVENT_CLASS(ext4__fallocate_mode,
 	TP_PROTO(struct inode *inode, loff_t offset, loff_t len, int mode),
 
 	TP_ARGS(inode, offset, len, mode),
@@ -1336,23 +1342,45 @@ TRACE_EVENT(ext4_fallocate_enter,
 	TP_STRUCT__entry(
 		__field(	dev_t,	dev			)
 		__field(	ino_t,	ino			)
-		__field(	loff_t,	pos			)
-		__field(	loff_t,	len			)
+		__field(	loff_t,	offset			)
+		__field(	loff_t, len			)
 		__field(	int,	mode			)
 	),
 
 	TP_fast_assign(
 		__entry->dev	= inode->i_sb->s_dev;
 		__entry->ino	= inode->i_ino;
-		__entry->pos	= offset;
+		__entry->offset	= offset;
 		__entry->len	= len;
 		__entry->mode	= mode;
 	),
 
-	TP_printk("dev %d,%d ino %lu pos %lld len %lld mode %d",
+	TP_printk("dev %d,%d ino %lu offset %lld len %lld mode %s",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
-		  (unsigned long) __entry->ino, __entry->pos,
-		  __entry->len, __entry->mode)
+		  (unsigned long) __entry->ino,
+		  __entry->offset, __entry->len,
+		  show_falloc_mode(__entry->mode))
+);
+
+DEFINE_EVENT(ext4__fallocate_mode, ext4_fallocate_enter,
+
+	TP_PROTO(struct inode *inode, loff_t offset, loff_t len, int mode),
+
+	TP_ARGS(inode, offset, len, mode)
+);
+
+DEFINE_EVENT(ext4__fallocate_mode, ext4_punch_hole,
+
+	TP_PROTO(struct inode *inode, loff_t offset, loff_t len, int mode),
+
+	TP_ARGS(inode, offset, len, mode)
+);
+
+DEFINE_EVENT(ext4__fallocate_mode, ext4_zero_range,
+
+	TP_PROTO(struct inode *inode, loff_t offset, loff_t len, int mode),
+
+	TP_ARGS(inode, offset, len, mode)
 );
 
 TRACE_EVENT(ext4_fallocate_exit,
@@ -1382,31 +1410,6 @@ TRACE_EVENT(ext4_fallocate_exit,
 		  (unsigned long) __entry->ino,
 		  __entry->pos, __entry->blocks,
 		  __entry->ret)
-);
-
-TRACE_EVENT(ext4_punch_hole,
-	TP_PROTO(struct inode *inode, loff_t offset, loff_t len),
-
-	TP_ARGS(inode, offset, len),
-
-	TP_STRUCT__entry(
-		__field(	dev_t,	dev			)
-		__field(	ino_t,	ino			)
-		__field(	loff_t,	offset			)
-		__field(	loff_t, len			)
-	),
-
-	TP_fast_assign(
-		__entry->dev	= inode->i_sb->s_dev;
-		__entry->ino	= inode->i_ino;
-		__entry->offset	= offset;
-		__entry->len	= len;
-	),
-
-	TP_printk("dev %d,%d ino %lu offset %lld len %lld",
-		  MAJOR(__entry->dev), MINOR(__entry->dev),
-		  (unsigned long) __entry->ino,
-		  __entry->offset, __entry->len)
 );
 
 TRACE_EVENT(ext4_unlink_enter,
@@ -1493,7 +1496,7 @@ DEFINE_EVENT(ext4__truncate, ext4_truncate_exit,
 	TP_ARGS(inode)
 );
 
-/* 'ux' is the uninitialized extent. */
+/* 'ux' is the unwritten extent. */
 TRACE_EVENT(ext4_ext_convert_to_initialized_enter,
 	TP_PROTO(struct inode *inode, struct ext4_map_blocks *map,
 		 struct ext4_extent *ux),
@@ -1529,7 +1532,7 @@ TRACE_EVENT(ext4_ext_convert_to_initialized_enter,
 );
 
 /*
- * 'ux' is the uninitialized extent.
+ * 'ux' is the unwritten extent.
  * 'ix' is the initialized extent to which blocks are transferred.
  */
 TRACE_EVENT(ext4_ext_convert_to_initialized_fastpath,
@@ -1807,7 +1810,7 @@ DEFINE_EVENT(ext4__trim, ext4_trim_all_free,
 	TP_ARGS(sb, group, start, len)
 );
 
-TRACE_EVENT(ext4_ext_handle_uninitialized_extents,
+TRACE_EVENT(ext4_ext_handle_unwritten_extents,
 	TP_PROTO(struct inode *inode, struct ext4_map_blocks *map, int flags,
 		 unsigned int allocated, ext4_fsblk_t newblock),
 
@@ -2366,7 +2369,7 @@ TRACE_EVENT(ext4_es_lookup_extent_exit,
 		  show_extent_status(__entry->found ? __entry->status : 0))
 );
 
-TRACE_EVENT(ext4_es_shrink_enter,
+DECLARE_EVENT_CLASS(ext4__es_shrink_enter,
 	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
 
 	TP_ARGS(sb, nr_to_scan, cache_cnt),
@@ -2388,26 +2391,94 @@ TRACE_EVENT(ext4_es_shrink_enter,
 		  __entry->nr_to_scan, __entry->cache_cnt)
 );
 
-TRACE_EVENT(ext4_es_shrink_exit,
-	TP_PROTO(struct super_block *sb, int shrunk_nr, int cache_cnt),
+DEFINE_EVENT(ext4__es_shrink_enter, ext4_es_shrink_count,
+	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
 
-	TP_ARGS(sb, shrunk_nr, cache_cnt),
+	TP_ARGS(sb, nr_to_scan, cache_cnt)
+);
+
+DEFINE_EVENT(ext4__es_shrink_enter, ext4_es_shrink_scan_enter,
+	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
+
+	TP_ARGS(sb, nr_to_scan, cache_cnt)
+);
+
+TRACE_EVENT(ext4_es_shrink_scan_exit,
+	TP_PROTO(struct super_block *sb, int nr_shrunk, int cache_cnt),
+
+	TP_ARGS(sb, nr_shrunk, cache_cnt),
 
 	TP_STRUCT__entry(
 		__field(	dev_t,	dev			)
-		__field(	int,	shrunk_nr		)
+		__field(	int,	nr_shrunk		)
 		__field(	int,	cache_cnt		)
 	),
 
 	TP_fast_assign(
 		__entry->dev		= sb->s_dev;
-		__entry->shrunk_nr	= shrunk_nr;
+		__entry->nr_shrunk	= nr_shrunk;
 		__entry->cache_cnt	= cache_cnt;
 	),
 
-	TP_printk("dev %d,%d shrunk_nr %d cache_cnt %d",
+	TP_printk("dev %d,%d nr_shrunk %d cache_cnt %d",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
-		  __entry->shrunk_nr, __entry->cache_cnt)
+		  __entry->nr_shrunk, __entry->cache_cnt)
+);
+
+TRACE_EVENT(ext4_collapse_range,
+	TP_PROTO(struct inode *inode, loff_t offset, loff_t len),
+
+	TP_ARGS(inode, offset, len),
+
+	TP_STRUCT__entry(
+		__field(dev_t,	dev)
+		__field(ino_t,	ino)
+		__field(loff_t,	offset)
+		__field(loff_t, len)
+	),
+
+	TP_fast_assign(
+		__entry->dev	= inode->i_sb->s_dev;
+		__entry->ino	= inode->i_ino;
+		__entry->offset	= offset;
+		__entry->len	= len;
+	),
+
+	TP_printk("dev %d,%d ino %lu offset %lld len %lld",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  (unsigned long) __entry->ino,
+		  __entry->offset, __entry->len)
+);
+
+TRACE_EVENT(ext4_es_shrink,
+	TP_PROTO(struct super_block *sb, int nr_shrunk, u64 scan_time,
+		 int skip_precached, int nr_skipped, int retried),
+
+	TP_ARGS(sb, nr_shrunk, scan_time, skip_precached, nr_skipped, retried),
+
+	TP_STRUCT__entry(
+		__field(	dev_t,		dev		)
+		__field(	int,		nr_shrunk	)
+		__field(	unsigned long long, scan_time	)
+		__field(	int,		skip_precached	)
+		__field(	int,		nr_skipped	)
+		__field(	int,		retried		)
+	),
+
+	TP_fast_assign(
+		__entry->dev		= sb->s_dev;
+		__entry->nr_shrunk	= nr_shrunk;
+		__entry->scan_time	= div_u64(scan_time, 1000);
+		__entry->skip_precached = skip_precached;
+		__entry->nr_skipped	= nr_skipped;
+		__entry->retried	= retried;
+	),
+
+	TP_printk("dev %d,%d nr_shrunk %d, scan_time %llu skip_precached %d "
+		  "nr_skipped %d retried %d",
+		  MAJOR(__entry->dev), MINOR(__entry->dev), __entry->nr_shrunk,
+		  __entry->scan_time, __entry->skip_precached,
+		  __entry->nr_skipped, __entry->retried)
 );
 
 #endif /* _TRACE_EXT4_H */

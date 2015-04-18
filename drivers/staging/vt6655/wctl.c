@@ -43,7 +43,7 @@
 /*---------------------  Static Classes  ----------------------------*/
 
 /*---------------------  Static Variables  --------------------------*/
-// static int          msglevel                =MSG_LEVEL_INFO;
+
 /*---------------------  Static Functions  --------------------------*/
 
 /*---------------------  Export Variables  --------------------------*/
@@ -105,7 +105,8 @@ bool WCTLbIsDuplicate(PSCache pCache, PS802_11Header pMACHeader)
  * Return Value: index number in Defragment Database
  *
  */
-unsigned int WCTLuSearchDFCB(PSDevice pDevice, PS802_11Header pMACHeader)
+unsigned int WCTLuSearchDFCB(struct vnt_private *pDevice,
+			     PS802_11Header pMACHeader)
 {
 	unsigned int ii;
 
@@ -113,7 +114,6 @@ unsigned int WCTLuSearchDFCB(PSDevice pDevice, PS802_11Header pMACHeader)
 		if (pDevice->sRxDFCB[ii].bInUse &&
 		    ether_addr_equal(pDevice->sRxDFCB[ii].abyAddr2,
 				     pMACHeader->abyAddr2)) {
-			//
 			return ii;
 		}
 	}
@@ -134,7 +134,7 @@ unsigned int WCTLuSearchDFCB(PSDevice pDevice, PS802_11Header pMACHeader)
  * Return Value: index number in Defragment Database
  *
  */
-unsigned int WCTLuInsertDFCB(PSDevice pDevice, PS802_11Header pMACHeader)
+unsigned int WCTLuInsertDFCB(struct vnt_private *pDevice, PS802_11Header pMACHeader)
 {
 	unsigned int ii;
 
@@ -170,7 +170,8 @@ unsigned int WCTLuInsertDFCB(PSDevice pDevice, PS802_11Header pMACHeader)
  * Return Value: true if it is valid fragment packet and we have resource to defragment; otherwise false
  *
  */
-bool WCTLbHandleFragment(PSDevice pDevice, PS802_11Header pMACHeader, unsigned int cbFrameLength, bool bWEP, bool bExtIV)
+bool WCTLbHandleFragment(struct vnt_private *pDevice, PS802_11Header pMACHeader,
+			 unsigned int cbFrameLength, bool bWEP, bool bExtIV)
 {
 	unsigned int uHeaderSize;
 
@@ -192,9 +193,8 @@ bool WCTLbHandleFragment(PSDevice pDevice, PS802_11Header pMACHeader, unsigned i
 			pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].wFragNum = (pMACHeader->wSeqCtl & 0x000F);
 		} else {
 			pDevice->uCurrentDFCBIdx = WCTLuInsertDFCB(pDevice, pMACHeader);
-			if (pDevice->uCurrentDFCBIdx == pDevice->cbDFCB) {
+			if (pDevice->uCurrentDFCBIdx == pDevice->cbDFCB)
 				return false;
-			}
 		}
 		// reserve 4 byte to match MAC RX Buffer
 		pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].pbyRxBuffer = (unsigned char *)(pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].skb->data + 4);
@@ -202,7 +202,6 @@ bool WCTLbHandleFragment(PSDevice pDevice, PS802_11Header pMACHeader, unsigned i
 		pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].cbFrameLength = cbFrameLength;
 		pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].pbyRxBuffer += cbFrameLength;
 		pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].wFragNum++;
-		//DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO "First pDevice->uCurrentDFCBIdx= %d\n", pDevice->uCurrentDFCBIdx);
 		return false;
 	} else {
 		pDevice->uCurrentDFCBIdx = WCTLuSearchDFCB(pDevice, pMACHeader);
@@ -214,7 +213,6 @@ bool WCTLbHandleFragment(PSDevice pDevice, PS802_11Header pMACHeader, unsigned i
 				pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].cbFrameLength += (cbFrameLength - uHeaderSize);
 				pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].pbyRxBuffer += (cbFrameLength - uHeaderSize);
 				pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].wFragNum++;
-				//DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO "Second pDevice->uCurrentDFCBIdx= %d\n", pDevice->uCurrentDFCBIdx);
 			} else {
 				// seq error or frag # error flush DFCB
 				pDevice->cbFreeDFCB++;
@@ -228,7 +226,6 @@ bool WCTLbHandleFragment(PSDevice pDevice, PS802_11Header pMACHeader, unsigned i
 			//enq defragcontrolblock
 			pDevice->cbFreeDFCB++;
 			pDevice->sRxDFCB[pDevice->uCurrentDFCBIdx].bInUse = false;
-			//DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO "Last pDevice->uCurrentDFCBIdx= %d\n", pDevice->uCurrentDFCBIdx);
 			return true;
 		}
 		return false;

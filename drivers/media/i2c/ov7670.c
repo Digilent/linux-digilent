@@ -19,6 +19,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-mediabus.h>
+#include <media/v4l2-image-sizes.h>
 #include <media/ov7670.h>
 
 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
@@ -28,19 +29,6 @@ MODULE_LICENSE("GPL");
 static bool debug;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Debug level (0-1)");
-
-/*
- * Basic window sizes.  These probably belong somewhere more globally
- * useful.
- */
-#define VGA_WIDTH	640
-#define VGA_HEIGHT	480
-#define QVGA_WIDTH	320
-#define QVGA_HEIGHT	240
-#define CIF_WIDTH	352
-#define CIF_HEIGHT	288
-#define QCIF_WIDTH	176
-#define	QCIF_HEIGHT	144
 
 /*
  * The 7670 sits on i2c with ID 0x42
@@ -1109,7 +1097,7 @@ static int ov7670_enum_framesizes(struct v4l2_subdev *sd,
 	 * windows that fall outside that.
 	 */
 	for (i = 0; i < n_win_sizes; i++) {
-		struct ov7670_win_size *win = &info->devtype->win_sizes[index];
+		struct ov7670_win_size *win = &info->devtype->win_sizes[i];
 		if (info->min_width && win->width < info->min_width)
 			continue;
 		if (info->min_height && win->height < info->min_height)

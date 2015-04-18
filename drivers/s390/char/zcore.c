@@ -17,6 +17,8 @@
 #include <linux/miscdevice.h>
 #include <linux/debugfs.h>
 #include <linux/module.h>
+#include <linux/memblock.h>
+
 #include <asm/asm-offsets.h>
 #include <asm/ipl.h>
 #include <asm/sclp.h>
@@ -26,6 +28,7 @@
 #include <asm/processor.h>
 #include <asm/irqflags.h>
 #include <asm/checksum.h>
+#include <asm/switch_to.h>
 #include "sclp.h"
 
 #define TRACE(x...) debug_sprintf_event(zcore_dbf, 1, x)
@@ -147,18 +150,21 @@ static int memcpy_hsa_kernel(void *dest, unsigned long src, size_t count)
 
 static int __init init_cpu_info(enum arch_id arch)
 {
-	struct save_area *sa;
+	struct save_area_ext *sa_ext;
 
 	/* get info for boot cpu from lowcore, stored in the HSA */
 
-	sa = dump_save_area_create(0);
-	if (!sa)
+	sa_ext = dump_save_area_create(0);
+	if (!sa_ext)
 		return -ENOMEM;
-	if (memcpy_hsa_kernel(sa, sys_info.sa_base, sys_info.sa_size) < 0) {
+	if (memcpy_hsa_kernel(&sa_ext->sa, sys_info.sa_base,
+			      sys_info.sa_size) < 0) {
 		TRACE("could not copy from HSA\n");
-		kfree(sa);
+		kfree(sa_ext);
 		return -EIO;
 	}
+	if (MACHINE_HAS_VX)
+		save_vx_regs_safe(sa_ext->vx_regs);
 	return 0;
 }
 
@@ -256,7 +262,7 @@ static int zcore_add_lc(char __user *buf, unsigned long start, size_t count)
 		unsigned long sa_start, sa_end; /* save area range */
 		unsigned long prefix;
 		unsigned long sa_off, len, buf_off;
-		struct save_area *save_area = dump_save_areas.areas[i];
+		struct save_area *save_area = &dump_save_areas.areas[i]->sa;
 
 		prefix = save_area->pref_reg;
 		sa_start = prefix + sys_info.sa_base;
@@ -411,33 +417,24 @@ static ssize_t zcore_memmap_read(struct file *filp, char __user *buf,
 				 size_t count, loff_t *ppos)
 {
 	return simple_read_from_buffer(buf, count, ppos, filp->private_data,
-				       MEMORY_CHUNKS * CHUNK_INFO_SIZE);
+				       memblock.memory.cnt * CHUNK_INFO_SIZE);
 }
 
 static int zcore_memmap_open(struct inode *inode, struct file *filp)
 {
-	int i;
+	struct memblock_region *reg;
 	char *buf;
-	struct mem_chunk *chunk_array;
+	int i = 0;
 
-	chunk_array = kzalloc(MEMORY_CHUNKS * sizeof(struct mem_chunk),
-			      GFP_KERNEL);
-	if (!chunk_array)
-		return -ENOMEM;
-	detect_memory_layout(chunk_array, 0);
-	buf = kzalloc(MEMORY_CHUNKS * CHUNK_INFO_SIZE, GFP_KERNEL);
+	buf = kzalloc(memblock.memory.cnt * CHUNK_INFO_SIZE, GFP_KERNEL);
 	if (!buf) {
-		kfree(chunk_array);
 		return -ENOMEM;
 	}
-	for (i = 0; i < MEMORY_CHUNKS; i++) {
-		sprintf(buf + (i * CHUNK_INFO_SIZE), "%016llx %016llx ",
-			(unsigned long long) chunk_array[i].addr,
-			(unsigned long long) chunk_array[i].size);
-		if (chunk_array[i].size == 0)
-			break;
+	for_each_memblock(memory, reg) {
+		sprintf(buf + (i++ * CHUNK_INFO_SIZE), "%016llx %016llx ",
+			(unsigned long long) reg->base,
+			(unsigned long long) reg->size);
 	}
-	kfree(chunk_array);
 	filp->private_data = buf;
 	return nonseekable_open(inode, filp);
 }
@@ -593,21 +590,12 @@ static int __init check_sdias(void)
 
 static int __init get_mem_info(unsigned long *mem, unsigned long *end)
 {
-	int i;
-	struct mem_chunk *chunk_array;
+	struct memblock_region *reg;
 
-	chunk_array = kzalloc(MEMORY_CHUNKS * sizeof(struct mem_chunk),
-			      GFP_KERNEL);
-	if (!chunk_array)
-		return -ENOMEM;
-	detect_memory_layout(chunk_array, 0);
-	for (i = 0; i < MEMORY_CHUNKS; i++) {
-		if (chunk_array[i].size == 0)
-			break;
-		*mem += chunk_array[i].size;
-		*end = max(*end, chunk_array[i].addr + chunk_array[i].size);
+	for_each_memblock(memory, reg) {
+		*mem += reg->size;
+		*end = max_t(unsigned long, *end, reg->base + reg->size);
 	}
-	kfree(chunk_array);
 	return 0;
 }
 
@@ -628,7 +616,7 @@ static void __init zcore_header_init(int arch, struct zcore_header *hdr,
 	hdr->tod = get_tod_clock();
 	get_cpu_id(&hdr->cpu_id);
 	for (i = 0; i < dump_save_areas.count; i++) {
-		prefix = dump_save_areas.areas[i]->pref_reg;
+		prefix = dump_save_areas.areas[i]->sa.pref_reg;
 		hdr->real_cpu_cnt++;
 		if (!prefix)
 			continue;

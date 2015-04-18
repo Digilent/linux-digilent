@@ -14,7 +14,7 @@
 
 #include "mpc85xx.h"
 
-static struct of_device_id __initdata mpc85xx_common_ids[] = {
+static const struct of_device_id mpc85xx_common_ids[] __initconst = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
 	{ .compatible = "simple-bus", },
@@ -106,6 +106,12 @@ void __init mpc85xx_qe_init(void)
 
 	qe_reset();
 	of_node_put(np);
+
+}
+
+void __init mpc85xx_qe_par_io_init(void)
+{
+	struct device_node *np;
 
 	np = of_find_node_by_name(NULL, "par_io");
 	if (np) {

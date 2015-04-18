@@ -22,9 +22,7 @@
 #include <linux/cper.h>
 
 #include "aerdrv.h"
-
-#define CREATE_TRACE_POINTS
-#include <trace/events/ras.h>
+#include <ras/ras_event.h>
 
 #define AER_AGENT_RECEIVER		0
 #define AER_AGENT_REQUESTER		1
@@ -91,15 +89,17 @@ static const char *aer_correctable_error_string[] = {
 	NULL,
 	"Replay Timer Timeout",		/* Bit Position 12	*/
 	"Advisory Non-Fatal",		/* Bit Position 13	*/
+	"Corrected Internal Error",	/* Bit Position 14	*/
+	"Header Log Overflow",		/* Bit Position 15	*/
 };
 
 static const char *aer_uncorrectable_error_string[] = {
-	NULL,
+	"Undefined",			/* Bit Position 0	*/
 	NULL,
 	NULL,
 	NULL,
 	"Data Link Protocol",		/* Bit Position 4	*/
-	NULL,
+	"Surprise Down Error",		/* Bit Position 5	*/
 	NULL,
 	NULL,
 	NULL,
@@ -115,6 +115,11 @@ static const char *aer_uncorrectable_error_string[] = {
 	"Malformed TLP",		/* Bit Position 18	*/
 	"ECRC",				/* Bit Position 19	*/
 	"Unsupported Request",		/* Bit Position 20	*/
+	"ACS Violation",		/* Bit Position 21	*/
+	"Uncorrectable Internal Error",	/* Bit Position 22	*/
+	"MC Blocked TLP",		/* Bit Position 23	*/
+	"AtomicOp Egress Blocked",	/* Bit Position 24	*/
+	"TLP Prefix Blocked Error",	/* Bit Position 25	*/
 };
 
 static const char *aer_agent_string[] = {
@@ -172,9 +177,7 @@ void aer_print_error(struct pci_dev *dev, struct aer_err_info *info)
 	int id = ((dev->bus->number << 8) | dev->devfn);
 
 	if (!info->status) {
-		dev_err(&dev->dev,
-			"PCIe Bus Error: severity=%s, type=Unaccessible, "
-			"id=%04x(Unregistered Agent ID)\n",
+		dev_err(&dev->dev, "PCIe Bus Error: severity=%s, type=Unaccessible, id=%04x(Unregistered Agent ID)\n",
 			aer_error_severity_string[info->severity], id);
 		goto out;
 	}
@@ -182,13 +185,11 @@ void aer_print_error(struct pci_dev *dev, struct aer_err_info *info)
 	layer = AER_GET_LAYER_ERROR(info->severity, info->status);
 	agent = AER_GET_AGENT(info->severity, info->status);
 
-	dev_err(&dev->dev,
-		"PCIe Bus Error: severity=%s, type=%s, id=%04x(%s)\n",
+	dev_err(&dev->dev, "PCIe Bus Error: severity=%s, type=%s, id=%04x(%s)\n",
 		aer_error_severity_string[info->severity],
 		aer_error_layer[layer], id, aer_agent_string[agent]);
 
-	dev_err(&dev->dev,
-		"  device [%04x:%04x] error status/mask=%08x/%08x\n",
+	dev_err(&dev->dev, "  device [%04x:%04x] error status/mask=%08x/%08x\n",
 		dev->vendor, dev->device,
 		info->status, info->mask);
 

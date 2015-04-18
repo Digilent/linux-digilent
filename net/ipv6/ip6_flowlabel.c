@@ -15,9 +15,7 @@
 #include <linux/socket.h>
 #include <linux/net.h>
 #include <linux/netdevice.h>
-#include <linux/if_arp.h>
 #include <linux/in6.h>
-#include <linux/route.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -28,12 +26,7 @@
 #include <net/sock.h>
 
 #include <net/ipv6.h>
-#include <net/ndisc.h>
-#include <net/protocol.h>
-#include <net/ip6_route.h>
-#include <net/addrconf.h>
 #include <net/rawv6.h>
-#include <net/icmp.h>
 #include <net/transp_v6.h>
 
 #include <asm/uaccess.h>
@@ -143,7 +136,7 @@ static void ip6_fl_gc(unsigned long dummy)
 
 	spin_lock(&ip6_fl_lock);
 
-	for (i=0; i<=FL_HASH_MASK; i++) {
+	for (i = 0; i <= FL_HASH_MASK; i++) {
 		struct ip6_flowlabel *fl;
 		struct ip6_flowlabel __rcu **flp;
 
@@ -246,7 +239,7 @@ static struct ip6_flowlabel *fl_intern(struct net *net,
 
 /* Socket flowlabel lists */
 
-struct ip6_flowlabel * fl6_sock_lookup(struct sock *sk, __be32 label)
+struct ip6_flowlabel *fl6_sock_lookup(struct sock *sk, __be32 label)
 {
 	struct ipv6_fl_socklist *sfl;
 	struct ipv6_pinfo *np = inet6_sk(sk);
@@ -266,7 +259,6 @@ struct ip6_flowlabel * fl6_sock_lookup(struct sock *sk, __be32 label)
 	rcu_read_unlock_bh();
 	return NULL;
 }
-
 EXPORT_SYMBOL_GPL(fl6_sock_lookup);
 
 void fl6_free_socklist(struct sock *sk)
@@ -300,11 +292,11 @@ void fl6_free_socklist(struct sock *sk)
    following rthdr.
  */
 
-struct ipv6_txoptions *fl6_merge_options(struct ipv6_txoptions * opt_space,
-					 struct ip6_flowlabel * fl,
-					 struct ipv6_txoptions * fopt)
+struct ipv6_txoptions *fl6_merge_options(struct ipv6_txoptions *opt_space,
+					 struct ip6_flowlabel *fl,
+					 struct ipv6_txoptions *fopt)
 {
-	struct ipv6_txoptions * fl_opt = fl->opt;
+	struct ipv6_txoptions *fl_opt = fl->opt;
 
 	if (fopt == NULL || fopt->opt_flen == 0)
 		return fl_opt;
@@ -395,7 +387,7 @@ fl_create(struct net *net, struct sock *sk, struct in6_flowlabel_req *freq,
 			goto done;
 
 		msg.msg_controllen = olen;
-		msg.msg_control = (void*)(fl->opt+1);
+		msg.msg_control = (void *)(fl->opt+1);
 		memset(&flowi6, 0, sizeof(flowi6));
 
 		err = ip6_datagram_send_ctl(net, sk, &msg, &flowi6, fl->opt,
@@ -524,7 +516,7 @@ int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 	struct net *net = sock_net(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct in6_flowlabel_req freq;
-	struct ipv6_fl_socklist *sfl1=NULL;
+	struct ipv6_fl_socklist *sfl1 = NULL;
 	struct ipv6_fl_socklist *sfl;
 	struct ipv6_fl_socklist __rcu **sflp;
 	struct ip6_flowlabel *fl, *fl1 = NULL;
@@ -549,7 +541,7 @@ int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 		}
 		spin_lock_bh(&ip6_sk_fl_lock);
 		for (sflp = &np->ipv6_fl_list;
-		     (sfl = rcu_dereference(*sflp))!=NULL;
+		     (sfl = rcu_dereference(*sflp)) != NULL;
 		     sflp = &sfl->next) {
 			if (sfl->fl->label == freq.flr_label) {
 				if (freq.flr_label == (np->flow_label&IPV6_FLOWLABEL_MASK))

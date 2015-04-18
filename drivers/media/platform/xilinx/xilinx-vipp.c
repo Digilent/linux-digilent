@@ -1,9 +1,11 @@
 /*
  * Xilinx Video IP Composite Device
  *
- * Copyright (C) 2013 Ideas on Board SPRL
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -13,6 +15,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -80,7 +83,7 @@ static int xvip_graph_build_one(struct xvip_composite_device *xdev,
 
 	while (1) {
 		/* Get the next endpoint and parse its link. */
-		next = v4l2_of_get_next_endpoint(entity->node, ep);
+		next = of_graph_get_next_endpoint(entity->node, ep);
 		if (next == NULL)
 			break;
 
@@ -201,7 +204,7 @@ static int xvip_graph_build_dma(struct xvip_composite_device *xdev)
 
 	while (1) {
 		/* Get the next endpoint and parse its link. */
-		next = v4l2_of_get_next_endpoint(node, ep);
+		next = of_graph_get_next_endpoint(node, ep);
 		if (next == NULL)
 			break;
 
@@ -354,7 +357,7 @@ static int xvip_graph_parse_one(struct xvip_composite_device *xdev,
 	dev_dbg(xdev->dev, "parsing node %s\n", node->full_name);
 
 	while (1) {
-		next = v4l2_of_get_next_endpoint(node, ep);
+		next = of_graph_get_next_endpoint(node, ep);
 		if (next == NULL)
 			break;
 
@@ -363,7 +366,7 @@ static int xvip_graph_parse_one(struct xvip_composite_device *xdev,
 
 		dev_dbg(xdev->dev, "handling endpoint %s\n", ep->full_name);
 
-		remote = v4l2_of_get_remote_port_parent(ep);
+		remote = of_graph_get_remote_port_parent(ep);
 		if (remote == NULL) {
 			ret = -EINVAL;
 			break;
@@ -452,6 +455,9 @@ static int xvip_graph_dma_init_one(struct xvip_composite_device *xdev,
 	}
 
 	list_add_tail(&dma->list, &xdev->dmas);
+
+	xdev->v4l2_caps |= type == V4L2_BUF_TYPE_VIDEO_CAPTURE
+			 ? V4L2_CAP_VIDEO_CAPTURE : V4L2_CAP_VIDEO_OUTPUT;
 
 	return 0;
 }
@@ -563,7 +569,6 @@ done:
 
 static void xvip_composite_v4l2_cleanup(struct xvip_composite_device *xdev)
 {
-	v4l2_ctrl_handler_free(&xdev->ctrl_handler);
 	v4l2_device_unregister(&xdev->v4l2_dev);
 	media_device_unregister(&xdev->media_dev);
 }
@@ -592,9 +597,6 @@ static int xvip_composite_v4l2_init(struct xvip_composite_device *xdev)
 		media_device_unregister(&xdev->media_dev);
 		return ret;
 	}
-
-	v4l2_ctrl_handler_init(&xdev->ctrl_handler, 0);
-	xdev->v4l2_dev.ctrl_handler = &xdev->ctrl_handler;
 
 	return 0;
 }
@@ -646,15 +648,14 @@ static int xvip_composite_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xvip_composite_of_id_table[] = {
-	{ .compatible = "xlnx,axi-video" },
+	{ .compatible = "xlnx,video" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, xvip_composite_of_id_table);
 
 static struct platform_driver xvip_composite_driver = {
 	.driver = {
-		.owner = THIS_MODULE,
-		.name = "xilinx-axi-video",
+		.name = "xilinx-video",
 		.of_match_table = xvip_composite_of_id_table,
 	},
 	.probe = xvip_composite_probe,

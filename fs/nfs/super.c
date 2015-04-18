@@ -1027,8 +1027,7 @@ static bool nfs_auth_info_add(struct nfs_auth_info *auth_info,
 			      rpc_authflavor_t flavor)
 {
 	unsigned int i;
-	unsigned int max_flavor_len = (sizeof(auth_info->flavors) /
-				       sizeof(auth_info->flavors[0]));
+	unsigned int max_flavor_len = ARRAY_SIZE(auth_info->flavors);
 
 	/* make sure this flavor isn't already in the list */
 	for (i = 0; i < auth_info->flavor_len; i++) {
@@ -2066,11 +2065,6 @@ static int nfs23_validate_mount_data(void *options,
 		return NFS_TEXT_DATA;
 	}
 
-#if !IS_ENABLED(CONFIG_NFS_V3)
-	if (args->version == 3)
-		goto out_v3_not_compiled;
-#endif /* !CONFIG_NFS_V3 */
-
 	return 0;
 
 out_no_data:
@@ -2085,12 +2079,6 @@ out_no_v3:
 out_no_sec:
 	dfprintk(MOUNT, "NFS: nfs_mount_data version supports only AUTH_SYS\n");
 	return -EINVAL;
-
-#if !IS_ENABLED(CONFIG_NFS_V3)
-out_v3_not_compiled:
-	dfprintk(MOUNT, "NFS: NFSv3 is not compiled into kernel\n");
-	return -EPROTONOSUPPORT;
-#endif /* !CONFIG_NFS_V3 */
 
 out_nomem:
 	dfprintk(MOUNT, "NFS: not enough memory to handle mount options\n");
@@ -2180,11 +2168,24 @@ out_no_address:
 	return -EINVAL;
 }
 
+#define NFS_REMOUNT_CMP_FLAGMASK ~(NFS_MOUNT_INTR \
+		| NFS_MOUNT_SECURE \
+		| NFS_MOUNT_TCP \
+		| NFS_MOUNT_VER3 \
+		| NFS_MOUNT_KERBEROS \
+		| NFS_MOUNT_NONLM \
+		| NFS_MOUNT_BROKEN_SUID \
+		| NFS_MOUNT_STRICTLOCK \
+		| NFS_MOUNT_LEGACY_INTERFACE)
+
+#define NFS_MOUNT_CMP_FLAGMASK (NFS_REMOUNT_CMP_FLAGMASK & \
+		~(NFS_MOUNT_UNSHARED | NFS_MOUNT_NORESVPORT))
+
 static int
 nfs_compare_remount_data(struct nfs_server *nfss,
 			 struct nfs_parsed_mount_data *data)
 {
-	if (data->flags != nfss->flags ||
+	if ((data->flags ^ nfss->flags) & NFS_REMOUNT_CMP_FLAGMASK ||
 	    data->rsize != nfss->rsize ||
 	    data->wsize != nfss->wsize ||
 	    data->version != nfss->nfs_client->rpc_ops->version ||
@@ -2214,6 +2215,8 @@ nfs_remount(struct super_block *sb, int *flags, char *raw_data)
 	struct nfs_mount_data *options = (struct nfs_mount_data *)raw_data;
 	struct nfs4_mount_data *options4 = (struct nfs4_mount_data *)raw_data;
 	u32 nfsvers = nfss->nfs_client->rpc_ops->version;
+
+	sync_filesystem(sb);
 
 	/*
 	 * Userspace mount programs that send binary options generally send
@@ -2246,6 +2249,7 @@ nfs_remount(struct super_block *sb, int *flags, char *raw_data)
 	data->nfs_server.addrlen = nfss->nfs_client->cl_addrlen;
 	data->version = nfsvers;
 	data->minorversion = nfss->nfs_client->cl_minorversion;
+	data->net = current->nsproxy->net_ns;
 	memcpy(&data->nfs_server.address, &nfss->nfs_client->cl_addr,
 		data->nfs_server.addrlen);
 
@@ -2344,18 +2348,6 @@ void nfs_clone_super(struct super_block *sb, struct nfs_mount_info *mount_info)
 
  	nfs_initialise_sb(sb);
 }
-
-#define NFS_MOUNT_CMP_FLAGMASK ~(NFS_MOUNT_INTR \
-		| NFS_MOUNT_SECURE \
-		| NFS_MOUNT_TCP \
-		| NFS_MOUNT_VER3 \
-		| NFS_MOUNT_KERBEROS \
-		| NFS_MOUNT_NONLM \
-		| NFS_MOUNT_BROKEN_SUID \
-		| NFS_MOUNT_STRICTLOCK \
-		| NFS_MOUNT_UNSHARED \
-		| NFS_MOUNT_NORESVPORT \
-		| NFS_MOUNT_LEGACY_INTERFACE)
 
 static int nfs_compare_mount_options(const struct super_block *s, const struct nfs_server *b, int flags)
 {

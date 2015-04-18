@@ -517,6 +517,23 @@ static void ar9003_hw_spur_mitigate(struct ath_hw *ah,
 	ar9003_hw_spur_mitigate_ofdm(ah, chan);
 }
 
+static u32 ar9003_hw_compute_pll_control_soc(struct ath_hw *ah,
+					     struct ath9k_channel *chan)
+{
+	u32 pll;
+
+	pll = SM(0x5, AR_RTC_9300_SOC_PLL_REFDIV);
+
+	if (chan && IS_CHAN_HALF_RATE(chan))
+		pll |= SM(0x1, AR_RTC_9300_SOC_PLL_CLKSEL);
+	else if (chan && IS_CHAN_QUARTER_RATE(chan))
+		pll |= SM(0x2, AR_RTC_9300_SOC_PLL_CLKSEL);
+
+	pll |= SM(0x2c, AR_RTC_9300_SOC_PLL_DIV_INT);
+
+	return pll;
+}
+
 static u32 ar9003_hw_compute_pll_control(struct ath_hw *ah,
 					 struct ath9k_channel *chan)
 {
@@ -647,6 +664,19 @@ static void ar9003_hw_override_ini(struct ath_hw *ah)
 		ah->enabled_cals |= TX_CL_CAL;
 	else
 		ah->enabled_cals &= ~TX_CL_CAL;
+
+	if (AR_SREV_9340(ah) || AR_SREV_9531(ah) || AR_SREV_9550(ah)) {
+		if (ah->is_clk_25mhz) {
+			REG_WRITE(ah, AR_RTC_DERIVED_CLK, 0x17c << 1);
+			REG_WRITE(ah, AR_SLP32_MODE, 0x0010f3d7);
+			REG_WRITE(ah, AR_SLP32_INC, 0x0001e7ae);
+		} else {
+			REG_WRITE(ah, AR_RTC_DERIVED_CLK, 0x261 << 1);
+			REG_WRITE(ah, AR_SLP32_MODE, 0x0010f400);
+			REG_WRITE(ah, AR_SLP32_INC, 0x0001e800);
+		}
+		udelay(100);
+	}
 }
 
 static void ar9003_hw_prog_ini(struct ath_hw *ah,
@@ -868,10 +898,6 @@ static void ar9003_hw_set_rfmode(struct ath_hw *ah,
 
 	if (IS_CHAN_A_FAST_CLOCK(ah, chan))
 		rfMode |= (AR_PHY_MODE_DYNAMIC | AR_PHY_MODE_DYN_CCK_DISABLE);
-	if (IS_CHAN_QUARTER_RATE(chan))
-		rfMode |= AR_PHY_MODE_QUARTER;
-	if (IS_CHAN_HALF_RATE(chan))
-		rfMode |= AR_PHY_MODE_HALF;
 
 	if (rfMode & (AR_PHY_MODE_QUARTER | AR_PHY_MODE_HALF))
 		REG_RMW_FIELD(ah, AR_PHY_FRAME_CTL,
@@ -1556,12 +1582,14 @@ static int ar9003_hw_fast_chan_change(struct ath_hw *ah,
 				      u8 *ini_reloaded)
 {
 	unsigned int regWrites = 0;
-	u32 modesIndex;
+	u32 modesIndex, txgain_index;
 
 	if (IS_CHAN_5GHZ(chan))
 		modesIndex = IS_CHAN_HT40(chan) ? 2 : 1;
 	else
 		modesIndex = IS_CHAN_HT40(chan) ? 3 : 4;
+
+	txgain_index = AR_SREV_9531(ah) ? 1 : modesIndex;
 
 	if (modesIndex == ah->modes_index) {
 		*ini_reloaded = false;
@@ -1577,7 +1605,7 @@ static int ar9003_hw_fast_chan_change(struct ath_hw *ah,
 		ar9003_hw_prog_ini(ah, &ah->ini_radio_post_sys2ant,
 				   modesIndex);
 
-	REG_WRITE_ARRAY(&ah->iniModesTxGain, modesIndex, regWrites);
+	REG_WRITE_ARRAY(&ah->iniModesTxGain, txgain_index, regWrites);
 
 	if (AR_SREV_9462_20_OR_LATER(ah)) {
 		/*
@@ -1783,7 +1811,12 @@ void ar9003_hw_attach_phy_ops(struct ath_hw *ah)
 
 	priv_ops->rf_set_freq = ar9003_hw_set_channel;
 	priv_ops->spur_mitigate_freq = ar9003_hw_spur_mitigate;
-	priv_ops->compute_pll_control = ar9003_hw_compute_pll_control;
+
+	if (AR_SREV_9340(ah) || AR_SREV_9550(ah) || AR_SREV_9531(ah))
+		priv_ops->compute_pll_control = ar9003_hw_compute_pll_control_soc;
+	else
+		priv_ops->compute_pll_control = ar9003_hw_compute_pll_control;
+
 	priv_ops->set_channel_regs = ar9003_hw_set_channel_regs;
 	priv_ops->init_bb = ar9003_hw_init_bb;
 	priv_ops->process_ini = ar9003_hw_process_ini;

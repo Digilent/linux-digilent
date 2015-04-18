@@ -52,6 +52,8 @@ source "drivers/i2c/Kconfig"
 
 source "drivers/spi/Kconfig"
 
+source "drivers/spmi/Kconfig"
+
 source "drivers/hsi/Kconfig"
 
 source "drivers/pps/Kconfig"
@@ -130,6 +132,8 @@ source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
 
+source "drivers/soc/Kconfig"
+
 source "drivers/clk/Kconfig"
 
 source "drivers/hwspinlock/Kconfig"
@@ -143,6 +147,8 @@ source "drivers/iommu/Kconfig"
 source "drivers/remoteproc/Kconfig"
 
 source "drivers/rpmsg/Kconfig"
+
+source "drivers/soc/Kconfig"
 
 source "drivers/devfreq/Kconfig"
 
@@ -169,5 +175,11 @@ source "drivers/fmc/Kconfig"
 source "drivers/phy/Kconfig"
 
 source "drivers/powercap/Kconfig"
+
+source "drivers/mcb/Kconfig"
+
+source "drivers/ras/Kconfig"
+
+source "drivers/thunderbolt/Kconfig"
 
 endmenu

@@ -471,7 +471,11 @@ static int dcbnl_getapp(struct net_device *netdev, struct nlmsghdr *nlh,
 	id = nla_get_u16(app_tb[DCB_APP_ATTR_ID]);
 
 	if (netdev->dcbnl_ops->getapp) {
-		up = netdev->dcbnl_ops->getapp(netdev, idtype, id);
+		ret = netdev->dcbnl_ops->getapp(netdev, idtype, id);
+		if (ret < 0)
+			return ret;
+		else
+			up = ret;
 	} else {
 		struct dcb_app app = {
 					.selector = idtype,
@@ -538,6 +542,8 @@ static int dcbnl_setapp(struct net_device *netdev, struct nlmsghdr *nlh,
 
 	if (netdev->dcbnl_ops->setapp) {
 		ret = netdev->dcbnl_ops->setapp(netdev, idtype, id, up);
+		if (ret < 0)
+			return ret;
 	} else {
 		struct dcb_app app;
 		app.selector = idtype;
@@ -1074,13 +1080,13 @@ static int dcbnl_ieee_fill(struct sk_buff *skb, struct net_device *netdev)
 	if (!app)
 		return -EMSGSIZE;
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	list_for_each_entry(itr, &dcb_app_list, list) {
 		if (itr->ifindex == netdev->ifindex) {
 			err = nla_put(skb, DCB_ATTR_IEEE_APP, sizeof(itr->app),
 					 &itr->app);
 			if (err) {
-				spin_unlock(&dcb_lock);
+				spin_unlock_bh(&dcb_lock);
 				return -EMSGSIZE;
 			}
 		}
@@ -1091,7 +1097,7 @@ static int dcbnl_ieee_fill(struct sk_buff *skb, struct net_device *netdev)
 	else
 		dcbx = -EOPNOTSUPP;
 
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 	nla_nest_end(skb, app);
 
 	/* get peer info if available */
@@ -1228,7 +1234,7 @@ static int dcbnl_cee_fill(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	/* local app */
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	app = nla_nest_start(skb, DCB_ATTR_CEE_APP_TABLE);
 	if (!app)
 		goto dcb_unlock;
@@ -1265,7 +1271,7 @@ static int dcbnl_cee_fill(struct sk_buff *skb, struct net_device *netdev)
 	else
 		dcbx = -EOPNOTSUPP;
 
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 
 	/* features flags */
 	if (ops->getfeatcfg) {
@@ -1320,7 +1326,7 @@ static int dcbnl_cee_fill(struct sk_buff *skb, struct net_device *netdev)
 	return 0;
 
 dcb_unlock:
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 nla_put_failure:
 	return err;
 }
@@ -1669,7 +1675,7 @@ static int dcb_doit(struct sk_buff *skb, struct nlmsghdr *nlh)
 	struct nlmsghdr *reply_nlh = NULL;
 	const struct reply_func *fn;
 
-	if ((nlh->nlmsg_type == RTM_SETDCB) && !capable(CAP_NET_ADMIN))
+	if ((nlh->nlmsg_type == RTM_SETDCB) && !netlink_capable(skb, CAP_NET_ADMIN))
 		return -EPERM;
 
 	ret = nlmsg_parse(nlh, sizeof(*dcb), tb, DCB_ATTR_MAX,
@@ -1756,10 +1762,10 @@ u8 dcb_getapp(struct net_device *dev, struct dcb_app *app)
 	struct dcb_app_type *itr;
 	u8 prio = 0;
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	if ((itr = dcb_app_lookup(app, dev->ifindex, 0)))
 		prio = itr->app.priority;
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 
 	return prio;
 }
@@ -1770,7 +1776,7 @@ EXPORT_SYMBOL(dcb_getapp);
  *
  * Priority 0 is an invalid priority in CEE spec. This routine
  * removes applications from the app list if the priority is
- * set to zero.
+ * set to zero. Priority is expected to be 8-bit 802.1p user priority bitmap
  */
 int dcb_setapp(struct net_device *dev, struct dcb_app *new)
 {
@@ -1783,7 +1789,7 @@ int dcb_setapp(struct net_device *dev, struct dcb_app *new)
 	if (dev->dcbnl_ops->getdcbx)
 		event.dcbx = dev->dcbnl_ops->getdcbx(dev);
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	/* Search for existing match and replace */
 	if ((itr = dcb_app_lookup(new, dev->ifindex, 0))) {
 		if (new->priority)
@@ -1798,7 +1804,7 @@ int dcb_setapp(struct net_device *dev, struct dcb_app *new)
 	if (new->priority)
 		err = dcb_app_add(new, dev->ifindex);
 out:
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 	if (!err)
 		call_dcbevent_notifiers(DCB_APP_EVENT, &event);
 	return err;
@@ -1817,10 +1823,10 @@ u8 dcb_ieee_getapp_mask(struct net_device *dev, struct dcb_app *app)
 	struct dcb_app_type *itr;
 	u8 prio = 0;
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	if ((itr = dcb_app_lookup(app, dev->ifindex, 0)))
 		prio |= 1 << itr->app.priority;
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 
 	return prio;
 }
@@ -1831,7 +1837,8 @@ EXPORT_SYMBOL(dcb_ieee_getapp_mask);
  *
  * This adds Application data to the list. Multiple application
  * entries may exists for the same selector and protocol as long
- * as the priorities are different.
+ * as the priorities are different. Priority is expected to be a
+ * 3-bit unsigned integer
  */
 int dcb_ieee_setapp(struct net_device *dev, struct dcb_app *new)
 {
@@ -1843,7 +1850,7 @@ int dcb_ieee_setapp(struct net_device *dev, struct dcb_app *new)
 	if (dev->dcbnl_ops->getdcbx)
 		event.dcbx = dev->dcbnl_ops->getdcbx(dev);
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	/* Search for existing match and abort if found */
 	if (dcb_app_lookup(new, dev->ifindex, new->priority)) {
 		err = -EEXIST;
@@ -1852,7 +1859,7 @@ int dcb_ieee_setapp(struct net_device *dev, struct dcb_app *new)
 
 	err = dcb_app_add(new, dev->ifindex);
 out:
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 	if (!err)
 		call_dcbevent_notifiers(DCB_APP_EVENT, &event);
 	return err;
@@ -1875,7 +1882,7 @@ int dcb_ieee_delapp(struct net_device *dev, struct dcb_app *del)
 	if (dev->dcbnl_ops->getdcbx)
 		event.dcbx = dev->dcbnl_ops->getdcbx(dev);
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	/* Search for existing match and remove it. */
 	if ((itr = dcb_app_lookup(del, dev->ifindex, del->priority))) {
 		list_del(&itr->list);
@@ -1883,7 +1890,7 @@ int dcb_ieee_delapp(struct net_device *dev, struct dcb_app *del)
 		err = 0;
 	}
 
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 	if (!err)
 		call_dcbevent_notifiers(DCB_APP_EVENT, &event);
 	return err;
@@ -1895,12 +1902,12 @@ static void dcb_flushapp(void)
 	struct dcb_app_type *app;
 	struct dcb_app_type *tmp;
 
-	spin_lock(&dcb_lock);
+	spin_lock_bh(&dcb_lock);
 	list_for_each_entry_safe(app, tmp, &dcb_app_list, list) {
 		list_del(&app->list);
 		kfree(app);
 	}
-	spin_unlock(&dcb_lock);
+	spin_unlock_bh(&dcb_lock);
 }
 
 static int __init dcbnl_init(void)

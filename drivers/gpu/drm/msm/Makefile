@@ -4,9 +4,11 @@ ifeq (, $(findstring -W,$(EXTRA_CFLAGS)))
 endif
 
 msm-y := \
+	adreno/adreno_device.o \
 	adreno/adreno_gpu.o \
 	adreno/a3xx_gpu.o \
 	hdmi/hdmi.o \
+	hdmi/hdmi_audio.o \
 	hdmi/hdmi_bridge.o \
 	hdmi/hdmi_connector.o \
 	hdmi/hdmi_i2c.o \
@@ -17,6 +19,8 @@ msm-y := \
 	mdp/mdp_kms.o \
 	mdp/mdp4/mdp4_crtc.o \
 	mdp/mdp4/mdp4_dtv_encoder.o \
+	mdp/mdp4/mdp4_lcdc_encoder.o \
+	mdp/mdp4/mdp4_lvds_connector.o \
 	mdp/mdp4/mdp4_irq.o \
 	mdp/mdp4/mdp4_kms.o \
 	mdp/mdp4/mdp4_plane.o \
@@ -33,8 +37,11 @@ msm-y := \
 	msm_gem_submit.o \
 	msm_gpu.o \
 	msm_iommu.o \
+	msm_perf.o \
+	msm_rd.o \
 	msm_ringbuffer.o
 
 msm-$(CONFIG_DRM_MSM_FBDEV) += msm_fbdev.o
+msm-$(CONFIG_COMMON_CLK) += mdp/mdp4/mdp4_lvds_pll.o
 
 obj-$(CONFIG_DRM_MSM)	+= msm.o

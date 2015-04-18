@@ -536,10 +536,12 @@ static struct spi_board_info omap3pandora_spi_board_info[] __initdata = {
 
 static void __init pandora_wl1251_init(void)
 {
-	struct wl12xx_platform_data pandora_wl1251_pdata;
+	struct wl1251_platform_data pandora_wl1251_pdata;
 	int ret;
 
 	memset(&pandora_wl1251_pdata, 0, sizeof(pandora_wl1251_pdata));
+
+	pandora_wl1251_pdata.power_gpio = -1;
 
 	ret = gpio_request_one(PANDORA_WIFI_IRQ_GPIO, GPIOF_IN, "wl1251 irq");
 	if (ret < 0)
@@ -550,7 +552,7 @@ static void __init pandora_wl1251_init(void)
 		goto fail_irq;
 
 	pandora_wl1251_pdata.use_eeprom = true;
-	ret = wl12xx_set_platform_data(&pandora_wl1251_pdata);
+	ret = wl1251_set_platform_data(&pandora_wl1251_pdata);
 	if (ret < 0)
 		goto fail_irq;
 
@@ -622,7 +624,6 @@ MACHINE_START(OMAP3_PANDORA, "Pandora Handheld Console")
 	.map_io		= omap3_map_io,
 	.init_early	= omap35xx_init_early,
 	.init_irq	= omap3_init_irq,
-	.handle_irq	= omap3_intc_handle_irq,
 	.init_machine	= omap3pandora_init,
 	.init_late	= omap35xx_init_late,
 	.init_time	= omap3_sync32k_timer_init,

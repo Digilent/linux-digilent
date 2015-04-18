@@ -57,8 +57,7 @@ static struct map_desc msm_io_desc[] __initdata = {
 		.length =   MSM_SHARED_RAM_SIZE,
 		.type =     MT_DEVICE,
 	},
-#if defined(CONFIG_DEBUG_MSM_UART1) || defined(CONFIG_DEBUG_MSM_UART2) || \
-		defined(CONFIG_DEBUG_MSM_UART3)
+#if defined(CONFIG_DEBUG_MSM_UART)
 	{
 		/* Must be last: virtual and pfn filled in by debug_ll_addr() */
 		.length = SZ_4K,
@@ -76,10 +75,11 @@ void __init msm_map_common_io(void)
 	 * pages are peripheral interface or not.
 	 */
 	asm("mcr p15, 0, %0, c15, c2, 4" : : "r" (0));
-#if defined(CONFIG_DEBUG_MSM_UART1) || defined(CONFIG_DEBUG_MSM_UART2) || \
-		defined(CONFIG_DEBUG_MSM_UART3)
+#if defined(CONFIG_DEBUG_MSM_UART)
+#ifdef CONFIG_MMU
 	debug_ll_addr(&msm_io_desc[size - 1].pfn,
 		      &msm_io_desc[size - 1].virtual);
+#endif
 	msm_io_desc[size - 1].pfn = __phys_to_pfn(msm_io_desc[size - 1].pfn);
 #endif
 	iotable_init(msm_io_desc, size);

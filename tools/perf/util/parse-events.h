@@ -6,9 +6,8 @@
 
 #include <linux/list.h>
 #include <stdbool.h>
-#include "types.h"
+#include <linux/types.h>
 #include <linux/perf_event.h>
-#include "types.h"
 
 struct list_head;
 struct perf_evsel;
@@ -35,6 +34,18 @@ extern int parse_events_terms(struct list_head *terms, const char *str);
 extern int parse_filter(const struct option *opt, const char *str, int unset);
 
 #define EVENTS_HELP_MAX (128*1024)
+
+enum perf_pmu_event_symbol_type {
+	PMU_EVENT_SYMBOL_ERR,		/* not a PMU EVENT */
+	PMU_EVENT_SYMBOL,		/* normal style PMU event */
+	PMU_EVENT_SYMBOL_PREFIX,	/* prefix of pre-suf style event */
+	PMU_EVENT_SYMBOL_SUFFIX,	/* suffix of pre-suf style event */
+};
+
+struct perf_pmu_event_symbol {
+	char	*symbol;
+	enum perf_pmu_event_symbol_type	type;
+};
 
 enum {
 	PARSE_EVENTS__TERM_TYPE_NUM,
@@ -96,6 +107,8 @@ int parse_events_add_breakpoint(struct list_head *list, int *idx,
 				void *ptr, char *type);
 int parse_events_add_pmu(struct list_head *list, int *idx,
 			 char *pmu , struct list_head *head_config);
+enum perf_pmu_event_symbol_type
+perf_pmu__parse_check(const char *name);
 void parse_events__set_leader(char *name, struct list_head *list);
 void parse_events_update_lists(struct list_head *list_event,
 			       struct list_head *list_all);

@@ -26,6 +26,7 @@
 #include <linux/string.h>
 #include <linux/clk.h>
 #include <linux/usb/ulpi.h>
+#include <linux/regulator/consumer.h>
 
 #include "ehci-zynq.h"
 
@@ -39,6 +40,7 @@ struct zynq_dev_data {
 
 struct zynq_host_data {
 	struct clk *clk;
+	struct regulator *vbus;
 };
 
 static struct zynq_dev_data dr_mode_data[] = {
@@ -183,6 +185,24 @@ static int zynq_dr_of_probe(struct platform_device *ofdev)
 		return -ENOMEM;
 	platform_set_drvdata(ofdev, hdata);
 
+	hdata->vbus = ERR_PTR(-ENODEV);
+	if (of_find_property(np, "vbus-supply", NULL)) {
+		pdata->vbus = devm_regulator_get(&ofdev->dev, "vbus");
+		if (IS_ERR(pdata->vbus))
+			return PTR_ERR(pdata->vbus);
+		/* When not in OTG mode, always keep VBUS powered */
+		if (pdata->operating_mode == ZYNQ_USB2_DR_HOST) {
+			hdata->vbus = pdata->vbus; /* Remember for "remove" call */
+			ret = regulator_enable(pdata->vbus);
+			if (ret) {
+				dev_err(&ofdev->dev, "failed to enable usb vbus regulator\n");
+				return ret;
+			}
+		}
+	} else {
+		pdata->vbus = ERR_PTR(-ENODEV);
+	}
+
 	hdata->clk = devm_clk_get(&ofdev->dev, NULL);
 	if (IS_ERR(hdata->clk)) {
 		dev_err(&ofdev->dev, "input clock not found.\n");
@@ -250,11 +270,12 @@ static int zynq_dr_of_remove(struct platform_device *ofdev)
 
 	device_for_each_child(&ofdev->dev, NULL, __unregister_subdev);
 	clk_disable_unprepare(hdata->clk);
+	if (!IS_ERR(hdata->vbus))
+		regulator_disable(hdata->vbus);
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int zynq_dr_of_suspend(struct device *dev)
+static int __maybe_unused zynq_dr_of_suspend(struct device *dev)
 {
 	struct zynq_host_data *hdata = dev_get_drvdata(dev);
 
@@ -263,7 +284,7 @@ static int zynq_dr_of_suspend(struct device *dev)
 	return 0;
 }
 
-static int zynq_dr_of_resume(struct device *dev)
+static int __maybe_unused zynq_dr_of_resume(struct device *dev)
 {
 	struct zynq_host_data *hdata = dev_get_drvdata(dev);
 	int ret;
@@ -276,7 +297,6 @@ static int zynq_dr_of_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static SIMPLE_DEV_PM_OPS(zynq_pm_ops, zynq_dr_of_suspend,
 		zynq_dr_of_resume);

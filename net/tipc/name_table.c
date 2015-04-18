@@ -39,7 +39,6 @@
 #include "name_table.h"
 #include "name_distr.h"
 #include "subscr.h"
-#include "port.h"
 
 #define TIPC_NAMETBL_SIZE 1024		/* must be a power of 2 */
 
@@ -262,8 +261,6 @@ static struct publication *tipc_nameseq_insert_publ(struct name_seq *nseq,
 
 		/* Lower end overlaps existing entry => need an exact match */
 		if ((sseq->lower != lower) || (sseq->upper != upper)) {
-			pr_warn("Cannot publish {%u,%u,%u}, overlap error\n",
-				type, lower, upper);
 			return NULL;
 		}
 
@@ -285,8 +282,6 @@ static struct publication *tipc_nameseq_insert_publ(struct name_seq *nseq,
 		/* Fail if upper end overlaps into an existing entry */
 		if ((inspos < nseq->first_free) &&
 		    (upper >= nseq->sseqs[inspos].lower)) {
-			pr_warn("Cannot publish {%u,%u,%u}, overlap error\n",
-				type, lower, upper);
 			return NULL;
 		}
 
@@ -664,6 +659,7 @@ struct publication *tipc_nametbl_publish(u32 type, u32 lower, u32 upper,
 					 u32 scope, u32 port_ref, u32 key)
 {
 	struct publication *publ;
+	struct sk_buff *buf = NULL;
 
 	if (table.local_publ_count >= TIPC_MAX_PUBLICATIONS) {
 		pr_warn("Publication failed, local publication limit reached (%u)\n",
@@ -676,9 +672,14 @@ struct publication *tipc_nametbl_publish(u32 type, u32 lower, u32 upper,
 				   tipc_own_addr, port_ref, key);
 	if (likely(publ)) {
 		table.local_publ_count++;
-		tipc_named_publish(publ);
+		buf = tipc_named_publish(publ);
+		/* Any pending external events? */
+		tipc_named_process_backlog();
 	}
 	write_unlock_bh(&tipc_nametbl_lock);
+
+	if (buf)
+		named_cluster_distribute(buf);
 	return publ;
 }
 
@@ -688,15 +689,21 @@ struct publication *tipc_nametbl_publish(u32 type, u32 lower, u32 upper,
 int tipc_nametbl_withdraw(u32 type, u32 lower, u32 ref, u32 key)
 {
 	struct publication *publ;
+	struct sk_buff *buf;
 
 	write_lock_bh(&tipc_nametbl_lock);
 	publ = tipc_nametbl_remove_publ(type, lower, tipc_own_addr, ref, key);
 	if (likely(publ)) {
 		table.local_publ_count--;
-		tipc_named_withdraw(publ);
+		buf = tipc_named_withdraw(publ);
+		/* Any pending external events? */
+		tipc_named_process_backlog();
 		write_unlock_bh(&tipc_nametbl_lock);
 		list_del_init(&publ->pport_list);
 		kfree(publ);
+
+		if (buf)
+			named_cluster_distribute(buf);
 		return 1;
 	}
 	write_unlock_bh(&tipc_nametbl_lock);
@@ -961,6 +968,7 @@ static void tipc_purge_publications(struct name_seq *seq)
 	list_for_each_entry_safe(publ, safe, &info->zone_list, zone_list) {
 		tipc_nametbl_remove_publ(publ->type, publ->lower, publ->node,
 					 publ->ref, publ->key);
+		kfree(publ);
 	}
 }
 
@@ -982,7 +990,6 @@ void tipc_nametbl_stop(void)
 		hlist_for_each_entry_safe(seq, safe, seq_head, ns_list) {
 			tipc_purge_publications(seq);
 		}
-		continue;
 	}
 	kfree(table.types);
 	table.types = NULL;

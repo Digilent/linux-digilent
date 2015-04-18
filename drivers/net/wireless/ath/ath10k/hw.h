@@ -28,14 +28,20 @@
 #define QCA988X_HW_2_0_CHIP_ID_REV	0x2
 #define QCA988X_HW_2_0_FW_DIR		"ath10k/QCA988X/hw2.0"
 #define QCA988X_HW_2_0_FW_FILE		"firmware.bin"
+#define QCA988X_HW_2_0_FW_3_FILE	"firmware-3.bin"
 #define QCA988X_HW_2_0_OTP_FILE		"otp.bin"
 #define QCA988X_HW_2_0_BOARD_DATA_FILE	"board.bin"
 #define QCA988X_HW_2_0_PATCH_LOAD_ADDR	0x1234
 
 #define ATH10K_FW_API2_FILE		"firmware-2.bin"
+#define ATH10K_FW_API3_FILE		"firmware-3.bin"
+
+#define ATH10K_FW_UTF_FILE		"utf.bin"
 
 /* includes also the null byte */
 #define ATH10K_FIRMWARE_MAGIC               "QCA-ATH10K"
+
+#define REG_DUMP_COUNT_QCA988X 60
 
 struct ath10k_fw_ie {
 	__le32 id;
@@ -205,8 +211,11 @@ enum ath10k_mcast2ucast_mode {
 #define WLAN_ANALOG_INTF_PCIE_BASE_ADDRESS	0x0006c000
 #define PCIE_LOCAL_BASE_ADDRESS			0x00080000
 
+#define SOC_RESET_CONTROL_ADDRESS		0x00000000
 #define SOC_RESET_CONTROL_OFFSET		0x00000000
 #define SOC_RESET_CONTROL_SI0_RST_MASK		0x00000001
+#define SOC_RESET_CONTROL_CE_RST_MASK		0x00040000
+#define SOC_RESET_CONTROL_CPU_WARM_RST_MASK	0x00000040
 #define SOC_CPU_CLOCK_OFFSET			0x00000020
 #define SOC_CPU_CLOCK_STANDARD_LSB		0
 #define SOC_CPU_CLOCK_STANDARD_MASK		0x00000003
@@ -216,6 +225,8 @@ enum ath10k_mcast2ucast_mode {
 #define SOC_LPO_CAL_OFFSET			0x000000e0
 #define SOC_LPO_CAL_ENABLE_LSB			20
 #define SOC_LPO_CAL_ENABLE_MASK			0x00100000
+#define SOC_LF_TIMER_CONTROL0_ADDRESS		0x00000050
+#define SOC_LF_TIMER_CONTROL0_ENABLE_MASK	0x00000004
 
 #define SOC_CHIP_ID_ADDRESS			0x000000ec
 #define SOC_CHIP_ID_REV_LSB			8
@@ -273,6 +284,7 @@ enum ath10k_mcast2ucast_mode {
 #define PCIE_INTR_CAUSE_ADDRESS			0x000c
 #define PCIE_INTR_CLR_ADDRESS			0x0014
 #define SCRATCH_3_ADDRESS			0x0030
+#define CPU_INTR_ADDRESS			0x0010
 
 /* Firmware indications to the Host via SCRATCH_3 register. */
 #define FW_INDICATOR_ADDRESS	(SOC_CORE_BASE_ADDRESS + SCRATCH_3_ADDRESS)

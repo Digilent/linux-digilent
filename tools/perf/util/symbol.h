@@ -12,6 +12,8 @@
 #include <byteswap.h>
 #include <libgen.h>
 #include "build-id.h"
+#include "event.h"
+#include "util.h"
 
 #ifdef HAVE_LIBELF_SUPPORT
 #include <libelf.h>
@@ -58,6 +60,7 @@ extern Elf_Scn *elf_section_by_name(Elf *elf, GElf_Ehdr *ep,
 #endif
 
 #ifndef DMGL_PARAMS
+#define DMGL_NO_OPTS     0              /* For readability... */
 #define DMGL_PARAMS      (1 << 0)       /* Include function args */
 #define DMGL_ANSI        (1 << 1)       /* Include const, volatile, etc */
 #endif
@@ -79,9 +82,20 @@ struct symbol {
 void symbol__delete(struct symbol *sym);
 void symbols__delete(struct rb_root *symbols);
 
+/* symbols__for_each_entry - iterate over symbols (rb_root)
+ *
+ * @symbols: the rb_root of symbols
+ * @pos: the 'struct symbol *' to use as a loop cursor
+ * @nd: the 'struct rb_node *' to use as a temporary storage
+ */
+#define symbols__for_each_entry(symbols, pos, nd)			\
+	for (nd = rb_first(symbols);					\
+	     nd && (pos = rb_entry(nd, struct symbol, rb_node));	\
+	     nd = rb_next(nd))
+
 static inline size_t symbol__size(const struct symbol *sym)
 {
-	return sym->end - sym->start + 1;
+	return sym->end - sym->start;
 }
 
 struct strlist;
@@ -97,6 +111,7 @@ struct symbol_conf {
 			show_nr_samples,
 			show_total_period,
 			use_callchain,
+			cumulate_callchain,
 			exclude_other,
 			show_cpu_utilization,
 			initialized,
@@ -104,7 +119,10 @@ struct symbol_conf {
 			annotate_asm_raw,
 			annotate_src,
 			event_group,
-			demangle;
+			demangle,
+			demangle_kernel,
+			filter_relative,
+			show_hist_headers;
 	const char	*vmlinux_name,
 			*kallsyms_name,
 			*source_prefix,
@@ -128,6 +146,14 @@ struct symbol_conf {
 };
 
 extern struct symbol_conf symbol_conf;
+
+static inline int __symbol__join_symfs(char *bf, size_t size, const char *path)
+{
+	return path__join(bf, size, symbol_conf.symfs, path);
+}
+
+#define symbol__join_symfs(bf, path) __symbol__join_symfs(bf, sizeof(bf), path)
+
 extern int vmlinux_path__nr_entries;
 extern char **vmlinux_path;
 
@@ -175,7 +201,7 @@ struct addr_location {
 	struct symbol *sym;
 	u64	      addr;
 	char	      level;
-	bool	      filtered;
+	u8	      filtered;
 	u8	      cpumode;
 	s32	      cpu;
 };
@@ -201,6 +227,7 @@ struct symsrc {
 	GElf_Shdr dynshdr;
 
 	bool adjust_symbols;
+	bool is_64_bit;
 #endif
 };
 
@@ -223,7 +250,11 @@ struct symbol *dso__find_symbol(struct dso *dso, enum map_type type,
 				u64 addr);
 struct symbol *dso__find_symbol_by_name(struct dso *dso, enum map_type type,
 					const char *name);
+
 struct symbol *dso__first_symbol(struct dso *dso, enum map_type type);
+struct symbol *dso__next_symbol(struct symbol *sym);
+
+enum dso_type dso__type_fd(int fd);
 
 int filename__read_build_id(const char *filename, void *bf, size_t size);
 int sysfs__read_build_id(const char *filename, void *bf, size_t size);
@@ -233,7 +264,8 @@ int modules__parse(const char *filename, void *arg,
 int filename__read_debuglink(const char *filename, char *debuglink,
 			     size_t size);
 
-int symbol__init(void);
+struct perf_session_env;
+int symbol__init(struct perf_session_env *env);
 void symbol__exit(void);
 void symbol__elf_init(void);
 struct symbol *symbol__new(u64 start, u64 len, u8 binding, const char *name);

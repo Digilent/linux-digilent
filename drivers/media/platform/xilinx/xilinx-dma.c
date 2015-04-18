@@ -1,9 +1,11 @@
 /*
  * Xilinx Video DMA
  *
- * Copyright (C) 2013 Ideas on Board SPRL
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -11,7 +13,6 @@
  */
 
 #include <linux/amba/xilinx_dma.h>
-#include <linux/dmaengine.h>
 #include <linux/lcm.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -75,7 +76,8 @@ static int xvip_dma_verify_format(struct xvip_dma *dma)
 
 	if (dma->fmtinfo->code != fmt.format.code ||
 	    dma->format.height != fmt.format.height ||
-	    dma->format.width != fmt.format.width)
+	    dma->format.width != fmt.format.width ||
+	    dma->format.colorspace != fmt.format.colorspace)
 		return -EINVAL;
 
 	return 0;
@@ -313,19 +315,13 @@ done:
 /**
  * struct xvip_dma_buffer - Video DMA buffer
  * @buf: vb2 buffer base object
+ * @queue: buffer list entry in the DMA engine queued buffers list
  * @dma: DMA channel that uses the buffer
- * @addr: DMA bus address for the buffer memory
- * @length: total length of the buffer in bytes
- * @bytesused: number of bytes used in the buffer
  */
 struct xvip_dma_buffer {
 	struct vb2_buffer buf;
-
+	struct list_head queue;
 	struct xvip_dma *dma;
-
-	dma_addr_t addr;
-	unsigned int length;
-	unsigned int bytesused;
 };
 
 #define to_xvip_dma_buffer(vb)	container_of(vb, struct xvip_dma_buffer, buf)
@@ -335,9 +331,13 @@ static void xvip_dma_complete(void *param)
 	struct xvip_dma_buffer *buf = param;
 	struct xvip_dma *dma = buf->dma;
 
+	spin_lock(&dma->queued_lock);
+	list_del(&buf->queue);
+	spin_unlock(&dma->queued_lock);
+
 	buf->buf.v4l2_buf.sequence = dma->sequence++;
 	v4l2_get_timestamp(&buf->buf.v4l2_buf.timestamp);
-	vb2_set_plane_payload(&buf->buf, 0, buf->length);
+	vb2_set_plane_payload(&buf->buf, 0, dma->format.sizeimage);
 	vb2_buffer_done(&buf->buf, VB2_BUF_STATE_DONE);
 }
 
@@ -348,9 +348,13 @@ xvip_dma_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 {
 	struct xvip_dma *dma = vb2_get_drv_priv(vq);
 
+	/* Make sure the image size is large enough. */
+	if (fmt && fmt->fmt.pix.sizeimage < dma->format.sizeimage)
+		return -EINVAL;
+
 	*nplanes = 1;
 
-	sizes[0] = dma->format.sizeimage;
+	sizes[0] = fmt ? fmt->fmt.pix.sizeimage : dma->format.sizeimage;
 	alloc_ctxs[0] = dma->alloc_ctx;
 
 	return 0;
@@ -362,9 +366,6 @@ static int xvip_dma_buffer_prepare(struct vb2_buffer *vb)
 	struct xvip_dma_buffer *buf = to_xvip_dma_buffer(vb);
 
 	buf->dma = dma;
-	buf->addr = vb2_dma_contig_plane_dma_addr(vb, 0);
-	buf->length = vb2_plane_size(vb, 0);
-	buf->bytesused = 0;
 
 	return 0;
 }
@@ -374,21 +375,40 @@ static void xvip_dma_buffer_queue(struct vb2_buffer *vb)
 	struct xvip_dma *dma = vb2_get_drv_priv(vb->vb2_queue);
 	struct xvip_dma_buffer *buf = to_xvip_dma_buffer(vb);
 	struct dma_async_tx_descriptor *desc;
-	enum dma_transfer_direction dir;
+	dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
 	u32 flags;
 
 	if (dma->queue.type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 		flags = DMA_PREP_INTERRUPT | DMA_CTRL_ACK;
-		dir = DMA_DEV_TO_MEM;
+		dma->xt.dir = DMA_DEV_TO_MEM;
+		dma->xt.src_sgl = false;
+		dma->xt.dst_sgl = true;
+		dma->xt.dst_start = addr;
 	} else {
 		flags = DMA_PREP_INTERRUPT | DMA_CTRL_ACK;
-		dir = DMA_MEM_TO_DEV;
+		dma->xt.dir = DMA_MEM_TO_DEV;
+		dma->xt.src_sgl = true;
+		dma->xt.dst_sgl = false;
+		dma->xt.src_start = addr;
 	}
 
-	desc = dmaengine_prep_slave_single(dma->dma, buf->addr, buf->length,
-					   dir, flags);
+	dma->xt.frame_size = 1;
+	dma->sgl[0].size = dma->format.width * dma->fmtinfo->bpp;
+	dma->sgl[0].icg = dma->format.bytesperline - dma->sgl[0].size;
+	dma->xt.numf = dma->format.height;
+
+	desc = dmaengine_prep_interleaved_dma(dma->dma, &dma->xt, flags);
+	if (!desc) {
+		dev_err(dma->xdev->dev, "Failed to prepare DMA transfer\n");
+		vb2_buffer_done(&buf->buf, VB2_BUF_STATE_ERROR);
+		return;
+	}
 	desc->callback = xvip_dma_complete;
 	desc->callback_param = buf;
+
+	spin_lock_irq(&dma->queued_lock);
+	list_add_tail(&buf->queue, &dma->queued_bufs);
+	spin_unlock_irq(&dma->queued_lock);
 
 	dmaengine_submit(desc);
 
@@ -396,23 +416,10 @@ static void xvip_dma_buffer_queue(struct vb2_buffer *vb)
 		dma_async_issue_pending(dma->dma);
 }
 
-static void xvip_dma_wait_prepare(struct vb2_queue *vq)
-{
-	struct xvip_dma *dma = vb2_get_drv_priv(vq);
-
-	mutex_unlock(&dma->lock);
-}
-
-static void xvip_dma_wait_finish(struct vb2_queue *vq)
-{
-	struct xvip_dma *dma = vb2_get_drv_priv(vq);
-
-	mutex_lock(&dma->lock);
-}
-
 static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct xvip_dma *dma = vb2_get_drv_priv(vq);
+	struct xvip_dma_buffer *buf, *nbuf;
 	struct xvip_pipeline *pipe;
 	int ret;
 
@@ -430,18 +437,18 @@ static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	ret = media_entity_pipeline_start(&dma->video.entity, &pipe->pipe);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	/* Verify that the configured format matches the output of the
 	 * connected subdev.
 	 */
 	ret = xvip_dma_verify_format(dma);
 	if (ret < 0)
-		goto error;
+		goto error_stop;
 
 	ret = xvip_pipeline_prepare(pipe, dma);
 	if (ret < 0)
-		goto error;
+		goto error_stop;
 
 	/* Start the DMA engine. This must be done before starting the blocks
 	 * in the pipeline to avoid DMA synchronization issues.
@@ -453,41 +460,52 @@ static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	return 0;
 
-error:
+error_stop:
 	media_entity_pipeline_stop(&dma->video.entity);
+
+error:
+	/* Give back all queued buffers to videobuf2. */
+	spin_lock_irq(&dma->queued_lock);
+	list_for_each_entry_safe(buf, nbuf, &dma->queued_bufs, queue) {
+		vb2_buffer_done(&buf->buf, VB2_BUF_STATE_QUEUED);
+		list_del(&buf->queue);
+	}
+	spin_unlock_irq(&dma->queued_lock);
+
 	return ret;
 }
 
-static int xvip_dma_stop_streaming(struct vb2_queue *vq)
+static void xvip_dma_stop_streaming(struct vb2_queue *vq)
 {
 	struct xvip_dma *dma = vb2_get_drv_priv(vq);
 	struct xvip_pipeline *pipe = to_xvip_pipeline(&dma->video.entity);
-	struct xilinx_vdma_config config;
+	struct xvip_dma_buffer *buf, *nbuf;
 
 	/* Stop the pipeline. */
 	xvip_pipeline_set_stream(pipe, false);
 
 	/* Stop and reset the DMA engine. */
-	dmaengine_device_control(dma->dma, DMA_TERMINATE_ALL, 0);
-
-	config.reset = 1;
-
-	dmaengine_device_control(dma->dma, DMA_SLAVE_CONFIG,
-				 (unsigned long)&config);
+	dmaengine_terminate_all(dma->dma);
 
 	/* Cleanup the pipeline and mark it as being stopped. */
 	xvip_pipeline_cleanup(pipe);
 	media_entity_pipeline_stop(&dma->video.entity);
 
-	return 0;
+	/* Give back all queued buffers to videobuf2. */
+	spin_lock_irq(&dma->queued_lock);
+	list_for_each_entry_safe(buf, nbuf, &dma->queued_bufs, queue) {
+		vb2_buffer_done(&buf->buf, VB2_BUF_STATE_ERROR);
+		list_del(&buf->queue);
+	}
+	spin_unlock_irq(&dma->queued_lock);
 }
 
 static struct vb2_ops xvip_dma_queue_qops = {
 	.queue_setup = xvip_dma_queue_setup,
 	.buf_prepare = xvip_dma_buffer_prepare,
 	.buf_queue = xvip_dma_buffer_queue,
-	.wait_prepare = xvip_dma_wait_prepare,
-	.wait_finish = xvip_dma_wait_finish,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
 	.start_streaming = xvip_dma_start_streaming,
 	.stop_streaming = xvip_dma_stop_streaming,
 };
@@ -502,14 +520,18 @@ xvip_dma_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
+	cap->capabilities = V4L2_CAP_DEVICE_CAPS | V4L2_CAP_STREAMING
+			  | dma->xdev->v4l2_caps;
+
 	if (dma->queue.type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		cap->capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
+		cap->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 	else
-		cap->capabilities = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING;
+		cap->device_caps = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING;
 
 	strlcpy(cap->driver, "xilinx-vipp", sizeof(cap->driver));
 	strlcpy(cap->card, dma->video.name, sizeof(cap->card));
-	strlcpy(cap->bus_info, "media", sizeof(cap->bus_info));
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s:%u",
+		 dma->xdev->dev->of_node->name, dma->port);
 
 	return 0;
 }
@@ -528,9 +550,9 @@ xvip_dma_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 	if (f->index > 0)
 		return -EINVAL;
 
-	mutex_lock(&dma->lock);
 	f->pixelformat = dma->format.pixelformat;
-	mutex_unlock(&dma->lock);
+	strlcpy(f->description, dma->fmtinfo->description,
+		sizeof(f->description));
 
 	return 0;
 }
@@ -541,9 +563,7 @@ xvip_dma_get_format(struct file *file, void *fh, struct v4l2_format *format)
 	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
-	mutex_lock(&dma->lock);
 	format->fmt.pix = dma->format;
-	mutex_unlock(&dma->lock);
 
 	return 0;
 }
@@ -569,7 +589,6 @@ __xvip_dma_try_format(struct xvip_dma *dma, struct v4l2_pix_format *pix,
 		info = xvip_get_format_by_fourcc(XVIP_DMA_DEF_FORMAT);
 
 	pix->pixelformat = info->fourcc;
-	pix->colorspace = V4L2_COLORSPACE_SRGB;
 	pix->field = V4L2_FIELD_NONE;
 
 	/* The transfer alignment requirements are expressed in bytes. Compute
@@ -591,10 +610,6 @@ __xvip_dma_try_format(struct xvip_dma *dma, struct v4l2_pix_format *pix,
 	 */
 	min_bpl = pix->width * info->bpp;
 	max_bpl = rounddown(XVIP_DMA_MAX_WIDTH, dma->align);
-	/* HACK: mplayer (svn r32540) doesn't initialize the byteperline field,
-	 * so hardcode it to the minimum value.
-	 */
-	pix->bytesperline = min_bpl;
 	bpl = rounddown(pix->bytesperline, dma->align);
 
 	pix->bytesperline = clamp(bpl, min_bpl, max_bpl);
@@ -620,183 +635,16 @@ xvip_dma_set_format(struct file *file, void *fh, struct v4l2_format *format)
 	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 	const struct xvip_video_format *info;
-	struct xilinx_vdma_config config;
-	int ret;
 
 	__xvip_dma_try_format(dma, &format->fmt.pix, &info);
 
-	mutex_lock(&dma->lock);
-
-	if (vb2_is_streaming(&dma->queue)) {
-		ret = -EBUSY;
-		goto done;
-	}
+	if (vb2_is_busy(&dma->queue))
+		return -EBUSY;
 
 	dma->format = format->fmt.pix;
 	dma->fmtinfo = info;
 
-	/* Configure the DMA engine. */
-	memset(&config, 0, sizeof(config));
-
-	config.park = 1;
-	config.park_frm = 0;
-	config.vsize = dma->format.height;
-	config.hsize = dma->format.width * info->bpp;
-	config.stride = dma->format.bytesperline;
-	config.ext_fsync = 2;
-
-	dmaengine_device_control(dma->dma, DMA_SLAVE_CONFIG,
-				 (unsigned long)&config);
-
-	ret = 0;
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
-}
-
-static int
-xvip_dma_reqbufs(struct file *file, void *fh, struct v4l2_requestbuffers *rb)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_reqbufs(&dma->queue, rb);
-	if (ret < 0)
-		goto done;
-
-	dma->queue.owner = vfh;
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret ? ret : rb->count;
-}
-
-static int
-xvip_dma_querybuf(struct file *file, void *fh, struct v4l2_buffer *buf)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-	ret = vb2_querybuf(&dma->queue, buf);
-	mutex_unlock(&dma->lock);
-
-	return ret;
-}
-
-static int
-xvip_dma_qbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_qbuf(&dma->queue, buf);
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
-}
-
-static int
-xvip_dma_dqbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_dqbuf(&dma->queue, buf, file->f_flags & O_NONBLOCK);
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
-}
-
-static int
-xvip_dma_expbuf(struct file *file, void *priv, struct v4l2_exportbuffer *eb)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_expbuf(&dma->queue, eb);
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
-}
-
-static int
-xvip_dma_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_streamon(&dma->queue, type);
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
-}
-
-static int
-xvip_dma_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-
-	if (dma->queue.owner && dma->queue.owner != vfh) {
-		ret = -EBUSY;
-		goto done;
-	}
-
-	ret = vb2_streamoff(&dma->queue, type);
-
-done:
-	mutex_unlock(&dma->lock);
-	return ret;
+	return 0;
 }
 
 static const struct v4l2_ioctl_ops xvip_dma_ioctl_ops = {
@@ -808,88 +656,27 @@ static const struct v4l2_ioctl_ops xvip_dma_ioctl_ops = {
 	.vidioc_s_fmt_vid_out		= xvip_dma_set_format,
 	.vidioc_try_fmt_vid_cap		= xvip_dma_try_format,
 	.vidioc_try_fmt_vid_out		= xvip_dma_try_format,
-	.vidioc_reqbufs			= xvip_dma_reqbufs,
-	.vidioc_querybuf		= xvip_dma_querybuf,
-	.vidioc_qbuf			= xvip_dma_qbuf,
-	.vidioc_dqbuf			= xvip_dma_dqbuf,
-	.vidioc_expbuf			= xvip_dma_expbuf,
-	.vidioc_streamon		= xvip_dma_streamon,
-	.vidioc_streamoff		= xvip_dma_streamoff,
+	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
+	.vidioc_querybuf		= vb2_ioctl_querybuf,
+	.vidioc_qbuf			= vb2_ioctl_qbuf,
+	.vidioc_dqbuf			= vb2_ioctl_dqbuf,
+	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_expbuf			= vb2_ioctl_expbuf,
+	.vidioc_streamon		= vb2_ioctl_streamon,
+	.vidioc_streamoff		= vb2_ioctl_streamoff,
 };
 
 /* -----------------------------------------------------------------------------
  * V4L2 file operations
  */
 
-static int xvip_dma_open(struct file *file)
-{
-	struct xvip_dma *dma = video_drvdata(file);
-	struct v4l2_fh *vfh;
-
-	vfh = kzalloc(sizeof(*vfh), GFP_KERNEL);
-	if (vfh == NULL)
-		return -ENOMEM;
-
-	v4l2_fh_init(vfh, &dma->video);
-	v4l2_fh_add(vfh);
-
-	file->private_data = vfh;
-
-	return 0;
-}
-
-static int xvip_dma_release(struct file *file)
-{
-	struct xvip_dma *dma = video_drvdata(file);
-	struct v4l2_fh *vfh = file->private_data;
-
-	mutex_lock(&dma->lock);
-	if (dma->queue.owner == vfh) {
-		vb2_queue_release(&dma->queue);
-		dma->queue.owner = NULL;
-	}
-	mutex_unlock(&dma->lock);
-
-	v4l2_fh_release(file);
-
-	file->private_data = NULL;
-
-	return 0;
-}
-
-static unsigned int xvip_dma_poll(struct file *file, poll_table *wait)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-	ret = vb2_poll(&dma->queue, file, wait);
-	mutex_unlock(&dma->lock);
-
-	return ret;
-}
-
-static int xvip_dma_mmap(struct file *file, struct vm_area_struct *vma)
-{
-	struct v4l2_fh *vfh = file->private_data;
-	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	int ret;
-
-	mutex_lock(&dma->lock);
-	ret = vb2_mmap(&dma->queue, vma);
-	mutex_unlock(&dma->lock);
-
-	return ret;
-}
-
-static struct v4l2_file_operations xvip_dma_fops = {
+static const struct v4l2_file_operations xvip_dma_fops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= video_ioctl2,
-	.open		= xvip_dma_open,
-	.release	= xvip_dma_release,
-	.poll		= xvip_dma_poll,
-	.mmap		= xvip_dma_mmap,
+	.open		= v4l2_fh_open,
+	.release	= vb2_fop_release,
+	.poll		= vb2_fop_poll,
+	.mmap		= vb2_fop_mmap,
 };
 
 /* -----------------------------------------------------------------------------
@@ -906,6 +693,8 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 	dma->port = port;
 	mutex_init(&dma->lock);
 	mutex_init(&dma->pipe.lock);
+	INIT_LIST_HEAD(&dma->queued_bufs);
+	spin_lock_init(&dma->queued_lock);
 
 	dma->fmtinfo = xvip_get_format_by_fourcc(XVIP_DMA_DEF_FORMAT);
 	dma->format.pixelformat = dma->fmtinfo->fourcc;
@@ -922,11 +711,12 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 
 	ret = media_entity_init(&dma->video.entity, 1, &dma->pad, 0);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	/* ... and the video node... */
-	dma->video.v4l2_dev = &xdev->v4l2_dev;
 	dma->video.fops = &xvip_dma_fops;
+	dma->video.v4l2_dev = &xdev->v4l2_dev;
+	dma->video.queue = &dma->queue;
 	snprintf(dma->video.name, sizeof(dma->video.name), "%s %s %u",
 		 xdev->dev->of_node->name,
 		 type == V4L2_BUF_TYPE_VIDEO_CAPTURE ? "output" : "input",
@@ -936,6 +726,7 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 			   ? VFL_DIR_RX : VFL_DIR_TX;
 	dma->video.release = video_device_release_empty;
 	dma->video.ioctl_ops = &xvip_dma_ioctl_ops;
+	dma->video.lock = &dma->lock;
 
 	video_set_drvdata(&dma->video, dma);
 
@@ -944,13 +735,22 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 	if (IS_ERR(dma->alloc_ctx))
 		goto error;
 
+	/* Don't enable VB2_READ and VB2_WRITE, as using the read() and write()
+	 * V4L2 APIs would be inefficient. Testing on the command line with a
+	 * 'cat /dev/video?' thus won't be possible, but given that the driver
+	 * anyway requires a test tool to setup the pipeline before any video
+	 * stream can be started, requiring a specific V4L2 test tool as well
+	 * instead of 'cat' isn't really a drawback.
+	 */
 	dma->queue.type = type;
 	dma->queue.io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+	dma->queue.lock = &dma->lock;
 	dma->queue.drv_priv = dma;
 	dma->queue.buf_struct_size = sizeof(struct xvip_dma_buffer);
 	dma->queue.ops = &xvip_dma_queue_qops;
 	dma->queue.mem_ops = &vb2_dma_contig_memops;
-	dma->queue.timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	dma->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC
+				   | V4L2_BUF_FLAG_TSTAMP_SRC_EOF;
 	ret = vb2_queue_init(&dma->queue);
 	if (ret < 0) {
 		dev_err(dma->xdev->dev, "failed to initialize VB2 queue\n");
@@ -977,7 +777,6 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 	return 0;
 
 error:
-	vb2_dma_contig_cleanup_ctx(dma->alloc_ctx);
 	xvip_dma_cleanup(dma);
 	return ret;
 }
@@ -990,7 +789,9 @@ void xvip_dma_cleanup(struct xvip_dma *dma)
 	if (dma->dma)
 		dma_release_channel(dma->dma);
 
-	vb2_dma_contig_cleanup_ctx(dma->alloc_ctx);
+	if (!IS_ERR_OR_NULL(dma->alloc_ctx))
+		vb2_dma_contig_cleanup_ctx(dma->alloc_ctx);
+
 	media_entity_cleanup(&dma->video.entity);
 
 	mutex_destroy(&dma->lock);

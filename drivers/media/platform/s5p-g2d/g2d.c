@@ -157,7 +157,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->ops = &g2d_qops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	src_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	src_vq->lock = &ctx->dev->mutex;
 
 	ret = vb2_queue_init(src_vq);
@@ -170,7 +170,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->ops = &g2d_qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
-	dst_vq->timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	dst_vq->lock = &ctx->dev->mutex;
 
 	return vb2_queue_init(dst_vq);
@@ -490,14 +490,13 @@ static void job_abort(void *prv)
 {
 	struct g2d_ctx *ctx = prv;
 	struct g2d_dev *dev = ctx->dev;
-	int ret;
 
 	if (dev->curr == NULL) /* No job currently running */
 		return;
 
-	ret = wait_event_timeout(dev->irq_queue,
-		dev->curr == NULL,
-		msecs_to_jiffies(G2D_TIMEOUT));
+	wait_event_timeout(dev->irq_queue,
+			   dev->curr == NULL,
+			   msecs_to_jiffies(G2D_TIMEOUT));
 }
 
 static void device_run(void *prv)
@@ -560,6 +559,9 @@ static irqreturn_t g2d_isr(int irq, void *prv)
 
 	dst->v4l2_buf.timecode = src->v4l2_buf.timecode;
 	dst->v4l2_buf.timestamp = src->v4l2_buf.timestamp;
+	dst->v4l2_buf.flags &= ~V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
+	dst->v4l2_buf.flags |=
+		src->v4l2_buf.flags & V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
 
 	v4l2_m2m_buf_done(src, VB2_BUF_STATE_DONE);
 	v4l2_m2m_buf_done(dst, VB2_BUF_STATE_DONE);

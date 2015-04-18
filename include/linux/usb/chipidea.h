@@ -25,11 +25,13 @@ struct ci_hdrc_platform_data {
 	 */
 #define CI_HDRC_DUAL_ROLE_NOT_OTG	BIT(4)
 #define CI_HDRC_IMX28_WRITE_FIX		BIT(5)
+#define CI_HDRC_FORCE_FULLSPEED		BIT(6)
 	enum usb_dr_mode	dr_mode;
 #define CI_HDRC_CONTROLLER_RESET_EVENT		0
 #define CI_HDRC_CONTROLLER_STOPPED_EVENT	1
 	void	(*notify_event) (struct ci_hdrc *ci, unsigned event);
 	struct regulator	*reg_vbus;
+	bool			tpl_support;
 };
 
 /* Default offset of capability registers */

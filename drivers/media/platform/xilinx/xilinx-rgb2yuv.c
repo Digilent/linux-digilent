@@ -1,9 +1,11 @@
 /*
  * Xilinx RGB to YUV Convertor
  *
- * Copyright (C) 2013 - 2014 Xilinx, Inc.
+ * Copyright (C) 2013-2015 Ideas on Board
+ * Copyright (C) 2013-2015 Xilinx, Inc.
  *
- * Author: Hyun Woo Kwon <hyunk@xilinx.com>
+ * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
+ *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -19,12 +21,12 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/xilinx-v4l2-controls.h>
 
 #include <media/v4l2-async.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
-#include "xilinx-controls.h"
 #include "xilinx-vip.h"
 
 #define XRGB2YUV_YMAX					0x100
@@ -437,7 +439,6 @@ static int xrgb2yuv_parse_of(struct xrgb2yuv_device *xrgb2yuv)
 static int xrgb2yuv_probe(struct platform_device *pdev)
 {
 	struct xrgb2yuv_device *xrgb2yuv;
-	struct resource *res;
 	struct v4l2_subdev *subdev;
 	struct v4l2_mbus_framefmt *default_format;
 	unsigned int i;
@@ -453,10 +454,9 @@ static int xrgb2yuv_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xrgb2yuv->xvip.iomem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(xrgb2yuv->xvip.iomem))
-		return PTR_ERR(xrgb2yuv->xvip.iomem);
+	ret = xvip_init_resources(&xrgb2yuv->xvip);
+	if (ret < 0)
+		return ret;
 
 	/* Reset and initialize the core */
 	xvip_reset(&xrgb2yuv->xvip);
@@ -490,7 +490,7 @@ static int xrgb2yuv_probe(struct platform_device *pdev)
 	subdev->entity.ops = &xrgb2yuv_media_ops;
 	ret = media_entity_init(&subdev->entity, 2, xrgb2yuv->pads, 0);
 	if (ret < 0)
-		return ret;
+		goto error;
 
 	v4l2_ctrl_handler_init(&xrgb2yuv->ctrl_handler, 13);
 
@@ -523,6 +523,7 @@ static int xrgb2yuv_probe(struct platform_device *pdev)
 error:
 	v4l2_ctrl_handler_free(&xrgb2yuv->ctrl_handler);
 	media_entity_cleanup(&subdev->entity);
+	xvip_cleanup_resources(&xrgb2yuv->xvip);
 	return ret;
 }
 
@@ -535,6 +536,8 @@ static int xrgb2yuv_remove(struct platform_device *pdev)
 	v4l2_ctrl_handler_free(&xrgb2yuv->ctrl_handler);
 	media_entity_cleanup(&subdev->entity);
 
+	xvip_cleanup_resources(&xrgb2yuv->xvip);
+
 	return 0;
 }
 
@@ -542,14 +545,13 @@ static SIMPLE_DEV_PM_OPS(xrgb2yuv_pm_ops, xrgb2yuv_pm_suspend,
 			 xrgb2yuv_pm_resume);
 
 static const struct of_device_id xrgb2yuv_of_id_table[] = {
-	{ .compatible = "xlnx,axi-rgb2yuv-7.1" },
+	{ .compatible = "xlnx,v-rgb2yuv-7.1" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, xrgb2yuv_of_id_table);
 
 static struct platform_driver xrgb2yuv_driver = {
 	.driver			= {
-		.owner		= THIS_MODULE,
 		.name		= "xilinx-rgb2yuv",
 		.pm		= &xrgb2yuv_pm_ops,
 		.of_match_table	= xrgb2yuv_of_id_table,

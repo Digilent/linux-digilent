@@ -129,10 +129,9 @@ static int check_usb_db(struct ft1000_usb *ft1000dev)
 			status = ft1000_write_register(ft1000dev,  0x8000,
 						FT1000_REG_DOORBELL);
 			break;
-		} else {
-			loopcnt++;
-			msleep(10);
 		}
+		loopcnt++;
+		msleep(10);
 
 	}
 
@@ -190,10 +189,9 @@ static u16 get_handshake(struct ft1000_usb *ft1000dev, u16 expected_value)
 		if ((handshake == expected_value) ||
 		    (handshake == HANDSHAKE_RESET_VALUE_USB)) {
 			return handshake;
-		} else	{
-			loopcnt++;
-			msleep(10);
 		}
+		loopcnt++;
+		msleep(10);
 	}
 
 	return HANDSHAKE_TIMEOUT_VALUE;
@@ -522,7 +520,6 @@ static void usb_dnld_complete(struct urb *urb)
 static int write_blk_fifo(struct ft1000_usb *ft1000dev, u16 **pUsFile,
 			  u8 **pUcFile, long word_length)
 {
-	int Status = 0;
 	int byte_length;
 
 	byte_length = word_length * 4;
@@ -547,7 +544,7 @@ static int write_blk_fifo(struct ft1000_usb *ft1000dev, u16 **pUsFile,
 	*pUsFile = *pUsFile + (word_length << 1);
 	*pUcFile = *pUcFile + (word_length << 2);
 
-	return Status;
+	return 0;
 }
 
 static int scram_start_dwnld(struct ft1000_usb *ft1000dev, u16 *hshake,
