@@ -1,0 +1,22 @@
+Device-Tree bindings for Digilent DRM Encoder Slave
+
+This driver provides support for VGA and HDMI outputs on Digilent FPGA boards. The
+VGA or HDMI port must be connected to a Xilinx display pipeline via an axi2vid
+IP core.
+
+Required properties:
+ - compatible: Should be "dglnt,drm-encoder".
+
+Optional properties:
+ - dglnt,edid-i2c: The I2C device connected to the DDC bus on the video connector.
+                   This is used to obtain the supported resolutions of an attached 
+                   monitor. If not defined, then a default set of resolutions is used
+                   and the display will initialize to 720p. Note most VGA connectors
+                   on Digilent boards do not have the DDC bus routed out. 
+
+Example:
+
+      encoder_0: digilent_encoder {
+		   compatible = "dglnt,drm-encoder";
+         dglnt,edid-i2c = <&i2c1>;
+      };
