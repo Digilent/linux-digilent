@@ -21,3 +21,9 @@ config DRM_XILINX_DP_SUB
 	select DRM_XILINX_DP
 	help
 	  DRM driver for Xilinx Display Port Subsystem.
+
+config DRM_DIGILENT_ENCODER
+   tristate "Digilent VGA/HDMI DRM Encoder Driver"
+   depends on DRM_XILINX
+   help
+     DRM slave encoder for Video-out on Digilent boards.
