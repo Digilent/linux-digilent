@@ -109,6 +109,14 @@ config CLK_QORIQ
 	  This adds the clock driver support for Freescale QorIQ platforms
 	  using common clock framework.
 
+config COMMON_CLK_DGLNT_DYNCLK
+	tristate "Digilent axi_dynclk Driver"
+	depends on ARCH_ZYNQ || MICROBLAZE
+	help
+	---help---
+	  Support for the Digilent AXI Dynamic Clock core for Xilinx
+	  FPGAs.
+
 config COMMON_CLK_XGENE
 	bool "Clock driver for APM XGene SoC"
 	default y
