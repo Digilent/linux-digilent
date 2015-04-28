@@ -14,3 +14,5 @@ obj-$(CONFIG_DRM_XLNX_PL_DISP) += xlnx_pl_disp.o
 xlnx-sdi-objs += xlnx_sdi.o xlnx_sdi_timing.o
 obj-$(CONFIG_DRM_XLNX_SDI) += xlnx-sdi.o
 obj-$(CONFIG_DRM_DIGILENT_HDMI) += digilent_hdmi.o
+obj-$(CONFIG_DRM_DIGILENT_ENCODER) += digilent_encoder.o
+

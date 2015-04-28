@@ -132,3 +132,8 @@ config DRM_DIGILENT_HDMI
 	help
 	  DRM driver for Digilent HDMI implementation.
 
+config DRM_DIGILENT_ENCODER
+	tristate "Digilent VGA/HDMI DRM Encoder Driver"
+	depends on DRM_XILINX
+	help
+	  DRM slave encoder for Video-out on Digilent boards.

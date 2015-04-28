@@ -1,0 +1,37 @@
+Device-Tree bindings for Digilent DRM Encoder Slave
+
+This driver provides support for VGA and HDMI outputs on Digilent FPGA boards. The
+VGA or HDMI port must be connected to a Xilinx display pipeline via an axi2vid
+IP core.
+
+Required properties:
+ - compatible: Should be "digilent,drm-encoder".
+
+Optional properties:
+ - digilent,edid-i2c: The I2C device connected to the DDC bus on the video connector.
+                      This is used to obtain the supported resolutions of an attached 
+                      monitor. If not defined, then a default set of resolutions is used
+                      and the display will initialize to the closest available size 
+                      specified by vpref and hpref. Note most VGA connectors on Digilent 
+                      boards do not have the DDC bus routed out. 
+- digilent,fmax: The maximum pixel clock frequency allowed, in KHz (as integer). Should 
+                 be set considering maximum serdes rate and also the rate the axi stream
+                 mm2s bus on the vdma is clocked. If pixel clock is greater than the mm2s
+                 stream clock then the output pipeline will underflow. Default is 150000.
+- digilent,hmax: The maximum horizontal width allowed for resolutions (as integer). 
+                 Default is 1920. 
+- digilent,vmax: The maximum vertical height allowed for resolutions (as integer). 
+                 Default is 1080.
+- digilent,hpref: The preferred resolution width (as integer). Only used if edid-i2c not
+                  present or invalid. Can be used to control resolution at boot when no 
+                  EDID bus is available. Default is 1280.
+- digilent,vpref: The preferred resolution height (as integer). Only used if edid-i2c not
+                  present or invalid. Can be used to control resolution at boot when no 
+                  EDID bus is available. Default is 720.
+
+Example:
+
+      encoder_0: digilent_encoder {
+		   compatible = "digilent,drm-encoder";
+         digilent,edid-i2c = <&i2c1>;
+      };
