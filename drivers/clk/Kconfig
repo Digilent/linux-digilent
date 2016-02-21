@@ -293,6 +293,14 @@ config CLK_LS1028A_PLLDIG
           features of the PLL are currently supported by the driver. By default,
           configured bypass mode with this PLL.
 
+config COMMON_CLK_DGLNT_DYNCLK
+	tristate "Digilent axi_dynclk Driver"
+	depends on ARCH_ZYNQ || MICROBLAZE
+	help
+	---help---
+	  Support for the Digilent AXI Dynamic Clock core for Xilinx
+	  FPGAs.
+
 config COMMON_CLK_XGENE
 	bool "Clock driver for APM XGene SoC"
 	default ARCH_XGENE
