@@ -382,9 +382,16 @@ static struct dglnt_dynclk *clk_hw_to_dglnt_dynclk(struct clk_hw *clk_hw)
 static int dglnt_dynclk_enable(struct clk_hw *clk_hw)
 {
 	struct dglnt_dynclk *dglnt_dynclk = clk_hw_to_dglnt_dynclk(clk_hw);
-   
-   if (dglnt_dynclk->freq)
-      writel(1, dglnt_dynclk->base + OFST_DISPLAY_CTRL);
+	unsigned int clock_state;
+
+	if (dglnt_dynclk->freq)
+	{
+		writel(1, dglnt_dynclk->base + OFST_DISPLAY_CTRL);
+		do
+		{
+			clock_state = readl(dglnt_dynclk->base + OFST_DISPLAY_STATUS);
+		} while (!clock_state);
+	}
 	return 0;
 }
 
