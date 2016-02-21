@@ -408,7 +408,7 @@ static int dglnt_dynclk_set_rate(struct clk_hw *clk_hw,
       return 0;
 
 	rate = (rate + 100) / 200; //Convert from Hz to KHz, then multiply by five to account for BUFR division
-   
+	parent_rate = (parent_rate + 500) / 1000; //convert from Hz to KHz 
    if(!dglnt_dynclk_find_mode(rate, parent_rate, &clkMode))
       return -EINVAL;
 
@@ -429,7 +429,7 @@ static long dglnt_dynclk_round_rate(struct clk_hw *hw, unsigned long rate,
 {
 	struct dglnt_dynclk_mode clkMode;
    
-   dglnt_dynclk_find_mode(((rate + 100) / 200), *parent_rate, &clkMode);
+   dglnt_dynclk_find_mode(((rate + 100) / 200), ((*parent_rate) + 500) / 1000, &clkMode);
 
 	return (clkMode.freq * 200);
 }
