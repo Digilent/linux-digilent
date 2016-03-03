@@ -202,7 +202,7 @@ struct dglnt_dynclk_reg;
 struct dglnt_dynclk_mode;
 struct dglnt_dynclk;
 
-struct dglnt_dynclk_reg{
+struct dglnt_dynclk_reg {
 	u32 clk0L;
 	u32 clkFBL;
 	u32 clkFBH_clk0H;
@@ -211,7 +211,7 @@ struct dglnt_dynclk_reg{
 	u32 fltr_lockH;
 };
 
-struct dglnt_dynclk_mode{
+struct dglnt_dynclk_mode {
 	u32 freq;
 	u32 fbmult;
 	u32 clkdiv;
@@ -238,7 +238,7 @@ u32 dglnt_dynclk_divider(u32 divide)
 
 	highTime = divide / 2;
 	/* if divide is odd */
-	if (divide & 0b1) {
+	if (divide & 0x1) {
 		lowTime = highTime + 1;
 		output = 1 << CLK_BIT_WEDGE;
 	} else {
@@ -264,9 +264,10 @@ u32 dglnt_dynclk_count_calc(u32 divide)
 }
 
 
-int dglnt_dynclk_find_reg (struct dglnt_dynclk_reg *regValues, struct dglnt_dynclk_mode *clkParams)
+int dglnt_dynclk_find_reg(struct dglnt_dynclk_reg *regValues,
+			  struct dglnt_dynclk_mode *clkParams)
 {
-	if ((clkParams->fbmult < 2) || clkParams->fbmult > 64 )
+	if ((clkParams->fbmult < 2) || clkParams->fbmult > 64)
 		return -EINVAL;
 
 	regValues->clk0L = dglnt_dynclk_count_calc(clkParams->clkdiv);
@@ -283,15 +284,19 @@ int dglnt_dynclk_find_reg (struct dglnt_dynclk_reg *regValues, struct dglnt_dync
 	if (regValues->divclk == ERR_CLKDIVIDER)
 		return -EINVAL;
 
-	regValues->lockL = (u32) (lock_lookup[clkParams->fbmult - 1] & 0xFFFFFFFF);
+	regValues->lockL = (u32)(lock_lookup[clkParams->fbmult - 1] &
+				 0xFFFFFFFF);
 
-	regValues->fltr_lockH = (u32) ((lock_lookup[clkParams->fbmult - 1] >> 32) & 0x000000FF);
-	regValues->fltr_lockH |= ((filter_lookup_low[clkParams->fbmult - 1] << 16) & 0x03FF0000);
+	regValues->fltr_lockH = (u32)((lock_lookup[clkParams->fbmult - 1] >>
+				       32) & 0x000000FF);
+	regValues->fltr_lockH |= ((filter_lookup_low[clkParams->fbmult - 1] <<
+				   16) & 0x03FF0000);
 
 	return 0;
 }
 
-void dglnt_dynclk_write_reg (struct dglnt_dynclk_reg *regValues, void __iomem *baseaddr)
+void dglnt_dynclk_write_reg(struct dglnt_dynclk_reg *regValues,
+			    void __iomem *baseaddr)
 {
 	writel(regValues->clk0L, baseaddr + OFST_DISPLAY_CLK_L);
 	writel(regValues->clkFBL, baseaddr + OFST_DISPLAY_FB_L);
@@ -301,7 +306,8 @@ void dglnt_dynclk_write_reg (struct dglnt_dynclk_reg *regValues, void __iomem *b
 	writel(regValues->fltr_lockH, baseaddr + OFST_DISPLAY_FLTR_LOCK_H);
 }
 
-u32 dglnt_dynclk_find_mode(u32 freq, u32 parentFreq, struct dglnt_dynclk_mode *bestPick)
+u32 dglnt_dynclk_find_mode(u32 freq, u32 parentFreq,
+			   struct dglnt_dynclk_mode *bestPick)
 {
 	u32 bestError = MMCM_FREQ_OUTMAX;
 	u32 curError;
@@ -387,9 +393,9 @@ static int dglnt_dynclk_enable(struct clk_hw *clk_hw)
 
 	if (dglnt_dynclk->freq) {
 		writel(1, dglnt_dynclk->base + OFST_DISPLAY_CTRL);
-		do
-		{
-			clock_state = readl(dglnt_dynclk->base + OFST_DISPLAY_STATUS);
+		do {
+			clock_state = readl(dglnt_dynclk->base +
+					    OFST_DISPLAY_STATUS);
 		} while (!clock_state);
 	}
 	return 0;
@@ -488,7 +494,8 @@ static int dglnt_dynclk_probe(struct platform_device *pdev)
 	if (!id)
 		return -ENODEV;
 
-	dglnt_dynclk = devm_kzalloc(&pdev->dev, sizeof(*dglnt_dynclk), GFP_KERNEL);
+	dglnt_dynclk = devm_kzalloc(&pdev->dev, sizeof(*dglnt_dynclk),
+				    GFP_KERNEL);
 	if (!dglnt_dynclk)
 		return -ENOMEM;
 
@@ -520,7 +527,7 @@ static int dglnt_dynclk_probe(struct platform_device *pdev)
 		return PTR_ERR(clk);
 
 	return of_clk_add_provider(pdev->dev.of_node, of_clk_src_simple_get,
-					clk);
+				   clk);
 }
 
 static int dglnt_dynclk_remove(struct platform_device *pdev)
