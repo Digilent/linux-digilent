@@ -466,7 +466,7 @@ static const struct clk_ops dglnt_dynclk_ops = {
 };
 
 static const struct of_device_id dglnt_dynclk_ids[] = {
-	{ .compatible = "dglnt,axi-dynclk",}, 
+	{ .compatible = "digilent,axi-dynclk", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, dglnt_dynclk_ids);
