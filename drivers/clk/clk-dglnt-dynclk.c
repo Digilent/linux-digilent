@@ -5,7 +5,7 @@
  * Author: Sam Bobrowicz <sbobrowicz@digilentinc.com>
  *
  * Reused code from clk-axi-clkgen.c, Copyright (C) 2012-2013 Analog Devices Inc.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -332,8 +332,8 @@ u32 dglnt_dynclk_find_mode(u32 freq, u32 parentFreq, struct dglnt_dynclk_mode *b
 		maxDiv = MMCM_DIV_MAX;
 
 	while (curDiv <= maxDiv && !freq_found) {
-		minFb = curDiv * DIV_ROUND_UP(MMCM_FREQ_VCOMIN, parentFreq); 
-		maxFb = curDiv * (MMCM_FREQ_VCOMAX / parentFreq); 
+		minFb = curDiv * DIV_ROUND_UP(MMCM_FREQ_VCOMIN, parentFreq);
+		maxFb = curDiv * (MMCM_FREQ_VCOMAX / parentFreq);
 		if (maxFb > MMCM_FB_MAX)
 			maxFb = MMCM_FB_MAX;
 		if (minFb < MMCM_FB_MIN)
