@@ -1,0 +1,18 @@
+Digilent ZYBO AXI-I2S SSM2603 CPU DAI bindings
+
+Note: The card is initially designed for ZYBO linux_bd design which use I2S
+      and external SSM2603 codec. The SSM2603 is driven by a fixed clock of
+      12.288MHz which does not have 44.1KHz sampling rate support.
+
+Required properties:
+	- compatible	: Must be "digilent,zybo-sound"
+	- audio-code	: A phandle reference to a audio codec
+	- cpu-dai	: A phandle reference to a CPU DAI controller
+
+Example:
+
+	zybo_ssm2603_snd: zybo_ssm2603_snd {
+		compatible = "digilent,zybo-sound";
+		audio-codec = <&ssm2603>;
+		cpu-dai = <&axi_i2s_adi_0>;
+	};
