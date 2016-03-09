@@ -19,12 +19,3 @@ config SND_SOC_ADI_AXI_SPDIF
 	select REGMAP_MMIO
 	help
 	  ASoC driver for the Analog Devices AXI-SPDIF softcore peripheral.
-
-config SND_SOC_ZYBO_SSM2603
-	tristate "ZYBO board sound support"
-	depends on SND_SOC_ADI
-	depends on I2C
-	select SND_SOC_ADI_AXI_I2S
-	select SND_SOC_SSM2602_I2C
-	help
-	  Zybo board sound support.
