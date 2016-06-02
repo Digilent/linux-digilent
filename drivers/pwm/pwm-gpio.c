@@ -176,7 +176,7 @@ static int gpio_pwm_probe(struct platform_device *pdev)
 		struct gpio_pwm_data *gpio_data;
 
 		gpiod = devm_gpiod_get_index(&pdev->dev, "pwm", i,
-					     GPIOD_OUT_LOW);
+					     GPIOD_OUT_HIGH);
 		if (IS_ERR(gpiod)) {
 			int error;
 
