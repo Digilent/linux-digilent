@@ -13,30 +13,39 @@
 
 /dts-v1/;
 
-/include/ "zynqmp.dtsi"
-/include/ "zynqmp-ep108-clk.dtsi"
+#include "zynqmp.dtsi"
+#include "zynqmp-ep108-clk.dtsi"
 
 / {
 	model = "ZynqMP EP108";
 
 	aliases {
+		mmc0 = &sdhci0;
+		mmc1 = &sdhci1;
 		serial0 = &uart0;
 		spi0 = &qspi;
 		spi1 = &spi0;
 		spi2 = &spi1;
+		usb0 = &usb0;
+		usb1 = &usb1;
 	};
 
 	chosen {
+		bootargs = "earlycon";
 		stdout-path = "serial0:115200n8";
 	};
 
 	memory {
 		device_type = "memory";
-		reg = <0x0 0x0 0x40000000>;
+		reg = <0x0 0x0 0x0 0x40000000>;
 	};
 };
 
 &can0 {
+	status = "okay";
+};
+
+&can1 {
 	status = "okay";
 };
 
@@ -148,6 +157,7 @@
 
 &sdhci0 {
 	status = "okay";
+	bus-width = <8>;
 };
 
 &sdhci1 {
@@ -194,11 +204,19 @@
 
 &usb0 {
 	status = "okay";
+};
+
+&dwc3_0 {
+	status = "okay";
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
 };
 
 &usb1 {
+	status = "okay";
+};
+
+&dwc3_1 {
 	status = "okay";
 	dr_mode = "host";
 	maximum-speed = "high-speed";

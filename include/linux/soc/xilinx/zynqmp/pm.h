@@ -23,7 +23,7 @@
 #define __SOC_ZYNQMP_PM_H__
 
 #define ZYNQMP_PM_VERSION_MAJOR	0
-#define ZYNQMP_PM_VERSION_MINOR	1
+#define ZYNQMP_PM_VERSION_MINOR	2
 
 #define ZYNQMP_PM_VERSION	((ZYNQMP_PM_VERSION_MAJOR << 16) | \
 					ZYNQMP_PM_VERSION_MINOR)
@@ -40,7 +40,7 @@
 enum zynqmp_pm_request_ack {
 	ZYNQMP_PM_REQUEST_ACK_NO = 1,
 	ZYNQMP_PM_REQUEST_ACK_BLOCKING,
-	ZYNQMP_PM_REQUEST_ACK_CALLBACK_STANDARD,
+	ZYNQMP_PM_REQUEST_ACK_NON_BLOCKING,
 };
 
 enum zynqmp_pm_abort_reason {
@@ -93,8 +93,7 @@ int zynqmp_pm_request_node(const u32 node,
 				   const u32 capabilities,
 				   const u32 qos,
 				   const enum zynqmp_pm_request_ack ack);
-int zynqmp_pm_release_node(const u32,
-				const u32 latency);
+int zynqmp_pm_release_node(const u32 node);
 int zynqmp_pm_set_requirement(const u32 node,
 				   const u32 capabilities,
 				   const u32 qos,

@@ -129,6 +129,14 @@ unsigned int xilinx_drm_get_align(struct drm_device *drm)
 	return xilinx_drm_crtc_get_align(private->crtc);
 }
 
+void xilinx_drm_set_config(struct drm_device *drm, struct drm_mode_set *set)
+{
+	struct xilinx_drm_private *private = drm->dev_private;
+
+	if (private && private->fb)
+		xilinx_drm_fb_set_config(private->fb, set);
+}
+
 /* poll changed handler */
 static void xilinx_drm_output_poll_changed(struct drm_device *drm)
 {
@@ -143,7 +151,7 @@ static const struct drm_mode_config_funcs xilinx_drm_mode_config_funcs = {
 };
 
 /* enable vblank */
-static int xilinx_drm_enable_vblank(struct drm_device *drm, int crtc)
+static int xilinx_drm_enable_vblank(struct drm_device *drm, unsigned int crtc)
 {
 	struct xilinx_drm_private *private = drm->dev_private;
 
@@ -153,7 +161,7 @@ static int xilinx_drm_enable_vblank(struct drm_device *drm, int crtc)
 }
 
 /* disable vblank */
-static void xilinx_drm_disable_vblank(struct drm_device *drm, int crtc)
+static void xilinx_drm_disable_vblank(struct drm_device *drm, unsigned int crtc)
 {
 	struct xilinx_drm_private *private = drm->dev_private;
 
@@ -397,7 +405,7 @@ static struct drm_driver xilinx_drm_driver = {
 	.lastclose			= xilinx_drm_lastclose,
 	.set_busid			= drm_platform_set_busid,
 
-	.get_vblank_counter		= drm_vblank_count,
+	.get_vblank_counter		= drm_vblank_no_hw_counter,
 	.enable_vblank			= xilinx_drm_enable_vblank,
 	.disable_vblank			= xilinx_drm_disable_vblank,
 
@@ -433,8 +441,8 @@ static int xilinx_drm_pm_suspend(struct device *dev)
 	struct drm_device *drm = private->drm;
 	struct drm_connector *connector;
 
-	drm_modeset_lock_all(drm);
 	drm_kms_helper_poll_disable(drm);
+	drm_modeset_lock_all(drm);
 	list_for_each_entry(connector, &drm->mode_config.connector_list, head) {
 		int old_dpms = connector->dpms;
 
@@ -465,7 +473,7 @@ static int xilinx_drm_pm_resume(struct device *dev)
 			connector->funcs->dpms(connector, dpms);
 		}
 	}
-	drm_kms_helper_poll_enable(drm);
+	drm_kms_helper_poll_enable_locked(drm);
 	drm_modeset_unlock_all(drm);
 
 	return 0;

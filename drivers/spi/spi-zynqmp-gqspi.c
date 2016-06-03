@@ -134,6 +134,9 @@
 #define GQSPI_SELECT_MODE_QUADSPI	0x4
 #define GQSPI_DMA_UNALIGN		0x3
 #define GQSPI_DEFAULT_NUM_CS	1	/* Default number of chip selects */
+#define GQSPI_RX_BUS_WIDTH_QUAD		0x4
+#define GQSPI_RX_BUS_WIDTH_DUAL		0x2
+#define GQSPI_RX_BUS_WIDTH_SINGLE	0x1
 
 enum mode_type {GQSPI_MODE_IO, GQSPI_MODE_DMA};
 
@@ -152,7 +155,7 @@ enum mode_type {GQSPI_MODE_IO, GQSPI_MODE_DMA};
  * @genfifobus:		Used to select the upper or lower bus
  * @dma_rx_bytes:	Remaining bytes to receive by DMA mode
  * @dma_addr:		DMA address after mapping the kernel buffer
- * @genfifoentry:	Used for storing the genfifoentry instruction
+ * @genfifoentry:	Used for storing the genfifoentry instruction.
  * @isinstr:		To determine whether the transfer is instruction
  * @mode:		Defines the mode in which QSPI is operating
  */
@@ -170,6 +173,7 @@ struct zynqmp_qspi {
 	u32 genfifobus;
 	u32 dma_rx_bytes;
 	dma_addr_t dma_addr;
+	u32 rx_bus_width;
 	u32 genfifoentry;
 	bool isinstr;
 	enum mode_type mode;
@@ -215,7 +219,7 @@ static void zynqmp_gqspi_selectslave(struct zynqmp_qspi *instanceptr,
 	switch (slavecs) {
 	case GQSPI_SELECT_FLASH_CS_BOTH:
 		instanceptr->genfifocs = GQSPI_GENFIFO_CS_LOWER |
-						GQSPI_GENFIFO_CS_UPPER;
+			GQSPI_GENFIFO_CS_UPPER;
 		break;
 	case GQSPI_SELECT_FLASH_CS_UPPER:
 		instanceptr->genfifocs = GQSPI_GENFIFO_CS_UPPER;
@@ -390,7 +394,6 @@ static int zynqmp_unprepare_transfer_hardware(struct spi_master *master)
 	zynqmp_gqspi_write(xqspi, GQSPI_EN_OFST, 0x0);
 	clk_disable(xqspi->refclk);
 	clk_disable(xqspi->pclk);
-
 	return 0;
 }
 
@@ -406,7 +409,6 @@ static void zynqmp_qspi_chipselect(struct spi_device *qspi, bool is_high)
 	u32 genfifoentry = 0x0, statusreg;
 
 	genfifoentry |= GQSPI_GENFIFO_MODE_SPI;
-	genfifoentry |= xqspi->genfifobus;
 
 	if (qspi->master->flags & SPI_BOTH_FLASH) {
 		zynqmp_gqspi_selectslave(xqspi,
@@ -421,6 +423,8 @@ static void zynqmp_qspi_chipselect(struct spi_device *qspi, bool is_high)
 			GQSPI_SELECT_FLASH_CS_LOWER,
 			GQSPI_SELECT_FLASH_BUS_LOWER);
 	}
+
+	genfifoentry |= xqspi->genfifobus;
 
 	if (!is_high) {
 		genfifoentry |= xqspi->genfifocs;
@@ -587,6 +591,35 @@ static void zynqmp_qspi_readrxfifo(struct zynqmp_qspi *xqspi, u32 size)
 }
 
 /**
+ * zynqmp_qspi_preparedummy:	Prepares the dummy entry
+ *
+ * @xqspi:	Pointer to the zynqmp_qspi structure
+ * @transfer:	It is a pointer to the structure containing transfer data.
+ * @genfifoentry:	genfifoentry is pointer to the variable in which
+ *			GENFIFO	mask is returned to calling function
+ */
+static void zynqmp_qspi_preparedummy(struct zynqmp_qspi *xqspi,
+					struct spi_transfer *transfer,
+					u32 *genfifoentry)
+{
+	/* For dummy Tx and Rx are NULL */
+	*genfifoentry &= ~(GQSPI_GENFIFO_TX | GQSPI_GENFIFO_RX);
+
+	/* SPI mode */
+	*genfifoentry &= ~GQSPI_GENFIFO_MODE_QUADSPI;
+	if (xqspi->rx_bus_width == GQSPI_RX_BUS_WIDTH_QUAD)
+		*genfifoentry |= GQSPI_GENFIFO_MODE_QUADSPI;
+	else if (xqspi->rx_bus_width == GQSPI_RX_BUS_WIDTH_DUAL)
+		*genfifoentry |= GQSPI_GENFIFO_MODE_DUALSPI;
+	else
+		*genfifoentry |= GQSPI_GENFIFO_MODE_SPI;
+
+	/* Immediate data */
+	*genfifoentry &= ~GQSPI_GENFIFO_IMM_DATA_MASK;
+	*genfifoentry |= transfer->dummy;
+}
+
+/**
  * zynqmp_process_dma_irq:	Handler for DMA done interrupt of QSPI
  *				controller
  * @xqspi:	zynqmp_qspi instance pointer
@@ -605,7 +638,7 @@ static void zynqmp_process_dma_irq(struct zynqmp_qspi *xqspi)
 
 	/* Disabling the DMA interrupts */
 	zynqmp_gqspi_write(xqspi, GQSPI_QSPIDMA_DST_I_DIS_OFST,
-				GQSPI_QSPIDMA_DST_I_EN_DONE_MASK);
+					GQSPI_QSPIDMA_DST_I_EN_DONE_MASK);
 
 	if (xqspi->bytes_to_receive > 0) {
 		/* Switch to IO mode,for remaining bytes to receive */
@@ -686,7 +719,6 @@ static irqreturn_t zynqmp_qspi_irq(int irq, void *dev_id)
 		spi_finalize_current_transfer(master);
 		ret = IRQ_HANDLED;
 	}
-
 	return ret;
 }
 
@@ -699,7 +731,7 @@ static irqreturn_t zynqmp_qspi_irq(int irq, void *dev_id)
 static inline u32 zynqmp_qspi_selectspimode(struct zynqmp_qspi *xqspi,
 						u8 spimode)
 {
-	u32 mask;
+	u32 mask = 0;
 
 	switch (spimode) {
 	case GQSPI_SELECT_MODE_DUALSPI:
@@ -791,10 +823,10 @@ static void zynqmp_qspi_txrxsetup(struct zynqmp_qspi *xqspi,
 		*genfifoentry |= GQSPI_GENFIFO_TX;
 		*genfifoentry |=
 			zynqmp_qspi_selectspimode(xqspi, transfer->tx_nbits);
-		xqspi->bytes_to_transfer = transfer->len;
+		xqspi->bytes_to_transfer = transfer->len - (transfer->dummy/8);
 		if (xqspi->mode == GQSPI_MODE_DMA) {
-			config_reg =
-				zynqmp_gqspi_read(xqspi, GQSPI_CONFIG_OFST);
+			config_reg = zynqmp_gqspi_read(xqspi,
+							GQSPI_CONFIG_OFST);
 			config_reg &= ~GQSPI_CFG_MODE_EN_MASK;
 			zynqmp_gqspi_write(xqspi, GQSPI_CONFIG_OFST,
 								config_reg);
@@ -856,13 +888,19 @@ static int zynqmp_qspi_start_transfer(struct spi_master *master,
 	if (xqspi->mode == GQSPI_MODE_DMA)
 		transfer_len = xqspi->dma_rx_bytes;
 	else
-		transfer_len = transfer->len;
+		transfer_len = transfer->len - (transfer->dummy/8);
 
 	xqspi->genfifoentry = genfifoentry;
 	if ((transfer_len) < GQSPI_GENFIFO_IMM_DATA_MASK) {
 		genfifoentry &= ~GQSPI_GENFIFO_IMM_DATA_MASK;
 		genfifoentry |= transfer_len;
 		zynqmp_gqspi_write(xqspi, GQSPI_GEN_FIFO_OFST, genfifoentry);
+		if (transfer->dummy) {
+			zynqmp_qspi_preparedummy(xqspi, transfer,
+					&genfifoentry);
+			zynqmp_gqspi_write(xqspi, GQSPI_GEN_FIFO_OFST,
+					genfifoentry);
+		}
 	} else {
 		int tempcount = transfer_len;
 		u32 exponent = 8;	/* 2^8 = 256 */
@@ -1007,7 +1045,9 @@ static int zynqmp_qspi_probe(struct platform_device *pdev)
 	struct zynqmp_qspi *xqspi;
 	struct resource *res;
 	struct device *dev = &pdev->dev;
+	struct device_node *nc;
 	u32 num_cs;
+	u32 rx_bus_width;
 
 	master = spi_alloc_master(&pdev->dev, sizeof(*xqspi));
 	if (!master)
@@ -1067,6 +1107,18 @@ static int zynqmp_qspi_probe(struct platform_device *pdev)
 		dev_err(dev, "request_irq failed\n");
 		goto clk_dis_all;
 	}
+
+	xqspi->rx_bus_width = GQSPI_RX_BUS_WIDTH_SINGLE;
+	for_each_available_child_of_node(pdev->dev.of_node, nc) {
+		ret = of_property_read_u32(nc, "spi-rx-bus-width",
+					&rx_bus_width);
+		if (!ret) {
+			xqspi->rx_bus_width = rx_bus_width;
+			break;
+		}
+	}
+	if (ret)
+		dev_err(dev, "rx bus width not found\n");
 
 	ret = of_property_read_u32(pdev->dev.of_node, "num-cs", &num_cs);
 	if (ret < 0)

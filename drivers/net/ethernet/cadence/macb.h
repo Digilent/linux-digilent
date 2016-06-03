@@ -11,7 +11,7 @@
 #define _MACB_H
 
 #define MACB_GREGS_NBR 16
-#define MACB_GREGS_VERSION 1
+#define MACB_GREGS_VERSION 2
 #define MACB_MAX_QUEUES 8
 
 /* MACB register offsets */
@@ -145,6 +145,7 @@
 #define GEM_1588PEERTXNSEC	0x01F4 /* PTP peer event TX timestamp nsecs */
 #define GEM_1588PEERRXSEC	0x01F8 /* PTP peer event RX timestamp secs */
 #define GEM_1588PEERRXNSEC	0x01FC /* PTP peer event RX timestamp nsecs */
+#define GEM_PCSCNTRL		0x0200 /* PCS Control */
 #define GEM_DCFG1		0x0280 /* Design Config 1 */
 #define GEM_DCFG2		0x0284 /* Design Config 2 */
 #define GEM_DCFG3		0x0288 /* Design Config 3 */
@@ -245,6 +246,7 @@
 #define GEM_RXCOEN_SIZE		1
 #define GEM_SGMIIEN_OFFSET	27
 #define GEM_SGMIIEN_SIZE	1
+
 
 /* Constants for data bus width. */
 #define GEM_DBW32		0 /* 32 bit AMBA AHB data bus width */
@@ -386,6 +388,10 @@
 #define MACB_REV_OFFSET				0
 #define MACB_REV_SIZE				16
 
+/* Bitfields in PCSCNTRL */
+#define GEM_PCSAUTONEG_OFFSET			12
+#define GEM_PCSAUTONEG_SIZE			1
+
 /* Bitfields in DCFG1. */
 #define GEM_IRQCOR_OFFSET			23
 #define GEM_IRQCOR_SIZE				1
@@ -448,12 +454,17 @@
 
 /* Capability mask bits */
 #define MACB_CAPS_ISR_CLEAR_ON_WRITE		0x00000001
+#define MACB_CAPS_USRIO_HAS_CLKEN		0x00000002
+#define MACB_CAPS_USRIO_DEFAULT_IS_MII		0x00000004
+#define MACB_CAPS_NO_GIGABIT_HALF		0x00000008
 #define MACB_CAPS_FIFO_MODE			0x10000000
 #define MACB_CAPS_GIGABIT_MODE_AVAILABLE	0x20000000
 #define MACB_CAPS_SG_DISABLED			0x40000000
 #define MACB_CAPS_MACB_IS_GEM			0x80000000
 #define MACB_CAPS_JUMBO				0x00000010
 #define MACB_CAPS_TSU				0x00000020
+#define MACB_CAPS_PCS				0x00000040
+
 #define NS_PER_SEC				1000000000ULL
 
 /* Bit manipulation macros */
@@ -484,18 +495,12 @@
 	 | GEM_BF(name, value))
 
 /* Register access macros */
-#define macb_readl(port,reg)				\
-	readl_relaxed((port)->regs + MACB_##reg)
-#define macb_writel(port,reg,value)			\
-	writel_relaxed((value), (port)->regs + MACB_##reg)
-#define gem_readl(port, reg)				\
-	readl_relaxed((port)->regs + GEM_##reg)
-#define gem_writel(port, reg, value)			\
-	writel_relaxed((value), (port)->regs + GEM_##reg)
-#define queue_readl(queue, reg)				\
-	readl_relaxed((queue)->bp->regs + (queue)->reg)
-#define queue_writel(queue, reg, value)			\
-	writel_relaxed((value), (queue)->bp->regs + (queue)->reg)
+#define macb_readl(port, reg)		(port)->macb_reg_readl((port), MACB_##reg)
+#define macb_writel(port, reg, value)	(port)->macb_reg_writel((port), MACB_##reg, (value))
+#define gem_readl(port, reg)		(port)->macb_reg_readl((port), GEM_##reg)
+#define gem_writel(port, reg, value)	(port)->macb_reg_writel((port), GEM_##reg, (value))
+#define queue_readl(queue, reg)		(queue)->bp->macb_reg_readl((queue)->bp, (queue)->reg)
+#define queue_writel(queue, reg, value)	(queue)->bp->macb_reg_writel((queue)->bp, (queue)->reg, (value))
 
 /* Conditional GEM/MACB macros.  These perform the operation to the correct
  * register dependent on whether the device is a GEM or a MACB.  For registers
@@ -826,6 +831,9 @@ struct macb_or_gem_ops {
 struct macb_config {
 	u32			caps;
 	unsigned int		dma_burst_length;
+	int	(*clk_init)(struct platform_device *pdev, struct clk **pclk,
+			    struct clk **hclk, struct clk **tx_clk);
+	int	(*init)(struct platform_device *pdev);
 	int	jumbo_max_len;
 };
 
@@ -838,6 +846,7 @@ struct macb_queue {
 	unsigned int		IDR;
 	unsigned int		IMR;
 	unsigned int		TBQP;
+	unsigned int		RBQP;
 
 	unsigned int		tx_head, tx_tail;
 	struct macb_dma_desc	*tx_ring;
@@ -848,15 +857,22 @@ struct macb_queue {
 
 struct macb {
 	void __iomem		*regs;
+	bool			native_io;
+
+	/* hardware IO accessors */
+	u32	(*macb_reg_readl)(struct macb *bp, int offset);
+	void	(*macb_reg_writel)(struct macb *bp, int offset, u32 value);
 
 	unsigned int		rx_tail;
 	unsigned int		rx_prepared_head;
 	struct macb_dma_desc	*rx_ring;
+	struct macb_dma_desc	*rx_ring_tieoff;
 	struct sk_buff		**rx_skbuff;
 	void			*rx_buffers;
 	size_t			rx_buffer_size;
 
 	unsigned int		num_queues;
+	unsigned int		queue_mask;
 	struct macb_queue	queues[MACB_MAX_QUEUES];
 
 	spinlock_t		lock;
@@ -873,15 +889,16 @@ struct macb {
 	}			hw_stats;
 
 	dma_addr_t		rx_ring_dma;
+	dma_addr_t		rx_ring_tieoff_dma;
 	dma_addr_t		rx_buffers_dma;
 
 	struct macb_or_gem_ops	macbgem_ops;
 
 	struct mii_bus		*mii_bus;
 	struct phy_device	*phy_dev;
-	unsigned int 		link;
-	unsigned int 		speed;
-	unsigned int 		duplex;
+	int 			link;
+	int 			speed;
+	int 			duplex;
 
 	u32			caps;
 	unsigned int		dma_burst_length;
@@ -895,8 +912,10 @@ struct macb {
 	unsigned int		max_tx_length;
 
 	u64			ethtool_stats[GEM_STATS_LEN];
+
 	unsigned int		rx_frm_len_mask;
 	unsigned int		jumbo_max_len;
+
 	unsigned int		tsu_clk;
 	struct ptp_clock	*ptp_clock;
 	struct ptp_clock_info	ptp_caps;
@@ -905,15 +924,6 @@ struct macb {
 	unsigned int		ns_incr;
 	unsigned int		subns_incr;
 };
-
-extern const struct ethtool_ops macb_ethtool_ops;
-
-int macb_mii_init(struct macb *bp);
-int macb_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
-struct net_device_stats *macb_get_stats(struct net_device *dev);
-void macb_set_rx_mode(struct net_device *dev);
-void macb_set_hwaddr(struct macb *bp);
-void macb_get_hwaddr(struct macb *bp);
 
 static inline bool macb_is_gem(struct macb *bp)
 {

@@ -191,6 +191,7 @@
 #define XILINX_DP_SUB_AV_BUF_CLK_SRC_AUD_FROM_PS		BIT(1)
 #define XILINX_DP_SUB_AV_BUF_CLK_SRC_VID_INTERNAL_TIMING	BIT(2)
 #define XILINX_DP_SUB_AV_BUF_SRST_REG				0x124
+#define XILINX_DP_SUB_AV_BUF_SRST_REG_VID_RST			BIT(1)
 #define XILINX_DP_SUB_AV_BUF_AUDIO_CH_CONFIG			0x12c
 #define XILINX_DP_SUB_AV_BUF_GFX_COMP0_SF			0x200
 #define XILINX_DP_SUB_AV_BUF_GFX_COMP1_SF			0x204
@@ -316,6 +317,8 @@ struct xilinx_drm_dp_sub {
 	void (*vblank_fn)(void *);
 	void *vblank_data;
 	bool vid_clk_pl;
+	u32 alpha;
+	bool alpha_en;
 };
 
 /**
@@ -776,6 +779,31 @@ xilinx_drm_dp_sub_av_buf_enable_aud(struct xilinx_drm_dp_sub_av_buf *av_buf)
 }
 
 /**
+ * xilinx_drm_dp_sub_av_buf_enable - Enable the video pipe
+ * @av_buf: av buffer manager
+ *
+ * De-assert the video pipe reset
+ */
+static void
+xilinx_drm_dp_sub_av_buf_enable(struct xilinx_drm_dp_sub_av_buf *av_buf)
+{
+	xilinx_drm_writel(av_buf->base, XILINX_DP_SUB_AV_BUF_SRST_REG, 0);
+}
+
+/**
+ * xilinx_drm_dp_sub_av_buf_disable - Disable the video pipe
+ * @av_buf: av buffer manager
+ *
+ * Assert the video pipe reset
+ */
+static void
+xilinx_drm_dp_sub_av_buf_disable(struct xilinx_drm_dp_sub_av_buf *av_buf)
+{
+	xilinx_drm_writel(av_buf->base, XILINX_DP_SUB_AV_BUF_SRST_REG,
+			  XILINX_DP_SUB_AV_BUF_SRST_REG_VID_RST);
+}
+
+/**
  * xilinx_drm_dp_sub_av_buf_disable_aud - Disable audio
  * @av_buf: av buffer manager
  *
@@ -1036,6 +1064,21 @@ void xilinx_drm_dp_sub_layer_enable(struct xilinx_drm_dp_sub *dp_sub,
 	xilinx_drm_dp_sub_av_buf_enable_vid(&dp_sub->av_buf, layer);
 	xilinx_drm_dp_sub_blend_layer_enable(&dp_sub->blend, layer);
 	layer->enabled = true;
+	if (layer->other->enabled) {
+		xilinx_drm_dp_sub_blend_set_alpha(&dp_sub->blend,
+						  dp_sub->alpha);
+		xilinx_drm_dp_sub_blend_enable_alpha(&dp_sub->blend,
+						     dp_sub->alpha_en);
+	} else {
+		u32 alpha;
+
+		if (layer->id == XILINX_DRM_DP_SUB_LAYER_VID)
+			alpha = 0;
+		else
+			alpha = XILINX_DRM_DP_SUB_MAX_ALPHA;
+		xilinx_drm_dp_sub_blend_set_alpha(&dp_sub->blend, alpha);
+		xilinx_drm_dp_sub_blend_enable_alpha(&dp_sub->blend, true);
+	}
 }
 EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_layer_enable);
 
@@ -1052,6 +1095,16 @@ void xilinx_drm_dp_sub_layer_disable(struct xilinx_drm_dp_sub *dp_sub,
 	xilinx_drm_dp_sub_av_buf_disable_vid(&dp_sub->av_buf, layer);
 	xilinx_drm_dp_sub_blend_layer_disable(&dp_sub->blend, layer);
 	layer->enabled = false;
+	if (layer->other->enabled) {
+		u32 alpha;
+
+		if (layer->id == XILINX_DRM_DP_SUB_LAYER_VID)
+			alpha = XILINX_DRM_DP_SUB_MAX_ALPHA;
+		else
+			alpha = 0;
+		xilinx_drm_dp_sub_blend_set_alpha(&dp_sub->blend, alpha);
+		xilinx_drm_dp_sub_blend_enable_alpha(&dp_sub->blend, true);
+	}
 }
 EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_layer_disable);
 
@@ -1153,7 +1206,10 @@ EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_set_bg_color);
  */
 void xilinx_drm_dp_sub_set_alpha(struct xilinx_drm_dp_sub *dp_sub, u32 alpha)
 {
-	xilinx_drm_dp_sub_blend_set_alpha(&dp_sub->blend, alpha);
+	dp_sub->alpha = alpha;
+	if (dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_VID].enabled &&
+	    dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_GFX].enabled)
+		xilinx_drm_dp_sub_blend_set_alpha(&dp_sub->blend, alpha);
 }
 EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_set_alpha);
 
@@ -1167,7 +1223,10 @@ EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_set_alpha);
 void
 xilinx_drm_dp_sub_enable_alpha(struct xilinx_drm_dp_sub *dp_sub, bool enable)
 {
-	xilinx_drm_dp_sub_blend_enable_alpha(&dp_sub->blend, enable);
+	dp_sub->alpha_en = enable;
+	if (dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_VID].enabled &&
+	    dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_GFX].enabled)
+		xilinx_drm_dp_sub_blend_enable_alpha(&dp_sub->blend, enable);
 }
 EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_enable_alpha);
 
@@ -1229,6 +1288,7 @@ void xilinx_drm_dp_sub_enable(struct xilinx_drm_dp_sub *dp_sub)
 
 	vid_fmt = dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_VID].fmt;
 	gfx_fmt = dp_sub->layers[XILINX_DRM_DP_SUB_LAYER_GFX].fmt;
+	xilinx_drm_dp_sub_av_buf_enable(&dp_sub->av_buf);
 	xilinx_drm_dp_sub_av_buf_init_fmts(&dp_sub->av_buf, vid_fmt, gfx_fmt);
 	xilinx_drm_dp_sub_av_buf_init_sf(&dp_sub->av_buf, vid_fmt, gfx_fmt);
 	xilinx_drm_dp_sub_av_buf_set_vid_clock_src(&dp_sub->av_buf,
@@ -1251,6 +1311,7 @@ void xilinx_drm_dp_sub_disable(struct xilinx_drm_dp_sub *dp_sub)
 {
 	xilinx_drm_dp_sub_av_buf_disable_aud(&dp_sub->av_buf);
 	xilinx_drm_dp_sub_av_buf_disable_buf(&dp_sub->av_buf);
+	xilinx_drm_dp_sub_av_buf_disable(&dp_sub->av_buf);
 }
 EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_disable);
 
