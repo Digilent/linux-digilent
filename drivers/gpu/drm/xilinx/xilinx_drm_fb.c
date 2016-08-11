@@ -180,13 +180,14 @@ void xilinx_drm_fb_set_config(struct drm_fb_helper *fb_helper,
 		struct xilinx_drm_fbdev *fbdev = to_fbdev(fb_helper);
 
 		if (fbdev && fb_helper->crtc_info &&
-		    fb_helper->crtc_info[0].mode_set.mode) {
+		    fb_helper->crtc_info[0].mode_set.mode && set->mode) {
 			if (!fbdev->mode_backup) {
 				fbdev->old_mode =
 					*fb_helper->crtc_info[0].mode_set.mode;
 				fbdev->mode_backup = true;
 			}
-			*fb_helper->crtc_info[0].mode_set.mode = *set->mode;
+			drm_mode_copy(fb_helper->crtc_info[0].mode_set.mode,
+					set->mode);
 	       }
 	}
 }
@@ -445,7 +446,8 @@ void xilinx_drm_fb_restore_mode(struct drm_fb_helper *fb_helper)
 	if (fb_helper && fbdev && fbdev->mode_backup &&
 	    fb_helper->crtc_info &&
 	    fb_helper->crtc_info[0].mode_set.mode) {
-		*fb_helper->crtc_info[0].mode_set.mode = fbdev->old_mode;
+		drm_mode_copy(fb_helper->crtc_info[0].mode_set.mode,
+				&(fbdev->old_mode));
 		fbdev->mode_backup = false;
 	}
 
