@@ -155,17 +155,30 @@
 				status = "okay";
 			};
 
-			spi0: spi@10600 {
-				pinctrl-0 = <&spi0_pins2>;
-				pinctrl-names = "default";
+			nand@d0000 {
 				status = "okay";
+				num-cs = <1>;
+				marvell,nand-keep-config;
+				marvell,nand-enable-arbiter;
+				nand-on-flash-bbt;
 
-				spi-flash@0 {
+				partitions {
+					compatible = "fixed-partitions";
 					#address-cells = <1>;
 					#size-cells = <1>;
-					compatible = "mx25l25635e", "jedec,spi-nor";
-					reg = <0>; /* Chip select 0 */
-					spi-max-frequency = <50000000>;
+
+					partition@0 {
+						label = "U-Boot";
+						reg = <0 0x800000>;
+					};
+					partition@800000 {
+						label = "Linux";
+						reg = <0x800000 0x800000>;
+					};
+					partition@1000000 {
+						label = "Filesystem";
+						reg = <0x1000000 0x3f000000>;
+					};
 				};
 			};
 		};
@@ -247,3 +260,18 @@
 		compatible = "linux,spdif-dir";
 	};
 };
+
+&spi0 {
+	pinctrl-0 = <&spi0_pins2>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	spi-flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "mx25l25635e", "jedec,spi-nor";
+		reg = <0>; /* Chip select 0 */
+		spi-max-frequency = <50000000>;
+	};
+};
+

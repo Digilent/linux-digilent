@@ -73,15 +73,12 @@
 #include <net/icmp.h>
 #include <net/checksum.h>
 #include <net/inetpeer.h>
+#include <net/lwtunnel.h>
 #include <linux/igmp.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_bridge.h>
-#include <linux/mroute.h>
 #include <linux/netlink.h>
 #include <linux/tcp.h>
-
-int sysctl_ip_default_ttl __read_mostly = IPDEFTTL;
-EXPORT_SYMBOL(sysctl_ip_default_ttl);
 
 static int
 ip_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
@@ -102,6 +99,16 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 
 	iph->tot_len = htons(skb->len);
 	ip_send_check(iph);
+
+	/* if egress device is enslaved to an L3 master device pass the
+	 * skb to its handler for processing
+	 */
+	skb = l3mdev_ip_out(sk, skb);
+	if (unlikely(!skb))
+		return 0;
+
+	skb->protocol = htons(ETH_P_IP);
+
 	return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
 		       net, sk, skb, NULL, skb_dst(skb)->dev,
 		       dst_output);
@@ -201,6 +208,13 @@ static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *s
 		skb = skb2;
 	}
 
+	if (lwtunnel_xmit_redirect(dst->lwtstate)) {
+		int res = lwtunnel_xmit(skb);
+
+		if (res < 0 || res == LWTUNNEL_XMIT_DONE)
+			return res;
+	}
+
 	rcu_read_lock_bh();
 	nexthop = (__force u32) rt_nexthop(rt, ip_hdr(skb)->daddr);
 	neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
@@ -227,19 +241,26 @@ static int ip_finish_output_gso(struct net *net, struct sock *sk,
 	struct sk_buff *segs;
 	int ret = 0;
 
-	/* common case: locally created skb or seglen is <= mtu */
-	if (((IPCB(skb)->flags & IPSKB_FORWARDED) == 0) ||
-	      skb_gso_network_seglen(skb) <= mtu)
+	/* common case: seglen is <= mtu
+	 */
+	if (skb_gso_validate_mtu(skb, mtu))
 		return ip_finish_output2(net, sk, skb);
 
-	/* Slowpath -  GSO segment length is exceeding the dst MTU.
+	/* Slowpath -  GSO segment length exceeds the egress MTU.
 	 *
-	 * This can happen in two cases:
-	 * 1) TCP GRO packet, DF bit not set
-	 * 2) skb arrived via virtio-net, we thus get TSO/GSO skbs directly
-	 * from host network stack.
+	 * This can happen in several cases:
+	 *  - Forwarding of a TCP GRO skb, when DF flag is not set.
+	 *  - Forwarding of an skb that arrived on a virtualization interface
+	 *    (virtio-net/vhost/tap) with TSO/GSO size set by other network
+	 *    stack.
+	 *  - Local GSO skb transmitted on an NETIF_F_TSO tunnel stacked over an
+	 *    interface with a smaller MTU.
+	 *  - Arriving GRO skb (or GSO skb in a virtualized environment) that is
+	 *    bridged to a NETIF_F_TSO tunnel stacked over an interface with an
+	 *    insufficent MTU.
 	 */
 	features = netif_skb_features(skb);
+	BUILD_BUG_ON(sizeof(*IPCB(skb)) > SKB_SGO_CB_OFFSET);
 	segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
 	if (IS_ERR_OR_NULL(segs)) {
 		kfree_skb(skb);
@@ -274,7 +295,7 @@ static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *sk
 		return dst_output(net, sk, skb);
 	}
 #endif
-	mtu = ip_skb_dst_mtu(skb);
+	mtu = ip_skb_dst_mtu(sk, skb);
 	if (skb_is_gso(skb))
 		return ip_finish_output_gso(net, sk, skb, mtu);
 
@@ -483,7 +504,7 @@ static void ip_copy_metadata(struct sk_buff *to, struct sk_buff *from)
 	to->tc_index = from->tc_index;
 #endif
 	nf_copy(to, from);
-#if defined(CONFIG_IP_VS) || defined(CONFIG_IP_VS_MODULE)
+#if IS_ENABLED(CONFIG_IP_VS)
 	to->ipvs_property = from->ipvs_property;
 #endif
 	skb_copy_secmark(to, from);
@@ -523,15 +544,12 @@ int ip_do_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 {
 	struct iphdr *iph;
 	int ptr;
-	struct net_device *dev;
 	struct sk_buff *skb2;
 	unsigned int mtu, hlen, left, len, ll_rs;
 	int offset;
 	__be16 not_last_frag;
 	struct rtable *rt = skb_rtable(skb);
 	int err = 0;
-
-	dev = rt->dst.dev;
 
 	/* for offloaded checksums cleanup checksum before fragmentation */
 	if (skb->ip_summed == CHECKSUM_PARTIAL &&
@@ -544,7 +562,7 @@ int ip_do_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 
 	iph = ip_hdr(skb);
 
-	mtu = ip_skb_dst_mtu(skb);
+	mtu = ip_skb_dst_mtu(sk, skb);
 	if (IPCB(skb)->frag_max_size && IPCB(skb)->frag_max_size < mtu)
 		mtu = IPCB(skb)->frag_max_size;
 
@@ -912,7 +930,7 @@ static int __ip_append_data(struct sock *sk,
 	 */
 	if (transhdrlen &&
 	    length + fragheaderlen <= mtu &&
-	    rt->dst.dev->features & NETIF_F_V4_CSUM &&
+	    rt->dst.dev->features & (NETIF_F_HW_CSUM | NETIF_F_IP_CSUM) &&
 	    !(flags & MSG_MORE) &&
 	    !exthdrlen)
 		csummode = CHECKSUM_PARTIAL;
@@ -921,7 +939,7 @@ static int __ip_append_data(struct sock *sk,
 	if (((length > mtu) || (skb && skb_is_gso(skb))) &&
 	    (sk->sk_protocol == IPPROTO_UDP) &&
 	    (rt->dst.dev->features & NETIF_F_UFO) && !rt->dst.header_len &&
-	    (sk->sk_type == SOCK_DGRAM)) {
+	    (sk->sk_type == SOCK_DGRAM) && !sk->sk_no_check_tx) {
 		err = ip_ufo_append_data(sk, queue, getfrag, from, length,
 					 hh_len, fragheaderlen, transhdrlen,
 					 maxfraglen, flags);
@@ -1236,13 +1254,16 @@ ssize_t	ip_append_page(struct sock *sk, struct flowi4 *fl4, struct page *page,
 	if (!skb)
 		return -EINVAL;
 
-	cork->length += size;
 	if ((size + skb->len > mtu) &&
 	    (sk->sk_protocol == IPPROTO_UDP) &&
 	    (rt->dst.dev->features & NETIF_F_UFO)) {
+		if (skb->ip_summed != CHECKSUM_PARTIAL)
+			return -EOPNOTSUPP;
+
 		skb_shinfo(skb)->gso_size = mtu - fragheaderlen;
 		skb_shinfo(skb)->gso_type = SKB_GSO_UDP;
 	}
+	cork->length += size;
 
 	while (size > 0) {
 		if (skb_is_gso(skb)) {

@@ -33,44 +33,86 @@ static unsigned int hex(char c)
 	return c - 'A' + 10;
 }
 
-static size_t read_objdump_line(const char *line, size_t line_len, void *buf,
-			      size_t len)
+static size_t read_objdump_chunk(const char **line, unsigned char **buf,
+				 size_t *buf_len)
+{
+	size_t bytes_read = 0;
+	unsigned char *chunk_start = *buf;
+
+	/* Read bytes */
+	while (*buf_len > 0) {
+		char c1, c2;
+
+		/* Get 2 hex digits */
+		c1 = *(*line)++;
+		if (!isxdigit(c1))
+			break;
+		c2 = *(*line)++;
+		if (!isxdigit(c2))
+			break;
+
+		/* Store byte and advance buf */
+		**buf = (hex(c1) << 4) | hex(c2);
+		(*buf)++;
+		(*buf_len)--;
+		bytes_read++;
+
+		/* End of chunk? */
+		if (isspace(**line))
+			break;
+	}
+
+	/*
+	 * objdump will display raw insn as LE if code endian
+	 * is LE and bytes_per_chunk > 1. In that case reverse
+	 * the chunk we just read.
+	 *
+	 * see disassemble_bytes() at binutils/objdump.c for details
+	 * how objdump chooses display endian)
+	 */
+	if (bytes_read > 1 && !bigendian()) {
+		unsigned char *chunk_end = chunk_start + bytes_read - 1;
+		unsigned char tmp;
+
+		while (chunk_start < chunk_end) {
+			tmp = *chunk_start;
+			*chunk_start = *chunk_end;
+			*chunk_end = tmp;
+			chunk_start++;
+			chunk_end--;
+		}
+	}
+
+	return bytes_read;
+}
+
+static size_t read_objdump_line(const char *line, unsigned char *buf,
+				size_t buf_len)
 {
 	const char *p;
-	size_t i, j = 0;
+	size_t ret, bytes_read = 0;
 
 	/* Skip to a colon */
 	p = strchr(line, ':');
 	if (!p)
 		return 0;
-	i = p + 1 - line;
+	p++;
 
-	/* Read bytes */
-	while (j < len) {
-		char c1, c2;
-
-		/* Skip spaces */
-		for (; i < line_len; i++) {
-			if (!isspace(line[i]))
-				break;
-		}
-		/* Get 2 hex digits */
-		if (i >= line_len || !isxdigit(line[i]))
+	/* Skip initial spaces */
+	while (*p) {
+		if (!isspace(*p))
 			break;
-		c1 = line[i++];
-		if (i >= line_len || !isxdigit(line[i]))
-			break;
-		c2 = line[i++];
-		/* Followed by a space */
-		if (i < line_len && line[i] && !isspace(line[i]))
-			break;
-		/* Store byte */
-		*(unsigned char *)buf = (hex(c1) << 4) | hex(c2);
-		buf += 1;
-		j++;
+		p++;
 	}
+
+	do {
+		ret = read_objdump_chunk(&p, &buf, &buf_len);
+		bytes_read += ret;
+		p++;
+	} while (ret > 0);
+
 	/* return number of successfully read bytes */
-	return j;
+	return bytes_read;
 }
 
 static int read_objdump_output(FILE *f, void *buf, size_t *len, u64 start_addr)
@@ -95,7 +137,7 @@ static int read_objdump_output(FILE *f, void *buf, size_t *len, u64 start_addr)
 		}
 
 		/* read objdump data into temporary buffer */
-		read_bytes = read_objdump_line(line, ret, tmp, sizeof(tmp));
+		read_bytes = read_objdump_line(line, tmp, sizeof(tmp));
 		if (!read_bytes)
 			continue;
 
@@ -152,7 +194,7 @@ static int read_via_objdump(const char *filename, u64 addr, void *buf,
 
 	ret = read_objdump_output(f, buf, &len, addr);
 	if (len) {
-		pr_debug("objdump read too few bytes\n");
+		pr_debug("objdump read too few bytes: %zd\n", len);
 		if (!ret)
 			ret = len;
 	}
@@ -221,7 +263,7 @@ static int read_object_code(u64 addr, size_t len, u8 cpumode,
 	 * Converting addresses for use by objdump requires more information.
 	 * map__load() does that.  See map__rip_2objdump() for details.
 	 */
-	if (map__load(al.map, NULL))
+	if (map__load(al.map))
 		return -1;
 
 	/* objdump struggles with kcore - try each map only once */
@@ -293,7 +335,6 @@ static int process_sample_event(struct machine *machine,
 {
 	struct perf_sample sample;
 	struct thread *thread;
-	u8 cpumode;
 	int ret;
 
 	if (perf_evlist__parse_sample(evlist, event, &sample)) {
@@ -307,9 +348,7 @@ static int process_sample_event(struct machine *machine,
 		return -1;
 	}
 
-	cpumode = event->header.misc & PERF_RECORD_MISC_CPUMODE_MASK;
-
-	ret = read_object_code(sample.ip, READLEN, cpumode, thread, state);
+	ret = read_object_code(sample.ip, READLEN, sample.cpumode, thread, state);
 	thread__put(thread);
 	return ret;
 }
@@ -433,14 +472,13 @@ enum {
 
 static int do_test_code_reading(bool try_kcore)
 {
-	struct machines machines;
 	struct machine *machine;
 	struct thread *thread;
 	struct record_opts opts = {
 		.mmap_pages	     = UINT_MAX,
 		.user_freq	     = UINT_MAX,
 		.user_interval	     = ULLONG_MAX,
-		.freq		     = 4000,
+		.freq		     = 500,
 		.target		     = {
 			.uses_mmap   = true,
 		},
@@ -459,8 +497,7 @@ static int do_test_code_reading(bool try_kcore)
 
 	pid = getpid();
 
-	machines__init(&machines);
-	machine = &machines.host;
+	machine = machine__new_host();
 
 	ret = machine__create_kernel_maps(machine);
 	if (ret < 0) {
@@ -474,7 +511,7 @@ static int do_test_code_reading(bool try_kcore)
 
 	/* Load kernel map */
 	map = machine__kernel_map(machine);
-	ret = map__load(map, NULL);
+	ret = map__load(map);
 	if (ret < 0) {
 		pr_debug("map__load failed\n");
 		goto out_err;
@@ -537,7 +574,7 @@ static int do_test_code_reading(bool try_kcore)
 			goto out_put;
 		}
 
-		perf_evlist__config(evlist, &opts);
+		perf_evlist__config(evlist, &opts, NULL);
 
 		evsel = perf_evlist__first(evlist);
 
@@ -549,12 +586,25 @@ static int do_test_code_reading(bool try_kcore)
 		if (ret < 0) {
 			if (!excl_kernel) {
 				excl_kernel = true;
+				/*
+				 * Both cpus and threads are now owned by evlist
+				 * and will be freed by following perf_evlist__set_maps
+				 * call. Getting refference to keep them alive.
+				 */
+				cpu_map__get(cpus);
+				thread_map__get(threads);
 				perf_evlist__set_maps(evlist, NULL, NULL);
 				perf_evlist__delete(evlist);
 				evlist = NULL;
 				continue;
 			}
-			pr_debug("perf_evlist__open failed\n");
+
+			if (verbose) {
+				char errbuf[512];
+				perf_evlist__strerror_open(evlist, errno, errbuf, sizeof(errbuf));
+				pr_debug("perf_evlist__open() failed!\n%s\n", errbuf);
+			}
+
 			goto out_put;
 		}
 		break;
@@ -594,14 +644,13 @@ out_err:
 		cpu_map__put(cpus);
 		thread_map__put(threads);
 	}
-	machines__destroy_kernel_maps(&machines);
 	machine__delete_threads(machine);
-	machines__exit(&machines);
+	machine__delete(machine);
 
 	return err;
 }
 
-int test__code_reading(void)
+int test__code_reading(int subtest __maybe_unused)
 {
 	int ret;
 

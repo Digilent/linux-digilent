@@ -30,7 +30,7 @@
 #include <linux/vmalloc.h>
 
 #include <media/soc_camera.h>
-#include <media/soc_mediabus.h>
+#include <media/drv-intf/soc_mediabus.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-clk.h>
 #include <media/v4l2-common.h>
@@ -581,7 +581,7 @@ static int soc_camera_set_fmt(struct soc_camera_device *icd,
 	dev_dbg(icd->pdev, "S_FMT(%c%c%c%c, %ux%u)\n",
 		pixfmtstr(pix->pixelformat), pix->width, pix->height);
 
-	/* We always call try_fmt() before set_fmt() or set_crop() */
+	/* We always call try_fmt() before set_fmt() or set_selection() */
 	ret = soc_camera_try_fmt(icd, f);
 	if (ret < 0)
 		return ret;
@@ -1025,72 +1025,6 @@ static int soc_camera_streamoff(struct file *file, void *priv,
 	return ret;
 }
 
-static int soc_camera_cropcap(struct file *file, void *fh,
-			      struct v4l2_cropcap *a)
-{
-	struct soc_camera_device *icd = file->private_data;
-	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
-
-	return ici->ops->cropcap(icd, a);
-}
-
-static int soc_camera_g_crop(struct file *file, void *fh,
-			     struct v4l2_crop *a)
-{
-	struct soc_camera_device *icd = file->private_data;
-	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
-	int ret;
-
-	ret = ici->ops->get_crop(icd, a);
-
-	return ret;
-}
-
-/*
- * According to the V4L2 API, drivers shall not update the struct v4l2_crop
- * argument with the actual geometry, instead, the user shall use G_CROP to
- * retrieve it.
- */
-static int soc_camera_s_crop(struct file *file, void *fh,
-			     const struct v4l2_crop *a)
-{
-	struct soc_camera_device *icd = file->private_data;
-	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
-	const struct v4l2_rect *rect = &a->c;
-	struct v4l2_crop current_crop;
-	int ret;
-
-	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-
-	dev_dbg(icd->pdev, "S_CROP(%ux%u@%u:%u)\n",
-		rect->width, rect->height, rect->left, rect->top);
-
-	current_crop.type = a->type;
-
-	/* If get_crop fails, we'll let host and / or client drivers decide */
-	ret = ici->ops->get_crop(icd, &current_crop);
-
-	/* Prohibit window size change with initialised buffers */
-	if (ret < 0) {
-		dev_err(icd->pdev,
-			"S_CROP denied: getting current crop failed\n");
-	} else if ((a->c.width == current_crop.c.width &&
-		    a->c.height == current_crop.c.height) ||
-		   !is_streaming(ici, icd)) {
-		/* same size or not streaming - use .set_crop() */
-		ret = ici->ops->set_crop(icd, a);
-	} else if (ici->ops->set_livecrop) {
-		ret = ici->ops->set_livecrop(icd, a);
-	} else {
-		dev_err(icd->pdev,
-			"S_CROP denied: queue initialised and sizes differ\n");
-		ret = -EBUSY;
-	}
-
-	return ret;
-}
-
 static int soc_camera_g_selection(struct file *file, void *fh,
 				  struct v4l2_selection *s)
 {
@@ -1100,9 +1034,6 @@ static int soc_camera_g_selection(struct file *file, void *fh,
 	/* With a wrong type no need to try to fall back to cropping */
 	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
-
-	if (!ici->ops->get_selection)
-		return -ENOTTY;
 
 	return ici->ops->get_selection(icd, s);
 }
@@ -1135,10 +1066,11 @@ static int soc_camera_s_selection(struct file *file, void *fh,
 			return -EBUSY;
 	}
 
-	if (!ici->ops->set_selection)
-		return -ENOTTY;
-
-	ret = ici->ops->set_selection(icd, s);
+	if (s->target == V4L2_SEL_TGT_CROP && is_streaming(ici, icd) &&
+	    ici->ops->set_liveselection)
+		ret = ici->ops->set_liveselection(icd, s);
+	else
+		ret = ici->ops->set_selection(icd, s);
 	if (!ret &&
 	    s->target == V4L2_SEL_TGT_COMPOSE) {
 		icd->user_width = s->r.width;
@@ -1360,7 +1292,7 @@ static int soc_camera_i2c_init(struct soc_camera_device *icd,
 	struct soc_camera_host_desc *shd = &sdesc->host_desc;
 	struct i2c_adapter *adap;
 	struct v4l2_subdev *subdev;
-	char clk_name[V4L2_SUBDEV_NAME_SIZE];
+	char clk_name[V4L2_CLK_NAME_SIZE];
 	int ret;
 
 	/* First find out how we link the main client */
@@ -1391,8 +1323,8 @@ static int soc_camera_i2c_init(struct soc_camera_device *icd,
 	ssdd->sd_pdata.regulators = NULL;
 	shd->board_info->platform_data = ssdd;
 
-	snprintf(clk_name, sizeof(clk_name), "%d-%04x",
-		 shd->i2c_adapter_id, shd->board_info->addr);
+	v4l2_clk_name_i2c(clk_name, sizeof(clk_name),
+			  shd->i2c_adapter_id, shd->board_info->addr);
 
 	icd->clk = v4l2_clk_register(&soc_camera_clk_ops, clk_name, icd);
 	if (IS_ERR(icd->clk)) {
@@ -1493,6 +1425,8 @@ static void soc_camera_async_unbind(struct v4l2_async_notifier *notifier,
 					struct soc_camera_async_client, notifier);
 	struct soc_camera_device *icd = platform_get_drvdata(sasc->pdev);
 
+	icd->control = NULL;
+
 	if (icd->clk) {
 		v4l2_clk_unregister(icd->clk);
 		icd->clk = NULL;
@@ -1526,7 +1460,7 @@ static int scan_async_group(struct soc_camera_host *ici,
 	struct soc_camera_async_client *sasc;
 	struct soc_camera_device *icd;
 	struct soc_camera_desc sdesc = {.host_desc.bus_id = ici->nr,};
-	char clk_name[V4L2_SUBDEV_NAME_SIZE];
+	char clk_name[V4L2_CLK_NAME_SIZE];
 	unsigned int i;
 	int ret;
 
@@ -1572,8 +1506,9 @@ static int scan_async_group(struct soc_camera_host *ici,
 	icd->sasc = sasc;
 	icd->parent = ici->v4l2_dev.dev;
 
-	snprintf(clk_name, sizeof(clk_name), "%d-%04x",
-		 sasd->asd.match.i2c.adapter_id, sasd->asd.match.i2c.address);
+	v4l2_clk_name_i2c(clk_name, sizeof(clk_name),
+			  sasd->asd.match.i2c.adapter_id,
+			  sasd->asd.match.i2c.address);
 
 	icd->clk = v4l2_clk_register(&soc_camera_clk_ops, clk_name, icd);
 	if (IS_ERR(icd->clk)) {
@@ -1631,7 +1566,7 @@ static int soc_of_bind(struct soc_camera_host *ici,
 	struct soc_camera_async_client *sasc;
 	struct soc_of_info *info;
 	struct i2c_client *client;
-	char clk_name[V4L2_SUBDEV_NAME_SIZE + 32];
+	char clk_name[V4L2_CLK_NAME_SIZE];
 	int ret;
 
 	/* allocate a new subdev and add match info to it */
@@ -1674,11 +1609,11 @@ static int soc_of_bind(struct soc_camera_host *ici,
 	client = of_find_i2c_device_by_node(remote);
 
 	if (client)
-		snprintf(clk_name, sizeof(clk_name), "%d-%04x",
-			 client->adapter->nr, client->addr);
+		v4l2_clk_name_i2c(clk_name, sizeof(clk_name),
+				  client->adapter->nr, client->addr);
 	else
-		snprintf(clk_name, sizeof(clk_name), "of-%s",
-			 of_node_full_name(remote));
+		v4l2_clk_name_of(clk_name, sizeof(clk_name),
+				 of_node_full_name(remote));
 
 	icd->clk = v4l2_clk_register(&soc_camera_clk_ops, clk_name, icd);
 	if (IS_ERR(icd->clk)) {
@@ -1878,23 +1813,40 @@ static int soc_camera_remove(struct soc_camera_device *icd)
 	return 0;
 }
 
-static int default_cropcap(struct soc_camera_device *icd,
-			   struct v4l2_cropcap *a)
+static int default_g_selection(struct soc_camera_device *icd,
+			       struct v4l2_selection *sel)
 {
 	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
-	return v4l2_subdev_call(sd, video, cropcap, a);
+	struct v4l2_subdev_selection sdsel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.target = sel->target,
+	};
+	int ret;
+
+	ret = v4l2_subdev_call(sd, pad, get_selection, NULL, &sdsel);
+	if (ret)
+		return ret;
+	sel->r = sdsel.r;
+	return 0;
 }
 
-static int default_g_crop(struct soc_camera_device *icd, struct v4l2_crop *a)
+static int default_s_selection(struct soc_camera_device *icd,
+			       struct v4l2_selection *sel)
 {
 	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
-	return v4l2_subdev_call(sd, video, g_crop, a);
-}
+	struct v4l2_subdev_selection sdsel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.target = sel->target,
+		.flags = sel->flags,
+		.r = sel->r,
+	};
+	int ret;
 
-static int default_s_crop(struct soc_camera_device *icd, const struct v4l2_crop *a)
-{
-	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
-	return v4l2_subdev_call(sd, video, s_crop, a);
+	ret = v4l2_subdev_call(sd, pad, set_selection, NULL, &sdsel);
+	if (ret)
+		return ret;
+	sel->r = sdsel.r;
+	return 0;
 }
 
 static int default_g_parm(struct soc_camera_device *icd,
@@ -1965,12 +1917,10 @@ int soc_camera_host_register(struct soc_camera_host *ici)
 	    !ici->v4l2_dev.dev)
 		return -EINVAL;
 
-	if (!ici->ops->set_crop)
-		ici->ops->set_crop = default_s_crop;
-	if (!ici->ops->get_crop)
-		ici->ops->get_crop = default_g_crop;
-	if (!ici->ops->cropcap)
-		ici->ops->cropcap = default_cropcap;
+	if (!ici->ops->set_selection)
+		ici->ops->set_selection = default_s_selection;
+	if (!ici->ops->get_selection)
+		ici->ops->get_selection = default_g_selection;
 	if (!ici->ops->set_parm)
 		ici->ops->set_parm = default_s_parm;
 	if (!ici->ops->get_parm)
@@ -2123,9 +2073,6 @@ static const struct v4l2_ioctl_ops soc_camera_ioctl_ops = {
 	.vidioc_expbuf		 = soc_camera_expbuf,
 	.vidioc_streamon	 = soc_camera_streamon,
 	.vidioc_streamoff	 = soc_camera_streamoff,
-	.vidioc_cropcap		 = soc_camera_cropcap,
-	.vidioc_g_crop		 = soc_camera_g_crop,
-	.vidioc_s_crop		 = soc_camera_s_crop,
 	.vidioc_g_selection	 = soc_camera_g_selection,
 	.vidioc_s_selection	 = soc_camera_s_selection,
 	.vidioc_g_parm		 = soc_camera_g_parm,

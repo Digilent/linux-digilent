@@ -27,7 +27,6 @@
 #include <sound/compress_driver.h>
 #include <sound/control.h>
 #include <sound/ac97_codec.h>
-#include <sound/soc-topology.h>
 
 /*
  * Convenience kcontrol builders
@@ -110,6 +109,14 @@
 	.put = snd_soc_put_volsw, \
 	.private_value = SOC_DOUBLE_VALUE(reg, shift_left, shift_right, \
 					  max, invert, 0) }
+#define SOC_DOUBLE_STS(xname, reg, shift_left, shift_right, max, invert) \
+{									\
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname),		\
+	.info = snd_soc_info_volsw, .get = snd_soc_get_volsw,		\
+	.access = SNDRV_CTL_ELEM_ACCESS_READ |				\
+		SNDRV_CTL_ELEM_ACCESS_VOLATILE,				\
+	.private_value = SOC_DOUBLE_VALUE(reg, shift_left, shift_right,	\
+					  max, invert, 0) }
 #define SOC_DOUBLE_R(xname, reg_left, reg_right, xshift, xmax, xinvert) \
 {	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname), \
 	.info = snd_soc_info_volsw, \
@@ -172,6 +179,17 @@
 	.get = snd_soc_get_volsw, .put = snd_soc_put_volsw, \
 	.private_value = SOC_DOUBLE_R_S_VALUE(reg_left, reg_right, xshift, \
 					    xmin, xmax, xsign_bit, xinvert) }
+#define SOC_SINGLE_S8_TLV(xname, xreg, xmin, xmax, tlv_array) \
+{	.iface  = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname), \
+	.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ | \
+		  SNDRV_CTL_ELEM_ACCESS_READWRITE, \
+	.tlv.p  = (tlv_array), \
+	.info = snd_soc_info_volsw, .get = snd_soc_get_volsw,\
+	.put = snd_soc_put_volsw, \
+	.private_value = (unsigned long)&(struct soc_mixer_control) \
+	{.reg = xreg, .rreg = xreg,  \
+	 .min = xmin, .max = xmax, .platform_max = xmax, \
+	.sign_bit = 7,} }
 #define SOC_DOUBLE_S8_TLV(xname, xreg, xmin, xmax, tlv_array) \
 {	.iface  = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname), \
 	.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ | \
@@ -293,6 +311,9 @@
 		{.base = xbase, .num_regs = xregs,	      \
 		 .mask = xmask }) }
 
+/*
+ * SND_SOC_BYTES_EXT is deprecated, please USE SND_SOC_BYTES_TLV instead
+ */
 #define SND_SOC_BYTES_EXT(xname, xcount, xhandler_get, xhandler_put) \
 {	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, \
 	.info = snd_soc_bytes_info_ext, \
@@ -393,6 +414,7 @@ struct snd_soc_jack_zone;
 struct snd_soc_jack_pin;
 #include <sound/soc-dapm.h>
 #include <sound/soc-dpcm.h>
+#include <sound/soc-topology.h>
 
 struct snd_soc_jack_gpio;
 
@@ -787,6 +809,7 @@ struct snd_soc_component {
 	unsigned int registered_as_component:1;
 
 	struct list_head list;
+	struct list_head list_aux; /* for auxiliary component of the card */
 
 	struct snd_soc_dai_driver *dai_drv;
 	int num_dai;
@@ -830,6 +853,9 @@ struct snd_soc_component {
 	int (*probe)(struct snd_soc_component *);
 	void (*remove)(struct snd_soc_component *);
 
+	/* machine specific init */
+	int (*init)(struct snd_soc_component *component);
+
 #ifdef CONFIG_DEBUG_FS
 	void (*init_debugfs)(struct snd_soc_component *component);
 	const char *debugfs_prefix;
@@ -871,14 +897,6 @@ struct snd_soc_codec_driver {
 	int (*suspend)(struct snd_soc_codec *);
 	int (*resume)(struct snd_soc_codec *);
 	struct snd_soc_component_driver component_driver;
-
-	/* Default control and setup, added after probe() is run */
-	const struct snd_kcontrol_new *controls;
-	int num_controls;
-	const struct snd_soc_dapm_widget *dapm_widgets;
-	int num_dapm_widgets;
-	const struct snd_soc_dapm_route *dapm_routes;
-	int num_dapm_routes;
 
 	/* codec wide operations */
 	int (*set_sysclk)(struct snd_soc_codec *codec,
@@ -987,7 +1005,7 @@ struct snd_soc_dai_link {
 	 */
 	const char *platform_name;
 	struct device_node *platform_of_node;
-	int be_id;	/* optional ID for machine driver BE identification */
+	int id;	/* optional ID for machine driver link identification */
 
 	const struct snd_soc_pcm_stream *params;
 	unsigned int num_params;
@@ -1037,6 +1055,9 @@ struct snd_soc_dai_link {
 
 	/* pmdown_time is ignored at stop */
 	unsigned int ignore_pmdown_time:1;
+
+	struct list_head list; /* DAI link list of the soc card */
+	struct snd_soc_dobj dobj; /* For topology */
 };
 
 struct snd_soc_codec_conf {
@@ -1101,12 +1122,20 @@ struct snd_soc_card {
 				   struct snd_soc_dapm_context *dapm,
 				   enum snd_soc_bias_level level);
 
+	int (*add_dai_link)(struct snd_soc_card *,
+			    struct snd_soc_dai_link *link);
+	void (*remove_dai_link)(struct snd_soc_card *,
+			    struct snd_soc_dai_link *link);
+
 	long pmdown_time;
 
 	/* CPU <--> Codec DAI links  */
-	struct snd_soc_dai_link *dai_link;
-	int num_links;
-	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_dai_link *dai_link;  /* predefined links only */
+	int num_links;  /* predefined links only */
+	struct list_head dai_link_list; /* all links */
+	int num_dai_links;
+
+	struct list_head rtd_list;
 	int num_rtd;
 
 	/* optional codec specific configuration */
@@ -1119,8 +1148,7 @@ struct snd_soc_card {
 	 */
 	struct snd_soc_aux_dev *aux_dev;
 	int num_aux_devs;
-	struct snd_soc_pcm_runtime *rtd_aux;
-	int num_aux_rtd;
+	struct list_head aux_comp_list;
 
 	const struct snd_kcontrol_new *controls;
 	int num_controls;
@@ -1201,6 +1229,9 @@ struct snd_soc_pcm_runtime {
 	struct dentry *debugfs_dpcm_root;
 	struct dentry *debugfs_dpcm_state;
 #endif
+
+	unsigned int num; /* 0-based and monotonic increasing */
+	struct list_head list; /* rtd list of the soc card */
 };
 
 /* mixer control */
@@ -1225,8 +1256,10 @@ struct soc_bytes_ext {
 	struct snd_soc_dobj dobj;
 
 	/* used for TLV byte control */
-	int (*get)(unsigned int __user *bytes, unsigned int size);
-	int (*put)(const unsigned int __user *bytes, unsigned int size);
+	int (*get)(struct snd_kcontrol *kcontrol, unsigned int __user *bytes,
+			unsigned int size);
+	int (*put)(struct snd_kcontrol *kcontrol, const unsigned int __user *bytes,
+			unsigned int size);
 };
 
 /* multi register control */
@@ -1506,23 +1539,13 @@ static inline void *snd_soc_platform_get_drvdata(struct snd_soc_platform *platfo
 	return snd_soc_component_get_drvdata(&platform->component);
 }
 
-static inline void snd_soc_pcm_set_drvdata(struct snd_soc_pcm_runtime *rtd,
-		void *data)
-{
-	dev_set_drvdata(rtd->dev, data);
-}
-
-static inline void *snd_soc_pcm_get_drvdata(struct snd_soc_pcm_runtime *rtd)
-{
-	return dev_get_drvdata(rtd->dev);
-}
-
 static inline void snd_soc_initialize_card_lists(struct snd_soc_card *card)
 {
 	INIT_LIST_HEAD(&card->codec_dev_list);
 	INIT_LIST_HEAD(&card->widgets);
 	INIT_LIST_HEAD(&card->paths);
 	INIT_LIST_HEAD(&card->dapm_list);
+	INIT_LIST_HEAD(&card->aux_comp_list);
 }
 
 static inline bool snd_soc_volsw_is_stereo(struct soc_mixer_control *mc)
@@ -1643,6 +1666,17 @@ int snd_soc_of_get_dai_name(struct device_node *of_node,
 int snd_soc_of_get_dai_link_codecs(struct device *dev,
 				   struct device_node *of_node,
 				   struct snd_soc_dai_link *dai_link);
+
+int snd_soc_add_dai_link(struct snd_soc_card *card,
+				struct snd_soc_dai_link *dai_link);
+void snd_soc_remove_dai_link(struct snd_soc_card *card,
+			     struct snd_soc_dai_link *dai_link);
+
+int snd_soc_register_dai(struct snd_soc_component *component,
+	struct snd_soc_dai_driver *dai_drv);
+
+struct snd_soc_dai *snd_soc_find_dai(
+	const struct snd_soc_dai_link_component *dlc);
 
 #include <sound/soc-dai.h>
 

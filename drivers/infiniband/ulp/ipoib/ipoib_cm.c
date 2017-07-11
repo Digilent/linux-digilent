@@ -63,6 +63,8 @@ MODULE_PARM_DESC(cm_data_debug_level,
 #define IPOIB_CM_RX_DELAY       (3 * 256 * HZ)
 #define IPOIB_CM_RX_UPDATE_MASK (0x3)
 
+#define IPOIB_CM_RX_RESERVE     (ALIGN(IPOIB_HARD_LEN, 16) - IPOIB_ENCAP_LEN)
+
 static struct ib_qp_attr ipoib_cm_err_attr = {
 	.qp_state = IB_QPS_ERR
 };
@@ -70,7 +72,6 @@ static struct ib_qp_attr ipoib_cm_err_attr = {
 #define IPOIB_CM_RX_DRAIN_WRID 0xffffffff
 
 static struct ib_send_wr ipoib_cm_rx_drain_wr = {
-	.wr_id = IPOIB_CM_RX_DRAIN_WRID,
 	.opcode = IB_WR_SEND,
 };
 
@@ -147,15 +148,15 @@ static struct sk_buff *ipoib_cm_alloc_rx_skb(struct net_device *dev,
 	struct sk_buff *skb;
 	int i;
 
-	skb = dev_alloc_skb(IPOIB_CM_HEAD_SIZE + 12);
+	skb = dev_alloc_skb(ALIGN(IPOIB_CM_HEAD_SIZE + IPOIB_PSEUDO_LEN, 16));
 	if (unlikely(!skb))
 		return NULL;
 
 	/*
-	 * IPoIB adds a 4 byte header. So we need 12 more bytes to align the
+	 * IPoIB adds a IPOIB_ENCAP_LEN byte header, this will align the
 	 * IP header to a multiple of 16.
 	 */
-	skb_reserve(skb, 12);
+	skb_reserve(skb, IPOIB_CM_RX_RESERVE);
 
 	mapping[0] = ib_dma_map_single(priv->ca, skb->data, IPOIB_CM_HEAD_SIZE,
 				       DMA_FROM_DEVICE);
@@ -223,6 +224,7 @@ static void ipoib_cm_start_rx_drain(struct ipoib_dev_priv *priv)
 	 * error" WC will be immediately generated for each WR we post.
 	 */
 	p = list_entry(priv->cm.rx_flush_list.next, typeof(*p), list);
+	ipoib_cm_rx_drain_wr.wr_id = IPOIB_CM_RX_DRAIN_WRID;
 	if (ib_post_send(p->qp, &ipoib_cm_rx_drain_wr, &bad_wr))
 		ipoib_warn(priv, "failed to post drain wr\n");
 
@@ -624,9 +626,9 @@ void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 	if (wc->byte_len < IPOIB_CM_COPYBREAK) {
 		int dlen = wc->byte_len;
 
-		small_skb = dev_alloc_skb(dlen + 12);
+		small_skb = dev_alloc_skb(dlen + IPOIB_CM_RX_RESERVE);
 		if (small_skb) {
-			skb_reserve(small_skb, 12);
+			skb_reserve(small_skb, IPOIB_CM_RX_RESERVE);
 			ib_dma_sync_single_for_cpu(priv->ca, rx_ring[wr_id].mapping[0],
 						   dlen, DMA_FROM_DEVICE);
 			skb_copy_from_linear_data(skb, small_skb->data, dlen);
@@ -663,8 +665,7 @@ void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 
 copied:
 	skb->protocol = ((struct ipoib_header *) skb->data)->proto;
-	skb_reset_mac_header(skb);
-	skb_pull(skb, IPOIB_ENCAP_LEN);
+	skb_add_pseudo_hdr(skb);
 
 	++dev->stats.rx_packets;
 	dev->stats.rx_bytes += skb->len;
@@ -710,6 +711,7 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ipoib_tx_buf *tx_req;
 	int rc;
+	unsigned usable_sge = tx->max_send_sge - !!skb_headlen(skb);
 
 	if (unlikely(skb->len > tx->mtu)) {
 		ipoib_warn(priv, "packet len %d (> %d) too long to send, dropping\n",
@@ -719,7 +721,23 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 		ipoib_cm_skb_too_long(dev, skb, tx->mtu - IPOIB_ENCAP_LEN);
 		return;
 	}
-
+	if (skb_shinfo(skb)->nr_frags > usable_sge) {
+		if (skb_linearize(skb) < 0) {
+			ipoib_warn(priv, "skb could not be linearized\n");
+			++dev->stats.tx_dropped;
+			++dev->stats.tx_errors;
+			dev_kfree_skb_any(skb);
+			return;
+		}
+		/* Does skb_linearize return ok without reducing nr_frags? */
+		if (skb_shinfo(skb)->nr_frags > usable_sge) {
+			ipoib_warn(priv, "too many frags after skb linearize\n");
+			++dev->stats.tx_dropped;
+			++dev->stats.tx_errors;
+			dev_kfree_skb_any(skb);
+			return;
+		}
+	}
 	ipoib_dbg_data(priv, "sending packet: head 0x%x length %d connection 0x%x\n",
 		       tx->tx_head, skb->len, tx->qp->qp_num);
 
@@ -749,7 +767,7 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 		ipoib_dma_unmap_tx(priv, tx_req);
 		dev_kfree_skb_any(skb);
 	} else {
-		dev->trans_start = jiffies;
+		netif_trans_update(dev);
 		++tx->tx_head;
 
 		if (++priv->tx_outstanding == ipoib_sendq_size) {
@@ -1031,7 +1049,8 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 	struct ib_qp *tx_qp;
 
 	if (dev->features & NETIF_F_SG)
-		attr.cap.max_send_sge = MAX_SKB_FRAGS + 1;
+		attr.cap.max_send_sge =
+			min_t(u32, priv->ca->attrs.max_sge, MAX_SKB_FRAGS + 1);
 
 	tx_qp = ib_create_qp(priv->pd, &attr);
 	if (PTR_ERR(tx_qp) == -EINVAL) {
@@ -1040,6 +1059,7 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 		attr.create_flags &= ~IB_QP_CREATE_USE_GFP_NOIO;
 		tx_qp = ib_create_qp(priv->pd, &attr);
 	}
+	tx->max_send_sge = attr.cap.max_send_sge;
 	return tx_qp;
 }
 
@@ -1299,6 +1319,8 @@ void ipoib_cm_destroy_tx(struct ipoib_cm_tx *tx)
 	}
 }
 
+#define QPN_AND_OPTIONS_OFFSET	4
+
 static void ipoib_cm_tx_start(struct work_struct *work)
 {
 	struct ipoib_dev_priv *priv = container_of(work, struct ipoib_dev_priv,
@@ -1307,6 +1329,7 @@ static void ipoib_cm_tx_start(struct work_struct *work)
 	struct ipoib_neigh *neigh;
 	struct ipoib_cm_tx *p;
 	unsigned long flags;
+	struct ipoib_path *path;
 	int ret;
 
 	struct ib_sa_path_rec pathrec;
@@ -1319,7 +1342,19 @@ static void ipoib_cm_tx_start(struct work_struct *work)
 		p = list_entry(priv->cm.start_list.next, typeof(*p), list);
 		list_del_init(&p->list);
 		neigh = p->neigh;
+
 		qpn = IPOIB_QPN(neigh->daddr);
+		/*
+		 * As long as the search is with these 2 locks,
+		 * path existence indicates its validity.
+		 */
+		path = __path_find(dev, neigh->daddr + QPN_AND_OPTIONS_OFFSET);
+		if (!path) {
+			pr_info("%s ignore not valid path %pI6\n",
+				__func__,
+				neigh->daddr + QPN_AND_OPTIONS_OFFSET);
+			goto free_neigh;
+		}
 		memcpy(&pathrec, &p->path->pathrec, sizeof pathrec);
 
 		spin_unlock_irqrestore(&priv->lock, flags);
@@ -1331,6 +1366,7 @@ static void ipoib_cm_tx_start(struct work_struct *work)
 		spin_lock_irqsave(&priv->lock, flags);
 
 		if (ret) {
+free_neigh:
 			neigh = p->neigh;
 			if (neigh) {
 				neigh->cm = NULL;
@@ -1467,6 +1503,10 @@ static ssize_t set_mode(struct device *d, struct device_attribute *attr,
 {
 	struct net_device *dev = to_net_dev(d);
 	int ret;
+	struct ipoib_dev_priv *priv = netdev_priv(dev);
+
+	if (test_bit(IPOIB_FLAG_GOING_DOWN, &priv->flags))
+		return -EPERM;
 
 	if (!rtnl_trylock())
 		return restart_syscall();
@@ -1522,8 +1562,7 @@ static void ipoib_cm_create_srq(struct net_device *dev, int max_sge)
 int ipoib_cm_dev_init(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
-	int i, ret;
-	struct ib_device_attr attr;
+	int max_srq_sge, i;
 
 	INIT_LIST_HEAD(&priv->cm.passive_ids);
 	INIT_LIST_HEAD(&priv->cm.reap_list);
@@ -1540,19 +1579,13 @@ int ipoib_cm_dev_init(struct net_device *dev)
 
 	skb_queue_head_init(&priv->cm.skb_queue);
 
-	ret = ib_query_device(priv->ca, &attr);
-	if (ret) {
-		printk(KERN_WARNING "ib_query_device() failed with %d\n", ret);
-		return ret;
-	}
+	ipoib_dbg(priv, "max_srq_sge=%d\n", priv->ca->attrs.max_srq_sge);
 
-	ipoib_dbg(priv, "max_srq_sge=%d\n", attr.max_srq_sge);
-
-	attr.max_srq_sge = min_t(int, IPOIB_CM_RX_SG, attr.max_srq_sge);
-	ipoib_cm_create_srq(dev, attr.max_srq_sge);
+	max_srq_sge = min_t(int, IPOIB_CM_RX_SG, priv->ca->attrs.max_srq_sge);
+	ipoib_cm_create_srq(dev, max_srq_sge);
 	if (ipoib_cm_has_srq(dev)) {
-		priv->cm.max_cm_mtu = attr.max_srq_sge * PAGE_SIZE - 0x10;
-		priv->cm.num_frags  = attr.max_srq_sge;
+		priv->cm.max_cm_mtu = max_srq_sge * PAGE_SIZE - 0x10;
+		priv->cm.num_frags  = max_srq_sge;
 		ipoib_dbg(priv, "max_cm_mtu = 0x%x, num_frags=%d\n",
 			  priv->cm.max_cm_mtu, priv->cm.num_frags);
 	} else {

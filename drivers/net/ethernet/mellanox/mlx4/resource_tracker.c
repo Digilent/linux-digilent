@@ -222,6 +222,13 @@ enum res_fs_rule_states {
 struct res_fs_rule {
 	struct res_common	com;
 	int			qpn;
+	/* VF DMFS mbox with port flipped */
+	void			*mirr_mbox;
+	/* > 0 --> apply mirror when getting into HA mode      */
+	/* = 0 --> un-apply mirror when getting out of HA mode */
+	u32			mirr_mbox_size;
+	struct list_head	mirr_list;
+	u64			mirr_rule_id;
 };
 
 static void *res_tracker_lookup(struct rb_root *root, u64 res_id)
@@ -783,10 +790,22 @@ static int update_vport_qp_param(struct mlx4_dev *dev,
 				MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED |
 				MLX4_VLAN_CTRL_ETH_RX_BLOCK_TAGGED;
 		} else if (0 != vp_oper->state.default_vlan) {
-			qpc->pri_path.vlan_control |=
-				MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
-				MLX4_VLAN_CTRL_ETH_RX_BLOCK_PRIO_TAGGED |
-				MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED;
+			if (vp_oper->state.vlan_proto == htons(ETH_P_8021AD)) {
+				/* vst QinQ should block untagged on TX,
+				 * but cvlan is in payload and phv is set so
+				 * hw see it as untagged. Block tagged instead.
+				 */
+				qpc->pri_path.vlan_control |=
+					MLX4_VLAN_CTRL_ETH_TX_BLOCK_PRIO_TAGGED |
+					MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
+					MLX4_VLAN_CTRL_ETH_RX_BLOCK_PRIO_TAGGED |
+					MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED;
+			} else { /* vst 802.1Q */
+				qpc->pri_path.vlan_control |=
+					MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
+					MLX4_VLAN_CTRL_ETH_RX_BLOCK_PRIO_TAGGED |
+					MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED;
+			}
 		} else { /* priority tagged */
 			qpc->pri_path.vlan_control |=
 				MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
@@ -795,7 +814,11 @@ static int update_vport_qp_param(struct mlx4_dev *dev,
 
 		qpc->pri_path.fvl_rx |= MLX4_FVL_RX_FORCE_ETH_VLAN;
 		qpc->pri_path.vlan_index = vp_oper->vlan_idx;
-		qpc->pri_path.fl |= MLX4_FL_CV | MLX4_FL_ETH_HIDE_CQE_VLAN;
+		qpc->pri_path.fl |= MLX4_FL_ETH_HIDE_CQE_VLAN;
+		if (vp_oper->state.vlan_proto == htons(ETH_P_8021AD))
+			qpc->pri_path.fl |= MLX4_FL_SV;
+		else
+			qpc->pri_path.fl |= MLX4_FL_CV;
 		qpc->pri_path.feup |= MLX4_FEUP_FORCE_ETH_UP | MLX4_FVL_FORCE_ETH_VLAN;
 		qpc->pri_path.sched_queue &= 0xC7;
 		qpc->pri_path.sched_queue |= (vp_oper->state.default_qos) << 3;
@@ -908,11 +931,13 @@ static int handle_existing_counter(struct mlx4_dev *dev, u8 slave, int port,
 
 	spin_lock_irq(mlx4_tlock(dev));
 	r = find_res(dev, counter_index, RES_COUNTER);
-	if (!r || r->owner != slave)
+	if (!r || r->owner != slave) {
 		ret = -EINVAL;
-	counter = container_of(r, struct res_counter, com);
-	if (!counter->port)
-		counter->port = port;
+	} else {
+		counter = container_of(r, struct res_counter, com);
+		if (!counter->port)
+			counter->port = port;
+	}
 
 	spin_unlock_irq(mlx4_tlock(dev));
 	return ret;
@@ -1580,12 +1605,13 @@ static int eq_res_start_move_to(struct mlx4_dev *dev, int slave, int index,
 			r->com.from_state = r->com.state;
 			r->com.to_state = state;
 			r->com.state = RES_EQ_BUSY;
-			if (eq)
-				*eq = r;
 		}
 	}
 
 	spin_unlock_irq(mlx4_tlock(dev));
+
+	if (!err && eq)
+		*eq = r;
 
 	return err;
 }
@@ -2363,16 +2389,15 @@ static int mpt_free_res(struct mlx4_dev *dev, int slave, int op, int cmd,
 		__mlx4_mpt_release(dev, index);
 		break;
 	case RES_OP_MAP_ICM:
-			index = get_param_l(&in_param);
-			id = index & mpt_mask(dev);
-			err = mr_res_start_move_to(dev, slave, id,
-						   RES_MPT_RESERVED, &mpt);
-			if (err)
-				return err;
-
-			__mlx4_mpt_free_icm(dev, mpt->key);
-			res_end_move(dev, slave, RES_MPT, id);
+		index = get_param_l(&in_param);
+		id = index & mpt_mask(dev);
+		err = mr_res_start_move_to(dev, slave, id,
+					   RES_MPT_RESERVED, &mpt);
+		if (err)
 			return err;
+
+		__mlx4_mpt_free_icm(dev, mpt->key);
+		res_end_move(dev, slave, RES_MPT, id);
 		break;
 	default:
 		err = -EINVAL;
@@ -3132,7 +3157,7 @@ static int verify_qp_parameters(struct mlx4_dev *dev,
 		case QP_TRANS_RTS2RTS:
 		case QP_TRANS_SQD2SQD:
 		case QP_TRANS_SQD2RTS:
-			if (slave != mlx4_master_func_num(dev))
+			if (slave != mlx4_master_func_num(dev)) {
 				if (optpar & MLX4_QP_OPTPAR_PRIMARY_ADDR_PATH) {
 					port = (qp_ctx->pri_path.sched_queue >> 6 & 1) + 1;
 					if (dev->caps.port_mask[port] != MLX4_PORT_TYPE_IB)
@@ -3151,6 +3176,7 @@ static int verify_qp_parameters(struct mlx4_dev *dev,
 					if (qp_ctx->alt_path.mgid_index >= num_gids)
 						return -EINVAL;
 				}
+			}
 			break;
 		default:
 			break;
@@ -4243,9 +4269,8 @@ int mlx4_UPDATE_QP_wrapper(struct mlx4_dev *dev, int slave,
 	     (1ULL << MLX4_UPD_QP_PATH_MASK_ETH_SRC_CHECK_MC_LB)) &&
 		!(dev->caps.flags2 &
 		  MLX4_DEV_CAP_FLAG2_UPDATE_QP_SRC_CHECK_LB)) {
-			mlx4_warn(dev,
-				  "Src check LB for slave %d isn't supported\n",
-				   slave);
+		mlx4_warn(dev, "Src check LB for slave %d isn't supported\n",
+			  slave);
 		return -ENOTSUPP;
 	}
 
@@ -4284,6 +4309,22 @@ err_mac:
 	return err;
 }
 
+static u32 qp_attach_mbox_size(void *mbox)
+{
+	u32 size = sizeof(struct mlx4_net_trans_rule_hw_ctrl);
+	struct _rule_hw  *rule_header;
+
+	rule_header = (struct _rule_hw *)(mbox + size);
+
+	while (rule_header->size) {
+		size += rule_header->size * sizeof(u32);
+		rule_header += 1;
+	}
+	return size;
+}
+
+static int mlx4_do_mirror_rule(struct mlx4_dev *dev, struct res_fs_rule *fs_rule);
+
 int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 					 struct mlx4_vhcr *vhcr,
 					 struct mlx4_cmd_mailbox *inbox,
@@ -4300,6 +4341,8 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 	struct mlx4_net_trans_rule_hw_ctrl *ctrl;
 	struct _rule_hw  *rule_header;
 	int header_id;
+	struct res_fs_rule *rrule;
+	u32 mbox_size;
 
 	if (dev->caps.steering_mode !=
 	    MLX4_STEERING_MODE_DEVICE_MANAGED)
@@ -4329,7 +4372,7 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 	case MLX4_NET_TRANS_RULE_ID_ETH:
 		if (validate_eth_header_mac(slave, rule_header, rlist)) {
 			err = -EINVAL;
-			goto err_put;
+			goto err_put_qp;
 		}
 		break;
 	case MLX4_NET_TRANS_RULE_ID_IB:
@@ -4340,7 +4383,7 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 		pr_warn("Can't attach FS rule without L2 headers, adding L2 header\n");
 		if (add_eth_header(dev, slave, inbox, rlist, header_id)) {
 			err = -EINVAL;
-			goto err_put;
+			goto err_put_qp;
 		}
 		vhcr->in_modifier +=
 			sizeof(struct mlx4_net_trans_rule_hw_eth) >> 2;
@@ -4348,7 +4391,7 @@ int mlx4_QP_FLOW_STEERING_ATTACH_wrapper(struct mlx4_dev *dev, int slave,
 	default:
 		pr_err("Corrupted mailbox\n");
 		err = -EINVAL;
-		goto err_put;
+		goto err_put_qp;
 	}
 
 execute:
@@ -4357,21 +4400,67 @@ execute:
 			   MLX4_QP_FLOW_STEERING_ATTACH, MLX4_CMD_TIME_CLASS_A,
 			   MLX4_CMD_NATIVE);
 	if (err)
-		goto err_put;
+		goto err_put_qp;
+
 
 	err = add_res_range(dev, slave, vhcr->out_param, 1, RES_FS_RULE, qpn);
 	if (err) {
 		mlx4_err(dev, "Fail to add flow steering resources\n");
-		/* detach rule*/
+		goto err_detach;
+	}
+
+	err = get_res(dev, slave, vhcr->out_param, RES_FS_RULE, &rrule);
+	if (err)
+		goto err_detach;
+
+	mbox_size = qp_attach_mbox_size(inbox->buf);
+	rrule->mirr_mbox = kmalloc(mbox_size, GFP_KERNEL);
+	if (!rrule->mirr_mbox) {
+		err = -ENOMEM;
+		goto err_put_rule;
+	}
+	rrule->mirr_mbox_size = mbox_size;
+	rrule->mirr_rule_id = 0;
+	memcpy(rrule->mirr_mbox, inbox->buf, mbox_size);
+
+	/* set different port */
+	ctrl = (struct mlx4_net_trans_rule_hw_ctrl *)rrule->mirr_mbox;
+	if (ctrl->port == 1)
+		ctrl->port = 2;
+	else
+		ctrl->port = 1;
+
+	if (mlx4_is_bonded(dev))
+		mlx4_do_mirror_rule(dev, rrule);
+
+	atomic_inc(&rqp->ref_count);
+
+err_put_rule:
+	put_res(dev, slave, vhcr->out_param, RES_FS_RULE);
+err_detach:
+	/* detach rule on error */
+	if (err)
 		mlx4_cmd(dev, vhcr->out_param, 0, 0,
 			 MLX4_QP_FLOW_STEERING_DETACH, MLX4_CMD_TIME_CLASS_A,
 			 MLX4_CMD_NATIVE);
-		goto err_put;
-	}
-	atomic_inc(&rqp->ref_count);
-err_put:
+err_put_qp:
 	put_res(dev, slave, qpn, RES_QP);
 	return err;
+}
+
+static int mlx4_undo_mirror_rule(struct mlx4_dev *dev, struct res_fs_rule *fs_rule)
+{
+	int err;
+
+	err = rem_res_range(dev, fs_rule->com.owner, fs_rule->com.res_id, 1, RES_FS_RULE, 0);
+	if (err) {
+		mlx4_err(dev, "Fail to remove flow steering resources\n");
+		return err;
+	}
+
+	mlx4_cmd(dev, fs_rule->com.res_id, 0, 0, MLX4_QP_FLOW_STEERING_DETACH,
+		 MLX4_CMD_TIME_CLASS_A, MLX4_CMD_NATIVE);
+	return 0;
 }
 
 int mlx4_QP_FLOW_STEERING_DETACH_wrapper(struct mlx4_dev *dev, int slave,
@@ -4383,6 +4472,7 @@ int mlx4_QP_FLOW_STEERING_DETACH_wrapper(struct mlx4_dev *dev, int slave,
 	int err;
 	struct res_qp *rqp;
 	struct res_fs_rule *rrule;
+	u64 mirr_reg_id;
 
 	if (dev->caps.steering_mode !=
 	    MLX4_STEERING_MODE_DEVICE_MANAGED)
@@ -4391,12 +4481,30 @@ int mlx4_QP_FLOW_STEERING_DETACH_wrapper(struct mlx4_dev *dev, int slave,
 	err = get_res(dev, slave, vhcr->in_param, RES_FS_RULE, &rrule);
 	if (err)
 		return err;
+
+	if (!rrule->mirr_mbox) {
+		mlx4_err(dev, "Mirror rules cannot be removed explicitly\n");
+		put_res(dev, slave, vhcr->in_param, RES_FS_RULE);
+		return -EINVAL;
+	}
+	mirr_reg_id = rrule->mirr_rule_id;
+	kfree(rrule->mirr_mbox);
+
 	/* Release the rule form busy state before removal */
 	put_res(dev, slave, vhcr->in_param, RES_FS_RULE);
 	err = get_res(dev, slave, rrule->qpn, RES_QP, &rqp);
 	if (err)
 		return err;
 
+	if (mirr_reg_id && mlx4_is_bonded(dev)) {
+		err = get_res(dev, slave, mirr_reg_id, RES_FS_RULE, &rrule);
+		if (err) {
+			mlx4_err(dev, "Fail to get resource of mirror rule\n");
+		} else {
+			put_res(dev, slave, mirr_reg_id, RES_FS_RULE);
+			mlx4_undo_mirror_rule(dev, rrule);
+		}
+	}
 	err = rem_res_range(dev, slave, vhcr->in_param, 1, RES_FS_RULE, 0);
 	if (err) {
 		mlx4_err(dev, "Fail to remove flow steering resources\n");
@@ -4834,6 +4942,91 @@ static void rem_slave_mtts(struct mlx4_dev *dev, int slave)
 	spin_unlock_irq(mlx4_tlock(dev));
 }
 
+static int mlx4_do_mirror_rule(struct mlx4_dev *dev, struct res_fs_rule *fs_rule)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	int err;
+	struct res_fs_rule *mirr_rule;
+	u64 reg_id;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	if (!fs_rule->mirr_mbox) {
+		mlx4_err(dev, "rule mirroring mailbox is null\n");
+		return -EINVAL;
+	}
+	memcpy(mailbox->buf, fs_rule->mirr_mbox, fs_rule->mirr_mbox_size);
+	err = mlx4_cmd_imm(dev, mailbox->dma, &reg_id, fs_rule->mirr_mbox_size >> 2, 0,
+			   MLX4_QP_FLOW_STEERING_ATTACH, MLX4_CMD_TIME_CLASS_A,
+			   MLX4_CMD_NATIVE);
+	mlx4_free_cmd_mailbox(dev, mailbox);
+
+	if (err)
+		goto err;
+
+	err = add_res_range(dev, fs_rule->com.owner, reg_id, 1, RES_FS_RULE, fs_rule->qpn);
+	if (err)
+		goto err_detach;
+
+	err = get_res(dev, fs_rule->com.owner, reg_id, RES_FS_RULE, &mirr_rule);
+	if (err)
+		goto err_rem;
+
+	fs_rule->mirr_rule_id = reg_id;
+	mirr_rule->mirr_rule_id = 0;
+	mirr_rule->mirr_mbox_size = 0;
+	mirr_rule->mirr_mbox = NULL;
+	put_res(dev, fs_rule->com.owner, reg_id, RES_FS_RULE);
+
+	return 0;
+err_rem:
+	rem_res_range(dev, fs_rule->com.owner, reg_id, 1, RES_FS_RULE, 0);
+err_detach:
+	mlx4_cmd(dev, reg_id, 0, 0, MLX4_QP_FLOW_STEERING_DETACH,
+		 MLX4_CMD_TIME_CLASS_A, MLX4_CMD_NATIVE);
+err:
+	return err;
+}
+
+static int mlx4_mirror_fs_rules(struct mlx4_dev *dev, bool bond)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct mlx4_resource_tracker *tracker =
+		&priv->mfunc.master.res_tracker;
+	struct rb_root *root = &tracker->res_tree[RES_FS_RULE];
+	struct rb_node *p;
+	struct res_fs_rule *fs_rule;
+	int err = 0;
+	LIST_HEAD(mirr_list);
+
+	for (p = rb_first(root); p; p = rb_next(p)) {
+		fs_rule = rb_entry(p, struct res_fs_rule, com.node);
+		if ((bond && fs_rule->mirr_mbox_size) ||
+		    (!bond && !fs_rule->mirr_mbox_size))
+			list_add_tail(&fs_rule->mirr_list, &mirr_list);
+	}
+
+	list_for_each_entry(fs_rule, &mirr_list, mirr_list) {
+		if (bond)
+			err += mlx4_do_mirror_rule(dev, fs_rule);
+		else
+			err += mlx4_undo_mirror_rule(dev, fs_rule);
+	}
+	return err;
+}
+
+int mlx4_bond_fs_rules(struct mlx4_dev *dev)
+{
+	return mlx4_mirror_fs_rules(dev, true);
+}
+
+int mlx4_unbond_fs_rules(struct mlx4_dev *dev)
+{
+	return mlx4_mirror_fs_rules(dev, false);
+}
+
 static void rem_slave_fs_rule(struct mlx4_dev *dev, int slave)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -5062,6 +5255,7 @@ void mlx4_vf_immed_vlan_work_handler(struct work_struct *_work)
 	u64 qp_path_mask = ((1ULL << MLX4_UPD_QP_PATH_MASK_VLAN_INDEX) |
 		       (1ULL << MLX4_UPD_QP_PATH_MASK_FVL) |
 		       (1ULL << MLX4_UPD_QP_PATH_MASK_CV) |
+		       (1ULL << MLX4_UPD_QP_PATH_MASK_SV) |
 		       (1ULL << MLX4_UPD_QP_PATH_MASK_ETH_HIDE_CQE_VLAN) |
 		       (1ULL << MLX4_UPD_QP_PATH_MASK_FEUP) |
 		       (1ULL << MLX4_UPD_QP_PATH_MASK_FVL_RX) |
@@ -5090,7 +5284,12 @@ void mlx4_vf_immed_vlan_work_handler(struct work_struct *_work)
 	else if (!work->vlan_id)
 		vlan_control = MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
 			MLX4_VLAN_CTRL_ETH_RX_BLOCK_TAGGED;
-	else
+	else if (work->vlan_proto == htons(ETH_P_8021AD))
+		vlan_control = MLX4_VLAN_CTRL_ETH_TX_BLOCK_PRIO_TAGGED |
+			MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
+			MLX4_VLAN_CTRL_ETH_RX_BLOCK_PRIO_TAGGED |
+			MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED;
+	else  /* vst 802.1Q */
 		vlan_control = MLX4_VLAN_CTRL_ETH_TX_BLOCK_TAGGED |
 			MLX4_VLAN_CTRL_ETH_RX_BLOCK_PRIO_TAGGED |
 			MLX4_VLAN_CTRL_ETH_RX_BLOCK_UNTAGGED;
@@ -5135,7 +5334,11 @@ void mlx4_vf_immed_vlan_work_handler(struct work_struct *_work)
 				upd_context->qp_context.pri_path.fvl_rx =
 					qp->fvl_rx | MLX4_FVL_RX_FORCE_ETH_VLAN;
 				upd_context->qp_context.pri_path.fl =
-					qp->pri_path_fl | MLX4_FL_CV | MLX4_FL_ETH_HIDE_CQE_VLAN;
+					qp->pri_path_fl | MLX4_FL_ETH_HIDE_CQE_VLAN;
+				if (work->vlan_proto == htons(ETH_P_8021AD))
+					upd_context->qp_context.pri_path.fl |= MLX4_FL_SV;
+				else
+					upd_context->qp_context.pri_path.fl |= MLX4_FL_CV;
 				upd_context->qp_context.pri_path.feup =
 					qp->feup | MLX4_FEUP_FORCE_ETH_UP | MLX4_FVL_FORCE_ETH_VLAN;
 				upd_context->qp_context.pri_path.sched_queue =

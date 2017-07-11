@@ -27,6 +27,7 @@
 #include <linux/export.h>
 #include <linux/fs.h>
 #include <linux/anon_inodes.h>
+#include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/spinlock.h>
 #include <linux/page-flags.h>
@@ -51,11 +52,16 @@
 #include <asm/switch_to.h>
 #include <asm/smp.h>
 #include <asm/dbell.h>
+#include <asm/hmi.h>
+#include <asm/pnv-pci.h>
 #include <linux/gfp.h>
 #include <linux/vmalloc.h>
 #include <linux/highmem.h>
 #include <linux/hugetlb.h>
+#include <linux/kvm_irqfd.h>
+#include <linux/irqbypass.h>
 #include <linux/module.h>
+#include <linux/compiler.h>
 
 #include "book3s.h"
 
@@ -68,6 +74,8 @@
 
 /* Used to indicate that a guest page fault needs to be handled */
 #define RESUME_PAGE_FAULT	(RESUME_GUEST | RESUME_FLAG_ARCH1)
+/* Used to indicate that a guest passthrough interrupt needs to be handled */
+#define RESUME_PASSTHROUGH	(RESUME_GUEST | RESUME_FLAG_ARCH2)
 
 /* Used as a "null" value for timebase values */
 #define TB_NIL	(~(u64)0)
@@ -81,8 +89,60 @@ static int target_smt_mode;
 module_param(target_smt_mode, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(target_smt_mode, "Target threads per core (0 = max)");
 
+#ifdef CONFIG_KVM_XICS
+static struct kernel_param_ops module_param_ops = {
+	.set = param_set_int,
+	.get = param_get_int,
+};
+
+module_param_cb(kvm_irq_bypass, &module_param_ops, &kvm_irq_bypass,
+							S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(kvm_irq_bypass, "Bypass passthrough interrupt optimization");
+
+module_param_cb(h_ipi_redirect, &module_param_ops, &h_ipi_redirect,
+							S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(h_ipi_redirect, "Redirect H_IPI wakeup to a free host core");
+#endif
+
+/* Maximum halt poll interval defaults to KVM_HALT_POLL_NS_DEFAULT */
+static unsigned int halt_poll_max_ns = KVM_HALT_POLL_NS_DEFAULT;
+module_param(halt_poll_max_ns, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(halt_poll_max_ns, "Maximum halt poll time in ns");
+
+/* Factor by which the vcore halt poll interval is grown, default is to double
+ */
+static unsigned int halt_poll_ns_grow = 2;
+module_param(halt_poll_ns_grow, int, S_IRUGO);
+MODULE_PARM_DESC(halt_poll_ns_grow, "Factor halt poll time is grown by");
+
+/* Factor by which the vcore halt poll interval is shrunk, default is to reset
+ */
+static unsigned int halt_poll_ns_shrink;
+module_param(halt_poll_ns_shrink, int, S_IRUGO);
+MODULE_PARM_DESC(halt_poll_ns_shrink, "Factor halt poll time is shrunk by");
+
 static void kvmppc_end_cede(struct kvm_vcpu *vcpu);
 static int kvmppc_hv_setup_htab_rma(struct kvm_vcpu *vcpu);
+
+static inline struct kvm_vcpu *next_runnable_thread(struct kvmppc_vcore *vc,
+		int *ip)
+{
+	int i = *ip;
+	struct kvm_vcpu *vcpu;
+
+	while (++i < MAX_SMT_THREADS) {
+		vcpu = READ_ONCE(vc->runnable_threads[i]);
+		if (vcpu) {
+			*ip = i;
+			return vcpu;
+		}
+	}
+	return NULL;
+}
+
+/* Used to traverse the list of runnable threads for a given vcore */
+#define for_each_runnable_thread(i, vcpu, vc) \
+	for (i = -1; (vcpu = next_runnable_thread(vc, &i)); )
 
 static bool kvmppc_ipi_thread(int cpu)
 {
@@ -114,11 +174,11 @@ static bool kvmppc_ipi_thread(int cpu)
 static void kvmppc_fast_vcpu_kick_hv(struct kvm_vcpu *vcpu)
 {
 	int cpu;
-	wait_queue_head_t *wqp;
+	struct swait_queue_head *wqp;
 
 	wqp = kvm_arch_vcpu_wq(vcpu);
-	if (waitqueue_active(wqp)) {
-		wake_up_interruptible(wqp);
+	if (swait_active(wqp)) {
+		swake_up(wqp);
 		++vcpu->stat.halt_wakeup;
 	}
 
@@ -314,16 +374,10 @@ static void kvmppc_dump_regs(struct kvm_vcpu *vcpu)
 
 static struct kvm_vcpu *kvmppc_find_vcpu(struct kvm *kvm, int id)
 {
-	int r;
-	struct kvm_vcpu *v, *ret = NULL;
+	struct kvm_vcpu *ret;
 
 	mutex_lock(&kvm->lock);
-	kvm_for_each_vcpu(r, v, kvm) {
-		if (v->vcpu_id == id) {
-			ret = v;
-			break;
-		}
-	}
+	ret = kvm_get_vcpu_by_id(kvm, id);
 	mutex_unlock(&kvm->lock);
 	return ret;
 }
@@ -707,8 +761,8 @@ int kvmppc_pseries_do_hcall(struct kvm_vcpu *vcpu)
 		tvcpu->arch.prodded = 1;
 		smp_mb();
 		if (vcpu->arch.ceded) {
-			if (waitqueue_active(&vcpu->wq)) {
-				wake_up_interruptible(&vcpu->wq);
+			if (swait_active(&vcpu->wq)) {
+				swake_up(&vcpu->wq);
 				vcpu->stat.halt_wakeup++;
 			}
 		}
@@ -774,7 +828,31 @@ int kvmppc_pseries_do_hcall(struct kvm_vcpu *vcpu)
 		if (kvmppc_xics_enabled(vcpu)) {
 			ret = kvmppc_xics_hcall(vcpu, req);
 			break;
-		} /* fallthrough */
+		}
+		return RESUME_HOST;
+	case H_PUT_TCE:
+		ret = kvmppc_h_put_tce(vcpu, kvmppc_get_gpr(vcpu, 4),
+						kvmppc_get_gpr(vcpu, 5),
+						kvmppc_get_gpr(vcpu, 6));
+		if (ret == H_TOO_HARD)
+			return RESUME_HOST;
+		break;
+	case H_PUT_TCE_INDIRECT:
+		ret = kvmppc_h_put_tce_indirect(vcpu, kvmppc_get_gpr(vcpu, 4),
+						kvmppc_get_gpr(vcpu, 5),
+						kvmppc_get_gpr(vcpu, 6),
+						kvmppc_get_gpr(vcpu, 7));
+		if (ret == H_TOO_HARD)
+			return RESUME_HOST;
+		break;
+	case H_STUFF_TCE:
+		ret = kvmppc_h_stuff_tce(vcpu, kvmppc_get_gpr(vcpu, 4),
+						kvmppc_get_gpr(vcpu, 5),
+						kvmppc_get_gpr(vcpu, 6),
+						kvmppc_get_gpr(vcpu, 7));
+		if (ret == H_TOO_HARD)
+			return RESUME_HOST;
+		break;
 	default:
 		return RESUME_HOST;
 	}
@@ -839,6 +917,24 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 
 	vcpu->stat.sum_exits++;
 
+	/*
+	 * This can happen if an interrupt occurs in the last stages
+	 * of guest entry or the first stages of guest exit (i.e. after
+	 * setting paca->kvm_hstate.in_guest to KVM_GUEST_MODE_GUEST_HV
+	 * and before setting it to KVM_GUEST_MODE_HOST_HV).
+	 * That can happen due to a bug, or due to a machine check
+	 * occurring at just the wrong time.
+	 */
+	if (vcpu->arch.shregs.msr & MSR_HV) {
+		printk(KERN_EMERG "KVM trap in HV mode!\n");
+		printk(KERN_EMERG "trap=0x%x | pc=0x%lx | msr=0x%llx\n",
+			vcpu->arch.trap, kvmppc_get_pc(vcpu),
+			vcpu->arch.shregs.msr);
+		kvmppc_dump_regs(vcpu);
+		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+		run->hw.hardware_exit_reason = vcpu->arch.trap;
+		return RESUME_HOST;
+	}
 	run->exit_reason = KVM_EXIT_UNKNOWN;
 	run->ready_for_interrupt_injection = 1;
 	switch (vcpu->arch.trap) {
@@ -941,6 +1037,9 @@ static int kvmppc_handle_exit_hv(struct kvm_run *run, struct kvm_vcpu *vcpu,
 	case BOOK3S_INTERRUPT_H_FAC_UNAVAIL:
 		kvmppc_core_queue_program(vcpu, SRR1_PROGILL);
 		r = RESUME_GUEST;
+		break;
+	case BOOK3S_INTERRUPT_HV_RM_HARD:
+		r = RESUME_PASSTHROUGH;
 		break;
 	default:
 		kvmppc_dump_regs(vcpu);
@@ -1099,6 +1198,9 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 		break;
 	case KVM_REG_PPC_DPDES:
 		*val = get_reg_val(id, vcpu->arch.vcore->dpdes);
+		break;
+	case KVM_REG_PPC_VTB:
+		*val = get_reg_val(id, vcpu->arch.vcore->vtb);
 		break;
 	case KVM_REG_PPC_DAWR:
 		*val = get_reg_val(id, vcpu->arch.dawr);
@@ -1292,6 +1394,9 @@ static int kvmppc_set_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	case KVM_REG_PPC_DPDES:
 		vcpu->arch.vcore->dpdes = set_reg_val(id, *val);
 		break;
+	case KVM_REG_PPC_VTB:
+		vcpu->arch.vcore->vtb = set_reg_val(id, *val);
+		break;
 	case KVM_REG_PPC_DAWR:
 		vcpu->arch.dawr = set_reg_val(id, *val);
 		break;
@@ -1444,10 +1549,9 @@ static struct kvmppc_vcore *kvmppc_vcore_create(struct kvm *kvm, int core)
 	if (vcore == NULL)
 		return NULL;
 
-	INIT_LIST_HEAD(&vcore->runnable_threads);
 	spin_lock_init(&vcore->lock);
 	spin_lock_init(&vcore->stoltb_lock);
-	init_waitqueue_head(&vcore->wq);
+	init_swait_queue_head(&vcore->wq);
 	vcore->preempt_tb = TB_NIL;
 	vcore->lpcr = kvm->arch.lpcr;
 	vcore->first_vcpuid = core * threads_per_subcore;
@@ -1753,7 +1857,7 @@ static void kvmppc_remove_runnable(struct kvmppc_vcore *vc,
 	vcpu->arch.state = KVMPPC_VCPU_BUSY_IN_HOST;
 	spin_unlock_irq(&vcpu->arch.tbacct_lock);
 	--vc->n_runnable;
-	list_del(&vcpu->arch.run_list);
+	WRITE_ONCE(vc->runnable_threads[vcpu->arch.ptid], NULL);
 }
 
 static int kvmppc_grab_hwthread(int cpu)
@@ -1999,66 +2103,6 @@ static void init_master_vcore(struct kvmppc_vcore *vc)
 	vc->conferring_threads = 0;
 }
 
-/*
- * See if the existing subcores can be split into 3 (or fewer) subcores
- * of at most two threads each, so we can fit in another vcore.  This
- * assumes there are at most two subcores and at most 6 threads in total.
- */
-static bool can_split_piggybacked_subcores(struct core_info *cip)
-{
-	int sub, new_sub;
-	int large_sub = -1;
-	int thr;
-	int n_subcores = cip->n_subcores;
-	struct kvmppc_vcore *vc, *vcnext;
-	struct kvmppc_vcore *master_vc = NULL;
-
-	for (sub = 0; sub < cip->n_subcores; ++sub) {
-		if (cip->subcore_threads[sub] <= 2)
-			continue;
-		if (large_sub >= 0)
-			return false;
-		large_sub = sub;
-		vc = list_first_entry(&cip->vcs[sub], struct kvmppc_vcore,
-				      preempt_list);
-		if (vc->num_threads > 2)
-			return false;
-		n_subcores += (cip->subcore_threads[sub] - 1) >> 1;
-	}
-	if (large_sub < 0 || !subcore_config_ok(n_subcores + 1, 2))
-		return false;
-
-	/*
-	 * Seems feasible, so go through and move vcores to new subcores.
-	 * Note that when we have two or more vcores in one subcore,
-	 * all those vcores must have only one thread each.
-	 */
-	new_sub = cip->n_subcores;
-	thr = 0;
-	sub = large_sub;
-	list_for_each_entry_safe(vc, vcnext, &cip->vcs[sub], preempt_list) {
-		if (thr >= 2) {
-			list_del(&vc->preempt_list);
-			list_add_tail(&vc->preempt_list, &cip->vcs[new_sub]);
-			/* vc->num_threads must be 1 */
-			if (++cip->subcore_threads[new_sub] == 1) {
-				cip->subcore_vm[new_sub] = vc->kvm;
-				init_master_vcore(vc);
-				master_vc = vc;
-				++cip->n_subcores;
-			} else {
-				vc->master_vcore = master_vc;
-				++new_sub;
-			}
-		}
-		thr += vc->num_threads;
-	}
-	cip->subcore_threads[large_sub] = 2;
-	cip->max_subcore_threads = 2;
-
-	return true;
-}
-
 static bool can_dynamic_split(struct kvmppc_vcore *vc, struct core_info *cip)
 {
 	int n_threads = vc->num_threads;
@@ -2069,23 +2113,9 @@ static bool can_dynamic_split(struct kvmppc_vcore *vc, struct core_info *cip)
 
 	if (n_threads < cip->max_subcore_threads)
 		n_threads = cip->max_subcore_threads;
-	if (subcore_config_ok(cip->n_subcores + 1, n_threads)) {
-		cip->max_subcore_threads = n_threads;
-	} else if (cip->n_subcores <= 2 && cip->total_threads <= 6 &&
-		   vc->num_threads <= 2) {
-		/*
-		 * We may be able to fit another subcore in by
-		 * splitting an existing subcore with 3 or 4
-		 * threads into two 2-thread subcores, or one
-		 * with 5 or 6 threads into three subcores.
-		 * We can only do this if those subcores have
-		 * piggybacked virtual cores.
-		 */
-		if (!can_split_piggybacked_subcores(cip))
-			return false;
-	} else {
+	if (!subcore_config_ok(cip->n_subcores + 1, n_threads))
 		return false;
-	}
+	cip->max_subcore_threads = n_threads;
 
 	sub = cip->n_subcores;
 	++cip->n_subcores;
@@ -2099,43 +2129,6 @@ static bool can_dynamic_split(struct kvmppc_vcore *vc, struct core_info *cip)
 	return true;
 }
 
-static bool can_piggyback_subcore(struct kvmppc_vcore *pvc,
-				  struct core_info *cip, int sub)
-{
-	struct kvmppc_vcore *vc;
-	int n_thr;
-
-	vc = list_first_entry(&cip->vcs[sub], struct kvmppc_vcore,
-			      preempt_list);
-
-	/* require same VM and same per-core reg values */
-	if (pvc->kvm != vc->kvm ||
-	    pvc->tb_offset != vc->tb_offset ||
-	    pvc->pcr != vc->pcr ||
-	    pvc->lpcr != vc->lpcr)
-		return false;
-
-	/* P8 guest with > 1 thread per core would see wrong TIR value */
-	if (cpu_has_feature(CPU_FTR_ARCH_207S) &&
-	    (vc->num_threads > 1 || pvc->num_threads > 1))
-		return false;
-
-	n_thr = cip->subcore_threads[sub] + pvc->num_threads;
-	if (n_thr > cip->max_subcore_threads) {
-		if (!subcore_config_ok(cip->n_subcores, n_thr))
-			return false;
-		cip->max_subcore_threads = n_thr;
-	}
-
-	cip->total_threads += pvc->num_threads;
-	cip->subcore_threads[sub] = n_thr;
-	pvc->master_vcore = vc;
-	list_del(&pvc->preempt_list);
-	list_add_tail(&pvc->preempt_list, &cip->vcs[sub]);
-
-	return true;
-}
-
 /*
  * Work out whether it is possible to piggyback the execution of
  * vcore *pvc onto the execution of the other vcores described in *cip.
@@ -2143,27 +2136,18 @@ static bool can_piggyback_subcore(struct kvmppc_vcore *pvc,
 static bool can_piggyback(struct kvmppc_vcore *pvc, struct core_info *cip,
 			  int target_threads)
 {
-	int sub;
-
 	if (cip->total_threads + pvc->num_threads > target_threads)
 		return false;
-	for (sub = 0; sub < cip->n_subcores; ++sub)
-		if (cip->subcore_threads[sub] &&
-		    can_piggyback_subcore(pvc, cip, sub))
-			return true;
 
-	if (can_dynamic_split(pvc, cip))
-		return true;
-
-	return false;
+	return can_dynamic_split(pvc, cip);
 }
 
 static void prepare_threads(struct kvmppc_vcore *vc)
 {
-	struct kvm_vcpu *vcpu, *vnext;
+	int i;
+	struct kvm_vcpu *vcpu;
 
-	list_for_each_entry_safe(vcpu, vnext, &vc->runnable_threads,
-				 arch.run_list) {
+	for_each_runnable_thread(i, vcpu, vc) {
 		if (signal_pending(vcpu->arch.run_task))
 			vcpu->arch.ret = -EINTR;
 		else if (vcpu->arch.vpa.update_pending ||
@@ -2210,15 +2194,14 @@ static void collect_piggybacks(struct core_info *cip, int target_threads)
 
 static void post_guest_process(struct kvmppc_vcore *vc, bool is_master)
 {
-	int still_running = 0;
+	int still_running = 0, i;
 	u64 now;
 	long ret;
-	struct kvm_vcpu *vcpu, *vnext;
+	struct kvm_vcpu *vcpu;
 
 	spin_lock(&vc->lock);
 	now = get_tb();
-	list_for_each_entry_safe(vcpu, vnext, &vc->runnable_threads,
-				 arch.run_list) {
+	for_each_runnable_thread(i, vcpu, vc) {
 		/* cancel pending dec exception if dec is positive */
 		if (now < vcpu->arch.dec_expires &&
 		    kvmppc_core_pending_dec(vcpu))
@@ -2258,12 +2241,52 @@ static void post_guest_process(struct kvmppc_vcore *vc, bool is_master)
 		}
 		if (vc->n_runnable > 0 && vc->runner == NULL) {
 			/* make sure there's a candidate runner awake */
-			vcpu = list_first_entry(&vc->runnable_threads,
-						struct kvm_vcpu, arch.run_list);
+			i = -1;
+			vcpu = next_runnable_thread(vc, &i);
 			wake_up(&vcpu->arch.cpu_run);
 		}
 	}
 	spin_unlock(&vc->lock);
+}
+
+/*
+ * Clear core from the list of active host cores as we are about to
+ * enter the guest. Only do this if it is the primary thread of the
+ * core (not if a subcore) that is entering the guest.
+ */
+static inline void kvmppc_clear_host_core(int cpu)
+{
+	int core;
+
+	if (!kvmppc_host_rm_ops_hv || cpu_thread_in_core(cpu))
+		return;
+	/*
+	 * Memory barrier can be omitted here as we will do a smp_wmb()
+	 * later in kvmppc_start_thread and we need ensure that state is
+	 * visible to other CPUs only after we enter guest.
+	 */
+	core = cpu >> threads_shift;
+	kvmppc_host_rm_ops_hv->rm_core[core].rm_state.in_host = 0;
+}
+
+/*
+ * Advertise this core as an active host core since we exited the guest
+ * Only need to do this if it is the primary thread of the core that is
+ * exiting.
+ */
+static inline void kvmppc_set_host_core(int cpu)
+{
+	int core;
+
+	if (!kvmppc_host_rm_ops_hv || cpu_thread_in_core(cpu))
+		return;
+
+	/*
+	 * Memory barrier can be omitted here because we do a spin_unlock
+	 * immediately after this which provides the memory barrier.
+	 */
+	core = cpu >> threads_shift;
+	kvmppc_host_rm_ops_hv->rm_core[core].rm_state.in_host = 1;
 }
 
 /*
@@ -2272,7 +2295,7 @@ static void post_guest_process(struct kvmppc_vcore *vc, bool is_master)
  */
 static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 {
-	struct kvm_vcpu *vcpu, *vnext;
+	struct kvm_vcpu *vcpu;
 	int i;
 	int srcu_idx;
 	struct core_info core_info;
@@ -2308,8 +2331,7 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 	 */
 	if ((threads_per_core > 1) &&
 	    ((vc->num_threads > threads_per_subcore) || !on_primary_thread())) {
-		list_for_each_entry_safe(vcpu, vnext, &vc->runnable_threads,
-					 arch.run_list) {
+		for_each_runnable_thread(i, vcpu, vc) {
 			vcpu->arch.ret = -EBUSY;
 			kvmppc_remove_runnable(vc, vcpu);
 			wake_up(&vcpu->arch.cpu_run);
@@ -2378,6 +2400,8 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 		}
 	}
 
+	kvmppc_clear_host_core(pcpu);
+
 	/* Start all the threads */
 	active = 0;
 	for (sub = 0; sub < core_info.n_subcores; ++sub) {
@@ -2386,8 +2410,7 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 		active |= 1 << thr;
 		list_for_each_entry(pvc, &core_info.vcs[sub], preempt_list) {
 			pvc->pcpu = pcpu + thr;
-			list_for_each_entry(vcpu, &pvc->runnable_threads,
-					    arch.run_list) {
+			for_each_runnable_thread(i, vcpu, pvc) {
 				kvmppc_start_thread(vcpu, pvc);
 				kvmppc_create_dtl_entry(vcpu, pvc);
 				trace_kvm_guest_enter(vcpu);
@@ -2432,7 +2455,7 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 		list_for_each_entry(pvc, &core_info.vcs[sub], preempt_list)
 			spin_unlock(&pvc->lock);
 
-	kvm_guest_enter();
+	guest_enter();
 
 	srcu_idx = srcu_read_lock(&vc->kvm->srcu);
 
@@ -2474,11 +2497,13 @@ static noinline void kvmppc_run_core(struct kvmppc_vcore *vc)
 			kvmppc_ipi_thread(pcpu + i);
 	}
 
+	kvmppc_set_host_core(pcpu);
+
 	spin_unlock(&vc->lock);
 
 	/* make sure updates to secondary vcpu structs are visible now */
 	smp_mb();
-	kvm_guest_exit();
+	guest_exit();
 
 	for (sub = 0; sub < core_info.n_subcores; ++sub)
 		list_for_each_entry_safe(pvc, vcnext, &core_info.vcs[sub],
@@ -2511,50 +2536,146 @@ static void kvmppc_wait_for_exec(struct kvmppc_vcore *vc,
 	finish_wait(&vcpu->arch.cpu_run, &wait);
 }
 
+static void grow_halt_poll_ns(struct kvmppc_vcore *vc)
+{
+	/* 10us base */
+	if (vc->halt_poll_ns == 0 && halt_poll_ns_grow)
+		vc->halt_poll_ns = 10000;
+	else
+		vc->halt_poll_ns *= halt_poll_ns_grow;
+
+	if (vc->halt_poll_ns > halt_poll_max_ns)
+		vc->halt_poll_ns = halt_poll_max_ns;
+}
+
+static void shrink_halt_poll_ns(struct kvmppc_vcore *vc)
+{
+	if (halt_poll_ns_shrink == 0)
+		vc->halt_poll_ns = 0;
+	else
+		vc->halt_poll_ns /= halt_poll_ns_shrink;
+}
+
+/* Check to see if any of the runnable vcpus on the vcore have pending
+ * exceptions or are no longer ceded
+ */
+static int kvmppc_vcore_check_block(struct kvmppc_vcore *vc)
+{
+	struct kvm_vcpu *vcpu;
+	int i;
+
+	for_each_runnable_thread(i, vcpu, vc) {
+		if (vcpu->arch.pending_exceptions || !vcpu->arch.ceded)
+			return 1;
+	}
+
+	return 0;
+}
+
 /*
  * All the vcpus in this vcore are idle, so wait for a decrementer
  * or external interrupt to one of the vcpus.  vc->lock is held.
  */
 static void kvmppc_vcore_blocked(struct kvmppc_vcore *vc)
 {
-	struct kvm_vcpu *vcpu;
+	ktime_t cur, start_poll, start_wait;
 	int do_sleep = 1;
+	u64 block_ns;
+	DECLARE_SWAITQUEUE(wait);
 
-	DEFINE_WAIT(wait);
+	/* Poll for pending exceptions and ceded state */
+	cur = start_poll = ktime_get();
+	if (vc->halt_poll_ns) {
+		ktime_t stop = ktime_add_ns(start_poll, vc->halt_poll_ns);
+		++vc->runner->stat.halt_attempted_poll;
 
-	prepare_to_wait(&vc->wq, &wait, TASK_INTERRUPTIBLE);
+		vc->vcore_state = VCORE_POLLING;
+		spin_unlock(&vc->lock);
 
-	/*
-	 * Check one last time for pending exceptions and ceded state after
-	 * we put ourselves on the wait queue
-	 */
-	list_for_each_entry(vcpu, &vc->runnable_threads, arch.run_list) {
-		if (vcpu->arch.pending_exceptions || !vcpu->arch.ceded) {
-			do_sleep = 0;
-			break;
+		do {
+			if (kvmppc_vcore_check_block(vc)) {
+				do_sleep = 0;
+				break;
+			}
+			cur = ktime_get();
+		} while (single_task_running() && ktime_before(cur, stop));
+
+		spin_lock(&vc->lock);
+		vc->vcore_state = VCORE_INACTIVE;
+
+		if (!do_sleep) {
+			++vc->runner->stat.halt_successful_poll;
+			goto out;
 		}
 	}
 
-	if (!do_sleep) {
-		finish_wait(&vc->wq, &wait);
-		return;
+	prepare_to_swait(&vc->wq, &wait, TASK_INTERRUPTIBLE);
+
+	if (kvmppc_vcore_check_block(vc)) {
+		finish_swait(&vc->wq, &wait);
+		do_sleep = 0;
+		/* If we polled, count this as a successful poll */
+		if (vc->halt_poll_ns)
+			++vc->runner->stat.halt_successful_poll;
+		goto out;
 	}
+
+	start_wait = ktime_get();
 
 	vc->vcore_state = VCORE_SLEEPING;
 	trace_kvmppc_vcore_blocked(vc, 0);
 	spin_unlock(&vc->lock);
 	schedule();
-	finish_wait(&vc->wq, &wait);
+	finish_swait(&vc->wq, &wait);
 	spin_lock(&vc->lock);
 	vc->vcore_state = VCORE_INACTIVE;
 	trace_kvmppc_vcore_blocked(vc, 1);
+	++vc->runner->stat.halt_successful_wait;
+
+	cur = ktime_get();
+
+out:
+	block_ns = ktime_to_ns(cur) - ktime_to_ns(start_poll);
+
+	/* Attribute wait time */
+	if (do_sleep) {
+		vc->runner->stat.halt_wait_ns +=
+			ktime_to_ns(cur) - ktime_to_ns(start_wait);
+		/* Attribute failed poll time */
+		if (vc->halt_poll_ns)
+			vc->runner->stat.halt_poll_fail_ns +=
+				ktime_to_ns(start_wait) -
+				ktime_to_ns(start_poll);
+	} else {
+		/* Attribute successful poll time */
+		if (vc->halt_poll_ns)
+			vc->runner->stat.halt_poll_success_ns +=
+				ktime_to_ns(cur) -
+				ktime_to_ns(start_poll);
+	}
+
+	/* Adjust poll time */
+	if (halt_poll_max_ns) {
+		if (block_ns <= vc->halt_poll_ns)
+			;
+		/* We slept and blocked for longer than the max halt time */
+		else if (vc->halt_poll_ns && block_ns > halt_poll_max_ns)
+			shrink_halt_poll_ns(vc);
+		/* We slept and our poll time is too small */
+		else if (vc->halt_poll_ns < halt_poll_max_ns &&
+				block_ns < halt_poll_max_ns)
+			grow_halt_poll_ns(vc);
+	} else
+		vc->halt_poll_ns = 0;
+
+	trace_kvmppc_vcore_wakeup(do_sleep, block_ns);
 }
 
 static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 {
-	int n_ceded;
+	int n_ceded, i;
 	struct kvmppc_vcore *vc;
-	struct kvm_vcpu *v, *vn;
+	struct kvm_vcpu *v;
 
 	trace_kvmppc_run_vcpu_enter(vcpu);
 
@@ -2574,7 +2695,7 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 	vcpu->arch.stolen_logged = vcore_stolen_time(vc, mftb());
 	vcpu->arch.state = KVMPPC_VCPU_RUNNABLE;
 	vcpu->arch.busy_preempt = TB_NIL;
-	list_add_tail(&vcpu->arch.run_list, &vc->runnable_threads);
+	WRITE_ONCE(vc->runnable_threads[vcpu->arch.ptid], vcpu);
 	++vc->n_runnable;
 
 	/*
@@ -2600,7 +2721,7 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 			kvmppc_start_thread(vcpu, vc);
 			trace_kvm_guest_enter(vcpu);
 		} else if (vc->vcore_state == VCORE_SLEEPING) {
-			wake_up(&vc->wq);
+			swake_up(&vc->wq);
 		}
 
 	}
@@ -2614,8 +2735,7 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 			kvmppc_wait_for_exec(vc, vcpu, TASK_INTERRUPTIBLE);
 			continue;
 		}
-		list_for_each_entry_safe(v, vn, &vc->runnable_threads,
-					 arch.run_list) {
+		for_each_runnable_thread(i, v, vc) {
 			kvmppc_core_prepare_to_enter(v);
 			if (signal_pending(v->arch.run_task)) {
 				kvmppc_remove_runnable(vc, v);
@@ -2628,7 +2748,7 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 		if (!vc->n_runnable || vcpu->arch.state != KVMPPC_VCPU_RUNNABLE)
 			break;
 		n_ceded = 0;
-		list_for_each_entry(v, &vc->runnable_threads, arch.run_list) {
+		for_each_runnable_thread(i, v, vc) {
 			if (!v->arch.pending_exceptions)
 				n_ceded += v->arch.ceded;
 			else
@@ -2667,8 +2787,8 @@ static int kvmppc_run_vcpu(struct kvm_run *kvm_run, struct kvm_vcpu *vcpu)
 
 	if (vc->n_runnable && vc->vcore_state == VCORE_INACTIVE) {
 		/* Wake up some vcpu to run the core */
-		v = list_first_entry(&vc->runnable_threads,
-				     struct kvm_vcpu, arch.run_list);
+		i = -1;
+		v = next_runnable_thread(vc, &i);
 		wake_up(&v->arch.cpu_run);
 	}
 
@@ -2706,9 +2826,8 @@ static int kvmppc_vcpu_run_hv(struct kvm_run *run, struct kvm_vcpu *vcpu)
 			goto out;
 	}
 
-	flush_fp_to_thread(current);
-	flush_altivec_to_thread(current);
-	flush_vsx_to_thread(current);
+	flush_all_to_thread(current);
+
 	vcpu->arch.wqp = &vcpu->arch.vcore->wq;
 	vcpu->arch.pgdir = current->mm->pgd;
 	vcpu->arch.state = KVMPPC_VCPU_BUSY_IN_HOST;
@@ -2727,7 +2846,8 @@ static int kvmppc_vcpu_run_hv(struct kvm_run *run, struct kvm_vcpu *vcpu)
 			r = kvmppc_book3s_hv_page_fault(run, vcpu,
 				vcpu->arch.fault_dar, vcpu->arch.fault_dsisr);
 			srcu_read_unlock(&vcpu->kvm->srcu, srcu_idx);
-		}
+		} else if (r == RESUME_PASSTHROUGH)
+			r = kvmppc_xics_rm_complete(vcpu, 0);
 	} while (is_kvmppc_resume_guest(r));
 
  out:
@@ -2973,6 +3093,114 @@ static int kvmppc_hv_setup_htab_rma(struct kvm_vcpu *vcpu)
 	goto out_srcu;
 }
 
+#ifdef CONFIG_KVM_XICS
+static int kvmppc_cpu_notify(struct notifier_block *self, unsigned long action,
+			void *hcpu)
+{
+	unsigned long cpu = (long)hcpu;
+
+	switch (action) {
+	case CPU_UP_PREPARE:
+	case CPU_UP_PREPARE_FROZEN:
+		kvmppc_set_host_core(cpu);
+		break;
+
+#ifdef CONFIG_HOTPLUG_CPU
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+	case CPU_UP_CANCELED:
+	case CPU_UP_CANCELED_FROZEN:
+		kvmppc_clear_host_core(cpu);
+		break;
+#endif
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block kvmppc_cpu_notifier = {
+	    .notifier_call = kvmppc_cpu_notify,
+};
+
+/*
+ * Allocate a per-core structure for managing state about which cores are
+ * running in the host versus the guest and for exchanging data between
+ * real mode KVM and CPU running in the host.
+ * This is only done for the first VM.
+ * The allocated structure stays even if all VMs have stopped.
+ * It is only freed when the kvm-hv module is unloaded.
+ * It's OK for this routine to fail, we just don't support host
+ * core operations like redirecting H_IPI wakeups.
+ */
+void kvmppc_alloc_host_rm_ops(void)
+{
+	struct kvmppc_host_rm_ops *ops;
+	unsigned long l_ops;
+	int cpu, core;
+	int size;
+
+	/* Not the first time here ? */
+	if (kvmppc_host_rm_ops_hv != NULL)
+		return;
+
+	ops = kzalloc(sizeof(struct kvmppc_host_rm_ops), GFP_KERNEL);
+	if (!ops)
+		return;
+
+	size = cpu_nr_cores() * sizeof(struct kvmppc_host_rm_core);
+	ops->rm_core = kzalloc(size, GFP_KERNEL);
+
+	if (!ops->rm_core) {
+		kfree(ops);
+		return;
+	}
+
+	get_online_cpus();
+
+	for (cpu = 0; cpu < nr_cpu_ids; cpu += threads_per_core) {
+		if (!cpu_online(cpu))
+			continue;
+
+		core = cpu >> threads_shift;
+		ops->rm_core[core].rm_state.in_host = 1;
+	}
+
+	ops->vcpu_kick = kvmppc_fast_vcpu_kick_hv;
+
+	/*
+	 * Make the contents of the kvmppc_host_rm_ops structure visible
+	 * to other CPUs before we assign it to the global variable.
+	 * Do an atomic assignment (no locks used here), but if someone
+	 * beats us to it, just free our copy and return.
+	 */
+	smp_wmb();
+	l_ops = (unsigned long) ops;
+
+	if (cmpxchg64((unsigned long *)&kvmppc_host_rm_ops_hv, 0, l_ops)) {
+		put_online_cpus();
+		kfree(ops->rm_core);
+		kfree(ops);
+		return;
+	}
+
+	register_cpu_notifier(&kvmppc_cpu_notifier);
+
+	put_online_cpus();
+}
+
+void kvmppc_free_host_rm_ops(void)
+{
+	if (kvmppc_host_rm_ops_hv) {
+		unregister_cpu_notifier(&kvmppc_cpu_notifier);
+		kfree(kvmppc_host_rm_ops_hv->rm_core);
+		kfree(kvmppc_host_rm_ops_hv);
+		kvmppc_host_rm_ops_hv = NULL;
+	}
+}
+#endif
+
 static int kvmppc_core_init_vm_hv(struct kvm *kvm)
 {
 	unsigned long lpcr, lpid;
@@ -2984,6 +3212,8 @@ static int kvmppc_core_init_vm_hv(struct kvm *kvm)
 	if ((long)lpid < 0)
 		return -ENOMEM;
 	kvm->arch.lpid = lpid;
+
+	kvmppc_alloc_host_rm_ops();
 
 	/*
 	 * Since we don't flush the TLB when tearing down a VM,
@@ -3046,6 +3276,8 @@ static void kvmppc_core_destroy_vm_hv(struct kvm *kvm)
 	kvmppc_free_vcores(kvm);
 
 	kvmppc_free_hpt(kvm);
+
+	kvmppc_free_pimap(kvm);
 }
 
 /* We don't need to emulate any privileged instructions or dcbz */
@@ -3072,8 +3304,192 @@ static int kvmppc_core_check_processor_compat_hv(void)
 	if (!cpu_has_feature(CPU_FTR_HVMODE) ||
 	    !cpu_has_feature(CPU_FTR_ARCH_206))
 		return -EIO;
+	/*
+	 * Disable KVM for Power9, untill the required bits merged.
+	 */
+	if (cpu_has_feature(CPU_FTR_ARCH_300))
+		return -EIO;
+
 	return 0;
 }
+
+#ifdef CONFIG_KVM_XICS
+
+void kvmppc_free_pimap(struct kvm *kvm)
+{
+	kfree(kvm->arch.pimap);
+}
+
+static struct kvmppc_passthru_irqmap *kvmppc_alloc_pimap(void)
+{
+	return kzalloc(sizeof(struct kvmppc_passthru_irqmap), GFP_KERNEL);
+}
+
+static int kvmppc_set_passthru_irq(struct kvm *kvm, int host_irq, int guest_gsi)
+{
+	struct irq_desc *desc;
+	struct kvmppc_irq_map *irq_map;
+	struct kvmppc_passthru_irqmap *pimap;
+	struct irq_chip *chip;
+	int i;
+
+	if (!kvm_irq_bypass)
+		return 1;
+
+	desc = irq_to_desc(host_irq);
+	if (!desc)
+		return -EIO;
+
+	mutex_lock(&kvm->lock);
+
+	pimap = kvm->arch.pimap;
+	if (pimap == NULL) {
+		/* First call, allocate structure to hold IRQ map */
+		pimap = kvmppc_alloc_pimap();
+		if (pimap == NULL) {
+			mutex_unlock(&kvm->lock);
+			return -ENOMEM;
+		}
+		kvm->arch.pimap = pimap;
+	}
+
+	/*
+	 * For now, we only support interrupts for which the EOI operation
+	 * is an OPAL call followed by a write to XIRR, since that's
+	 * what our real-mode EOI code does.
+	 */
+	chip = irq_data_get_irq_chip(&desc->irq_data);
+	if (!chip || !is_pnv_opal_msi(chip)) {
+		pr_warn("kvmppc_set_passthru_irq_hv: Could not assign IRQ map for (%d,%d)\n",
+			host_irq, guest_gsi);
+		mutex_unlock(&kvm->lock);
+		return -ENOENT;
+	}
+
+	/*
+	 * See if we already have an entry for this guest IRQ number.
+	 * If it's mapped to a hardware IRQ number, that's an error,
+	 * otherwise re-use this entry.
+	 */
+	for (i = 0; i < pimap->n_mapped; i++) {
+		if (guest_gsi == pimap->mapped[i].v_hwirq) {
+			if (pimap->mapped[i].r_hwirq) {
+				mutex_unlock(&kvm->lock);
+				return -EINVAL;
+			}
+			break;
+		}
+	}
+
+	if (i == KVMPPC_PIRQ_MAPPED) {
+		mutex_unlock(&kvm->lock);
+		return -EAGAIN;		/* table is full */
+	}
+
+	irq_map = &pimap->mapped[i];
+
+	irq_map->v_hwirq = guest_gsi;
+	irq_map->desc = desc;
+
+	/*
+	 * Order the above two stores before the next to serialize with
+	 * the KVM real mode handler.
+	 */
+	smp_wmb();
+	irq_map->r_hwirq = desc->irq_data.hwirq;
+
+	if (i == pimap->n_mapped)
+		pimap->n_mapped++;
+
+	kvmppc_xics_set_mapped(kvm, guest_gsi, desc->irq_data.hwirq);
+
+	mutex_unlock(&kvm->lock);
+
+	return 0;
+}
+
+static int kvmppc_clr_passthru_irq(struct kvm *kvm, int host_irq, int guest_gsi)
+{
+	struct irq_desc *desc;
+	struct kvmppc_passthru_irqmap *pimap;
+	int i;
+
+	if (!kvm_irq_bypass)
+		return 0;
+
+	desc = irq_to_desc(host_irq);
+	if (!desc)
+		return -EIO;
+
+	mutex_lock(&kvm->lock);
+
+	if (kvm->arch.pimap == NULL) {
+		mutex_unlock(&kvm->lock);
+		return 0;
+	}
+	pimap = kvm->arch.pimap;
+
+	for (i = 0; i < pimap->n_mapped; i++) {
+		if (guest_gsi == pimap->mapped[i].v_hwirq)
+			break;
+	}
+
+	if (i == pimap->n_mapped) {
+		mutex_unlock(&kvm->lock);
+		return -ENODEV;
+	}
+
+	kvmppc_xics_clr_mapped(kvm, guest_gsi, pimap->mapped[i].r_hwirq);
+
+	/* invalidate the entry */
+	pimap->mapped[i].r_hwirq = 0;
+
+	/*
+	 * We don't free this structure even when the count goes to
+	 * zero. The structure is freed when we destroy the VM.
+	 */
+
+	mutex_unlock(&kvm->lock);
+	return 0;
+}
+
+static int kvmppc_irq_bypass_add_producer_hv(struct irq_bypass_consumer *cons,
+					     struct irq_bypass_producer *prod)
+{
+	int ret = 0;
+	struct kvm_kernel_irqfd *irqfd =
+		container_of(cons, struct kvm_kernel_irqfd, consumer);
+
+	irqfd->producer = prod;
+
+	ret = kvmppc_set_passthru_irq(irqfd->kvm, prod->irq, irqfd->gsi);
+	if (ret)
+		pr_info("kvmppc_set_passthru_irq (irq %d, gsi %d) fails: %d\n",
+			prod->irq, irqfd->gsi, ret);
+
+	return ret;
+}
+
+static void kvmppc_irq_bypass_del_producer_hv(struct irq_bypass_consumer *cons,
+					      struct irq_bypass_producer *prod)
+{
+	int ret;
+	struct kvm_kernel_irqfd *irqfd =
+		container_of(cons, struct kvm_kernel_irqfd, consumer);
+
+	irqfd->producer = NULL;
+
+	/*
+	 * When producer of consumer is unregistered, we change back to
+	 * default external interrupt handling mode - KVM real mode
+	 * will switch back to host.
+	 */
+	ret = kvmppc_clr_passthru_irq(irqfd->kvm, prod->irq, irqfd->gsi);
+	if (ret)
+		pr_warn("kvmppc_clr_passthru_irq (irq %d, gsi %d) fails: %d\n",
+			prod->irq, irqfd->gsi, ret);
+}
+#endif
 
 static long kvm_arch_vm_ioctl_hv(struct file *filp,
 				 unsigned int ioctl, unsigned long arg)
@@ -3193,7 +3609,43 @@ static struct kvmppc_ops kvm_ops_hv = {
 	.fast_vcpu_kick = kvmppc_fast_vcpu_kick_hv,
 	.arch_vm_ioctl  = kvm_arch_vm_ioctl_hv,
 	.hcall_implemented = kvmppc_hcall_impl_hv,
+#ifdef CONFIG_KVM_XICS
+	.irq_bypass_add_producer = kvmppc_irq_bypass_add_producer_hv,
+	.irq_bypass_del_producer = kvmppc_irq_bypass_del_producer_hv,
+#endif
 };
+
+static int kvm_init_subcore_bitmap(void)
+{
+	int i, j;
+	int nr_cores = cpu_nr_cores();
+	struct sibling_subcore_state *sibling_subcore_state;
+
+	for (i = 0; i < nr_cores; i++) {
+		int first_cpu = i * threads_per_core;
+		int node = cpu_to_node(first_cpu);
+
+		/* Ignore if it is already allocated. */
+		if (paca[first_cpu].sibling_subcore_state)
+			continue;
+
+		sibling_subcore_state =
+			kmalloc_node(sizeof(struct sibling_subcore_state),
+							GFP_KERNEL, node);
+		if (!sibling_subcore_state)
+			return -ENOMEM;
+
+		memset(sibling_subcore_state, 0,
+				sizeof(struct sibling_subcore_state));
+
+		for (j = 0; j < threads_per_core; j++) {
+			int cpu = first_cpu + j;
+
+			paca[cpu].sibling_subcore_state = sibling_subcore_state;
+		}
+	}
+	return 0;
+}
 
 static int kvmppc_book3s_init_hv(void)
 {
@@ -3204,6 +3656,10 @@ static int kvmppc_book3s_init_hv(void)
 	r = kvmppc_core_check_processor_compat_hv();
 	if (r < 0)
 		return -ENODEV;
+
+	r = kvm_init_subcore_bitmap();
+	if (r)
+		return r;
 
 	kvm_ops_hv.owner = THIS_MODULE;
 	kvmppc_hv_ops = &kvm_ops_hv;
@@ -3218,6 +3674,7 @@ static int kvmppc_book3s_init_hv(void)
 
 static void kvmppc_book3s_exit_hv(void)
 {
+	kvmppc_free_host_rm_ops();
 	kvmppc_hv_ops = NULL;
 }
 

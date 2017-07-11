@@ -188,10 +188,16 @@ static int rmi_set_page(struct hid_device *hdev, u8 page)
 static int rmi_set_mode(struct hid_device *hdev, u8 mode)
 {
 	int ret;
-	u8 txbuf[2] = {RMI_SET_RMI_MODE_REPORT_ID, mode};
+	const u8 txbuf[2] = {RMI_SET_RMI_MODE_REPORT_ID, mode};
+	u8 *buf;
 
-	ret = hid_hw_raw_request(hdev, RMI_SET_RMI_MODE_REPORT_ID, txbuf,
+	buf = kmemdup(txbuf, sizeof(txbuf), GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = hid_hw_raw_request(hdev, RMI_SET_RMI_MODE_REPORT_ID, buf,
 			sizeof(txbuf), HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+	kfree(buf);
 	if (ret < 0) {
 		dev_err(&hdev->dev, "unable to set rmi mode to %d (%d)\n", mode,
 			ret);
@@ -594,6 +600,9 @@ static int rmi_suspend(struct hid_device *hdev, pm_message_t message)
 	int ret;
 	u8 buf[RMI_F11_CTRL_REG_COUNT];
 
+	if (!(data->device_flags & RMI_DEVICE))
+		return 0;
+
 	ret = rmi_read_block(hdev, data->f11.control_base_addr, buf,
 				RMI_F11_CTRL_REG_COUNT);
 	if (ret)
@@ -612,6 +621,9 @@ static int rmi_post_reset(struct hid_device *hdev)
 {
 	struct rmi_data *data = hid_get_drvdata(hdev);
 	int ret;
+
+	if (!(data->device_flags & RMI_DEVICE))
+		return 0;
 
 	ret = rmi_reset_attn_mode(hdev);
 	if (ret) {
@@ -640,6 +652,11 @@ static int rmi_post_reset(struct hid_device *hdev)
 
 static int rmi_post_resume(struct hid_device *hdev)
 {
+	struct rmi_data *data = hid_get_drvdata(hdev);
+
+	if (!(data->device_flags & RMI_DEVICE))
+		return 0;
+
 	return rmi_reset_attn_mode(hdev);
 }
 #endif /* CONFIG_PM */

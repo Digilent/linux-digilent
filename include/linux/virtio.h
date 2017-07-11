@@ -44,14 +44,6 @@ int virtqueue_add_inbuf(struct virtqueue *vq,
 			void *data,
 			gfp_t gfp);
 
-int __virtqueue_add_sgs(struct virtqueue *vq,
-			struct scatterlist *sgs[],
-			unsigned int out_sgs,
-			unsigned int in_sgs,
-			void *data,
-			gfp_t gfp,
-			bool dma);
-
 int virtqueue_add_sgs(struct virtqueue *vq,
 		      struct scatterlist *sgs[],
 		      unsigned int out_sgs,
@@ -83,8 +75,27 @@ unsigned int virtqueue_get_vring_size(struct virtqueue *vq);
 
 bool virtqueue_is_broken(struct virtqueue *vq);
 
-void *virtqueue_get_avail(struct virtqueue *vq);
-void *virtqueue_get_used(struct virtqueue *vq);
+const struct vring *virtqueue_get_vring(struct virtqueue *vq);
+dma_addr_t virtqueue_get_desc_addr(struct virtqueue *vq);
+dma_addr_t virtqueue_get_avail_addr(struct virtqueue *vq);
+dma_addr_t virtqueue_get_used_addr(struct virtqueue *vq);
+
+/*
+ * Legacy accessors -- in almost all cases, these are the wrong functions
+ * to use.
+ */
+static inline void *virtqueue_get_desc(struct virtqueue *vq)
+{
+	return virtqueue_get_vring(vq)->desc;
+}
+static inline void *virtqueue_get_avail(struct virtqueue *vq)
+{
+	return virtqueue_get_vring(vq)->avail;
+}
+static inline void *virtqueue_get_used(struct virtqueue *vq)
+{
+	return virtqueue_get_vring(vq)->used;
+}
 
 /**
  * virtio_device - representation of a device using virtio

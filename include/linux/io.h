@@ -29,6 +29,7 @@ struct device;
 struct resource;
 
 __visible void __iowrite32_copy(void __iomem *to, const void *from, size_t count);
+void __ioread32_copy(void *to, const void __iomem *from, size_t count);
 void __iowrite64_copy(void __iomem *to, const void *from, size_t count);
 
 #ifdef CONFIG_MMU
@@ -89,21 +90,6 @@ void devm_memunmap(struct device *dev, void *addr);
 
 void *__devm_memremap_pages(struct device *dev, struct resource *res);
 
-#ifdef CONFIG_ZONE_DEVICE
-void *devm_memremap_pages(struct device *dev, struct resource *res);
-#else
-static inline void *devm_memremap_pages(struct device *dev, struct resource *res)
-{
-	/*
-	 * Fail attempts to call devm_memremap_pages() without
-	 * ZONE_DEVICE support enabled, this requires callers to fall
-	 * back to plain devm_memremap() based on config
-	 */
-	WARN_ON_ONCE(1);
-	return ERR_PTR(-ENXIO);
-}
-#endif
-
 /*
  * Some systems do not have legacy ISA devices.
  * /dev/port is not a valid interface on these systems.
@@ -149,9 +135,32 @@ enum {
 	/* See memremap() kernel-doc for usage description... */
 	MEMREMAP_WB = 1 << 0,
 	MEMREMAP_WT = 1 << 1,
+	MEMREMAP_WC = 1 << 2,
 };
 
 void *memremap(resource_size_t offset, size_t size, unsigned long flags);
 void memunmap(void *addr);
+
+/*
+ * On x86 PAT systems we have memory tracking that keeps track of
+ * the allowed mappings on memory ranges. This tracking works for
+ * all the in-kernel mapping APIs (ioremap*), but where the user
+ * wishes to map a range from a physical device into user memory
+ * the tracking won't be updated. This API is to be used by
+ * drivers which remap physical device pages into userspace,
+ * and wants to make sure they are mapped WC and not UC.
+ */
+#ifndef arch_io_reserve_memtype_wc
+static inline int arch_io_reserve_memtype_wc(resource_size_t base,
+					     resource_size_t size)
+{
+	return 0;
+}
+
+static inline void arch_io_free_memtype_wc(resource_size_t base,
+					   resource_size_t size)
+{
+}
+#endif
 
 #endif /* _LINUX_IO_H */

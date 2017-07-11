@@ -49,7 +49,7 @@ static bool s390_iommu_capable(enum iommu_cap cap)
 	}
 }
 
-struct iommu_domain *s390_domain_alloc(unsigned domain_type)
+static struct iommu_domain *s390_domain_alloc(unsigned domain_type)
 {
 	struct s390_domain *s390_domain;
 
@@ -73,7 +73,7 @@ struct iommu_domain *s390_domain_alloc(unsigned domain_type)
 	return &s390_domain->domain;
 }
 
-void s390_domain_free(struct iommu_domain *domain)
+static void s390_domain_free(struct iommu_domain *domain)
 {
 	struct s390_domain *s390_domain = to_s390_domain(domain);
 
@@ -101,8 +101,7 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 		zpci_dma_exit_device(zdev);
 
 	zdev->dma_table = s390_domain->dma_table;
-	rc = zpci_register_ioat(zdev, 0, zdev->start_dma + PAGE_OFFSET,
-				zdev->start_dma + zdev->iommu_size - 1,
+	rc = zpci_register_ioat(zdev, 0, zdev->start_dma, zdev->end_dma,
 				(u64) zdev->dma_table);
 	if (rc)
 		goto out_restore;

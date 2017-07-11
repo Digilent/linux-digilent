@@ -401,7 +401,8 @@ mpt3sas_ctl_event_callback(struct MPT3SAS_ADAPTER *ioc, u8 msix_index,
 	Mpi2EventNotificationReply_t *mpi_reply;
 
 	mpi_reply = mpt3sas_base_get_reply_virt_addr(ioc, reply);
-	mpt3sas_ctl_add_to_event_log(ioc, mpi_reply);
+	if (mpi_reply)
+		mpt3sas_ctl_add_to_event_log(ioc, mpi_reply);
 	return 1;
 }
 
@@ -410,7 +411,7 @@ mpt3sas_ctl_event_callback(struct MPT3SAS_ADAPTER *ioc, u8 msix_index,
  * @ioc: per adapter object
  * @iocpp: The ioc pointer is returned in this.
  * @mpi_version: will be MPI2_VERSION for mpt2ctl ioctl device &
- *		MPI25_VERSION for mpt3ctl ioctl device.
+ * MPI25_VERSION | MPI26_VERSION for mpt3ctl ioctl device.
  *
  * Return (-1) means error, else ioc_number.
  */
@@ -419,6 +420,7 @@ _ctl_verify_adapter(int ioc_number, struct MPT3SAS_ADAPTER **iocpp,
 							int mpi_version)
 {
 	struct MPT3SAS_ADAPTER *ioc;
+	int version = 0;
 	/* global ioc lock to protect controller on list operations */
 	spin_lock(&gioc_lock);
 	list_for_each_entry(ioc, &mpt3sas_ioc_list, list) {
@@ -427,8 +429,21 @@ _ctl_verify_adapter(int ioc_number, struct MPT3SAS_ADAPTER **iocpp,
 		/* Check whether this ioctl command is from right
 		 * ioctl device or not, if not continue the search.
 		 */
-		if (ioc->hba_mpi_version_belonged != mpi_version)
-			continue;
+		version = ioc->hba_mpi_version_belonged;
+		/* MPI25_VERSION and MPI26_VERSION uses same ioctl
+		 * device.
+		 */
+		if (mpi_version == (MPI25_VERSION | MPI26_VERSION)) {
+			if ((version == MPI25_VERSION) ||
+				(version == MPI26_VERSION))
+				goto out;
+			else
+				continue;
+		} else {
+			if (version != mpi_version)
+				continue;
+		}
+out:
 		spin_unlock(&gioc_lock);
 		*iocpp = ioc;
 		return ioc_number;
@@ -503,7 +518,7 @@ mpt3sas_ctl_reset_handler(struct MPT3SAS_ADAPTER *ioc, int reset_phase)
  *
  * Called when application request fasyn callback handler.
  */
-int
+static int
 _ctl_fasync(int fd, struct file *filep, int mode)
 {
 	return fasync_helper(fd, filep, mode, &async_queue);
@@ -515,7 +530,7 @@ _ctl_fasync(int fd, struct file *filep, int mode)
  * @wait -
  *
  */
-unsigned int
+static unsigned int
 _ctl_poll(struct file *filep, poll_table *wait)
 {
 	struct MPT3SAS_ADAPTER *ioc;
@@ -626,9 +641,8 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 	MPI2RequestHeader_t *mpi_request = NULL, *request;
 	MPI2DefaultReply_t *mpi_reply;
 	u32 ioc_state;
-	u16 ioc_status;
 	u16 smid;
-	unsigned long timeout, timeleft;
+	unsigned long timeout;
 	u8 issue_reset;
 	u32 sz;
 	void *psge;
@@ -817,7 +831,7 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 		    tm_request->DevHandle));
 		ioc->build_sg_mpi(ioc, psge, data_out_dma, data_out_sz,
 		    data_in_dma, data_in_sz);
-		mpt3sas_base_put_smid_hi_priority(ioc, smid);
+		mpt3sas_base_put_smid_hi_priority(ioc, smid, 0);
 		break;
 	}
 	case MPI2_FUNCTION_SMP_PASSTHROUGH:
@@ -899,8 +913,7 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 		timeout = MPT3_IOCTL_DEFAULT_TIMEOUT;
 	else
 		timeout = karg.timeout;
-	timeleft = wait_for_completion_timeout(&ioc->ctl_cmds.done,
-	    timeout*HZ);
+	wait_for_completion_timeout(&ioc->ctl_cmds.done, timeout*HZ);
 	if (mpi_request->Function == MPI2_FUNCTION_SCSI_TASK_MGMT) {
 		Mpi2SCSITaskManagementRequest_t *tm_request =
 		    (Mpi2SCSITaskManagementRequest_t *)mpi_request;
@@ -923,7 +936,6 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 	}
 
 	mpi_reply = ioc->ctl_cmds.reply;
-	ioc_status = le16_to_cpu(mpi_reply->IOCStatus) & MPI2_IOCSTATUS_MASK;
 
 	if (mpi_reply->Function == MPI2_FUNCTION_SCSI_TASK_MGMT &&
 	    (ioc->logging_level & MPT_DEBUG_TM)) {
@@ -986,13 +998,11 @@ _ctl_do_mpt_command(struct MPT3SAS_ADAPTER *ioc, struct mpt3_ioctl_command karg,
 				ioc->name,
 				le16_to_cpu(mpi_request->FunctionDependent1));
 			mpt3sas_halt_firmware(ioc);
-			mpt3sas_scsih_issue_tm(ioc,
+			mpt3sas_scsih_issue_locked_tm(ioc,
 			    le16_to_cpu(mpi_request->FunctionDependent1), 0, 0,
-			    0, MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET, 0, 30,
-			    TM_MUTEX_ON);
+			    0, MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET, 0, 30);
 		} else
-			mpt3sas_base_hard_reset_handler(ioc, CAN_SLEEP,
-			    FORCE_BIG_HAMMER);
+			mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 	}
 
  out:
@@ -1053,6 +1063,7 @@ _ctl_getiocinfo(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 		strcat(karg.driver_version, MPT2SAS_DRIVER_VERSION);
 		break;
 	case MPI25_VERSION:
+	case MPI26_VERSION:
 		karg.adapter_type = MPT3_IOCTL_INTERFACE_SAS3;
 		strcat(karg.driver_version, MPT3SAS_DRIVER_VERSION);
 		break;
@@ -1204,8 +1215,7 @@ _ctl_do_reset(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 	dctlprintk(ioc, pr_info(MPT3SAS_FMT "%s: enter\n", ioc->name,
 	    __func__));
 
-	retval = mpt3sas_base_hard_reset_handler(ioc, CAN_SLEEP,
-	    FORCE_BIG_HAMMER);
+	retval = mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 	pr_info(MPT3SAS_FMT "host reset: %s\n",
 	    ioc->name, ((!retval) ? "SUCCESS" : "FAILED"));
 	return 0;
@@ -1365,7 +1375,6 @@ _ctl_diag_register_2(struct MPT3SAS_ADAPTER *ioc,
 	Mpi2DiagBufferPostRequest_t *mpi_request;
 	Mpi2DiagBufferPostReply_t *mpi_reply;
 	u8 buffer_type;
-	unsigned long timeleft;
 	u16 smid;
 	u16 ioc_status;
 	u32 ioc_state;
@@ -1483,7 +1492,7 @@ _ctl_diag_register_2(struct MPT3SAS_ADAPTER *ioc,
 
 	init_completion(&ioc->ctl_cmds.done);
 	mpt3sas_base_put_smid_default(ioc, smid);
-	timeleft = wait_for_completion_timeout(&ioc->ctl_cmds.done,
+	wait_for_completion_timeout(&ioc->ctl_cmds.done,
 	    MPT3_IOCTL_DEFAULT_TIMEOUT*HZ);
 
 	if (!(ioc->ctl_cmds.status & MPT3_CMD_COMPLETE)) {
@@ -1522,8 +1531,7 @@ _ctl_diag_register_2(struct MPT3SAS_ADAPTER *ioc,
 
  issue_host_reset:
 	if (issue_reset)
-		mpt3sas_base_hard_reset_handler(ioc, CAN_SLEEP,
-		    FORCE_BIG_HAMMER);
+		mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 
  out:
 
@@ -1784,7 +1792,6 @@ mpt3sas_send_diag_release(struct MPT3SAS_ADAPTER *ioc, u8 buffer_type,
 	u16 ioc_status;
 	u32 ioc_state;
 	int rc;
-	unsigned long timeleft;
 
 	dctlprintk(ioc, pr_info(MPT3SAS_FMT "%s\n", ioc->name,
 	    __func__));
@@ -1832,7 +1839,7 @@ mpt3sas_send_diag_release(struct MPT3SAS_ADAPTER *ioc, u8 buffer_type,
 
 	init_completion(&ioc->ctl_cmds.done);
 	mpt3sas_base_put_smid_default(ioc, smid);
-	timeleft = wait_for_completion_timeout(&ioc->ctl_cmds.done,
+	wait_for_completion_timeout(&ioc->ctl_cmds.done,
 	    MPT3_IOCTL_DEFAULT_TIMEOUT*HZ);
 
 	if (!(ioc->ctl_cmds.status & MPT3_CMD_COMPLETE)) {
@@ -1958,8 +1965,7 @@ _ctl_diag_release(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 	rc = mpt3sas_send_diag_release(ioc, buffer_type, &issue_reset);
 
 	if (issue_reset)
-		mpt3sas_base_hard_reset_handler(ioc, CAN_SLEEP,
-		    FORCE_BIG_HAMMER);
+		mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 
 	return rc;
 }
@@ -1979,7 +1985,7 @@ _ctl_diag_read_buffer(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 	Mpi2DiagBufferPostReply_t *mpi_reply;
 	int rc, i;
 	u8 buffer_type;
-	unsigned long timeleft, request_size, copy_size;
+	unsigned long request_size, copy_size;
 	u16 smid;
 	u16 ioc_status;
 	u8 issue_reset = 0;
@@ -2100,7 +2106,7 @@ _ctl_diag_read_buffer(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 
 	init_completion(&ioc->ctl_cmds.done);
 	mpt3sas_base_put_smid_default(ioc, smid);
-	timeleft = wait_for_completion_timeout(&ioc->ctl_cmds.done,
+	wait_for_completion_timeout(&ioc->ctl_cmds.done,
 	    MPT3_IOCTL_DEFAULT_TIMEOUT*HZ);
 
 	if (!(ioc->ctl_cmds.status & MPT3_CMD_COMPLETE)) {
@@ -2139,8 +2145,7 @@ _ctl_diag_read_buffer(struct MPT3SAS_ADAPTER *ioc, void __user *arg)
 
  issue_host_reset:
 	if (issue_reset)
-		mpt3sas_base_hard_reset_handler(ioc, CAN_SLEEP,
-		    FORCE_BIG_HAMMER);
+		mpt3sas_base_hard_reset_handler(ioc, FORCE_BIG_HAMMER);
 
  out:
 
@@ -2203,7 +2208,7 @@ _ctl_compat_mpt_command(struct MPT3SAS_ADAPTER *ioc, unsigned cmd,
  * @arg - user space data buffer
  * @compat - handles 32 bit applications in 64bit os
  * @mpi_version: will be MPI2_VERSION for mpt2ctl ioctl device &
- *		MPI25_VERSION for mpt3ctl ioctl device.
+ * MPI25_VERSION | MPI26_VERSION for mpt3ctl ioctl device.
  */
 static long
 _ctl_ioctl_main(struct file *file, unsigned int cmd, void __user *arg,
@@ -2336,15 +2341,17 @@ out_unlock_pciaccess:
  * @cmd - ioctl opcode
  * @arg -
  */
-long
+static long
 _ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret;
 
-	/* pass MPI25_VERSION value, to indicate that this ioctl cmd
+	/* pass MPI25_VERSION | MPI26_VERSION value,
+	 * to indicate that this ioctl cmd
 	 * came from mpt3ctl ioctl device.
 	 */
-	ret = _ctl_ioctl_main(file, cmd, (void __user *)arg, 0, MPI25_VERSION);
+	ret = _ctl_ioctl_main(file, cmd, (void __user *)arg, 0,
+		MPI25_VERSION | MPI26_VERSION);
 	return ret;
 }
 
@@ -2354,7 +2361,7 @@ _ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
  * @cmd - ioctl opcode
  * @arg -
  */
-long
+static long
 _ctl_mpt2_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret;
@@ -2374,12 +2381,13 @@ _ctl_mpt2_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
  *
  * This routine handles 32 bit applications in 64bit os.
  */
-long
+static long
 _ctl_ioctl_compat(struct file *file, unsigned cmd, unsigned long arg)
 {
 	long ret;
 
-	ret = _ctl_ioctl_main(file, cmd, (void __user *)arg, 1, MPI25_VERSION);
+	ret = _ctl_ioctl_main(file, cmd, (void __user *)arg, 1,
+		MPI25_VERSION | MPI26_VERSION);
 	return ret;
 }
 
@@ -2391,7 +2399,7 @@ _ctl_ioctl_compat(struct file *file, unsigned cmd, unsigned long arg)
  *
  * This routine handles 32 bit applications in 64bit os.
  */
-long
+static long
 _ctl_mpt2_ioctl_compat(struct file *file, unsigned cmd, unsigned long arg)
 {
 	long ret;

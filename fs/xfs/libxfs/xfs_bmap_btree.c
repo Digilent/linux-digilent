@@ -23,6 +23,7 @@
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
 #include "xfs_mount.h"
+#include "xfs_defer.h"
 #include "xfs_inode.h"
 #include "xfs_trans.h"
 #include "xfs_inode_item.h"
@@ -34,6 +35,7 @@
 #include "xfs_quota.h"
 #include "xfs_trace.h"
 #include "xfs_cksum.h"
+#include "xfs_rmap.h"
 
 /*
  * Determine the extent state.
@@ -406,11 +408,11 @@ xfs_bmbt_dup_cursor(
 			cur->bc_private.b.ip, cur->bc_private.b.whichfork);
 
 	/*
-	 * Copy the firstblock, flist, and flags values,
+	 * Copy the firstblock, dfops, and flags values,
 	 * since init cursor doesn't get them.
 	 */
 	new->bc_private.b.firstblock = cur->bc_private.b.firstblock;
-	new->bc_private.b.flist = cur->bc_private.b.flist;
+	new->bc_private.b.dfops = cur->bc_private.b.dfops;
 	new->bc_private.b.flags = cur->bc_private.b.flags;
 
 	return new;
@@ -423,7 +425,7 @@ xfs_bmbt_update_cursor(
 {
 	ASSERT((dst->bc_private.b.firstblock != NULLFSBLOCK) ||
 	       (dst->bc_private.b.ip->i_d.di_flags & XFS_DIFLAG_REALTIME));
-	ASSERT(dst->bc_private.b.flist == src->bc_private.b.flist);
+	ASSERT(dst->bc_private.b.dfops == src->bc_private.b.dfops);
 
 	dst->bc_private.b.allocated += src->bc_private.b.allocated;
 	dst->bc_private.b.firstblock = src->bc_private.b.firstblock;
@@ -446,9 +448,12 @@ xfs_bmbt_alloc_block(
 	args.mp = cur->bc_mp;
 	args.fsbno = cur->bc_private.b.firstblock;
 	args.firstblock = args.fsbno;
+	xfs_rmap_ino_bmbt_owner(&args.oinfo, cur->bc_private.b.ip->i_ino,
+			cur->bc_private.b.whichfork);
 
 	if (args.fsbno == NULLFSBLOCK) {
 		args.fsbno = be64_to_cpu(start->l);
+try_another_ag:
 		args.type = XFS_ALLOCTYPE_START_BNO;
 		/*
 		 * Make sure there is sufficient room left in the AG to
@@ -461,8 +466,8 @@ xfs_bmbt_alloc_block(
 		 * reservation amount is insufficient then we may fail a
 		 * block allocation here and corrupt the filesystem.
 		 */
-		args.minleft = xfs_trans_get_block_res(args.tp);
-	} else if (cur->bc_private.b.flist->xbf_low) {
+		args.minleft = args.tp->t_blk_res;
+	} else if (cur->bc_private.b.dfops->dop_low) {
 		args.type = XFS_ALLOCTYPE_START_BNO;
 	} else {
 		args.type = XFS_ALLOCTYPE_NEAR_BNO;
@@ -470,13 +475,29 @@ xfs_bmbt_alloc_block(
 
 	args.minlen = args.maxlen = args.prod = 1;
 	args.wasdel = cur->bc_private.b.flags & XFS_BTCUR_BPRV_WASDEL;
-	if (!args.wasdel && xfs_trans_get_block_res(args.tp) == 0) {
+	if (!args.wasdel && args.tp->t_blk_res == 0) {
 		error = -ENOSPC;
 		goto error0;
 	}
 	error = xfs_alloc_vextent(&args);
 	if (error)
 		goto error0;
+
+	/*
+	 * During a CoW operation, the allocation and bmbt updates occur in
+	 * different transactions.  The mapping code tries to put new bmbt
+	 * blocks near extents being mapped, but the only way to guarantee this
+	 * is if the alloc and the mapping happen in a single transaction that
+	 * has a block reservation.  That isn't the case here, so if we run out
+	 * of space we'll try again with another AG.
+	 */
+	if (xfs_sb_version_hasreflink(&cur->bc_mp->m_sb) &&
+	    args.fsbno == NULLFSBLOCK &&
+	    args.type == XFS_ALLOCTYPE_NEAR_BNO) {
+		cur->bc_private.b.dfops->dop_low = true;
+		args.fsbno = cur->bc_private.b.firstblock;
+		goto try_another_ag;
+	}
 
 	if (args.fsbno == NULLFSBLOCK && args.minleft) {
 		/*
@@ -490,7 +511,7 @@ xfs_bmbt_alloc_block(
 		error = xfs_alloc_vextent(&args);
 		if (error)
 			goto error0;
-		cur->bc_private.b.flist->xbf_low = 1;
+		cur->bc_private.b.dfops->dop_low = true;
 	}
 	if (args.fsbno == NULLFSBLOCK) {
 		XFS_BTREE_TRACE_CURSOR(cur, XBT_EXIT);
@@ -525,13 +546,14 @@ xfs_bmbt_free_block(
 	struct xfs_inode	*ip = cur->bc_private.b.ip;
 	struct xfs_trans	*tp = cur->bc_tp;
 	xfs_fsblock_t		fsbno = XFS_DADDR_TO_FSB(mp, XFS_BUF_ADDR(bp));
+	struct xfs_owner_info	oinfo;
 
-	xfs_bmap_add_free(fsbno, 1, cur->bc_private.b.flist, mp);
+	xfs_rmap_ino_bmbt_owner(&oinfo, ip->i_ino, cur->bc_private.b.whichfork);
+	xfs_bmap_add_free(mp, cur->bc_private.b.dfops, fsbno, 1, &oinfo);
 	ip->i_d.di_nblocks--;
 
 	xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
 	xfs_trans_mod_dquot_byino(tp, ip, XFS_TRANS_DQ_BCOUNT, -1L);
-	xfs_trans_binval(tp, bp);
 	return 0;
 }
 
@@ -598,17 +620,6 @@ xfs_bmbt_init_key_from_rec(
 {
 	key->bmbt.br_startoff =
 		cpu_to_be64(xfs_bmbt_disk_get_startoff(&rec->bmbt));
-}
-
-STATIC void
-xfs_bmbt_init_rec_from_key(
-	union xfs_btree_key	*key,
-	union xfs_btree_rec	*rec)
-{
-	ASSERT(key->bmbt.br_startoff != 0);
-
-	xfs_bmbt_disk_set_allf(&rec->bmbt, be64_to_cpu(key->bmbt.br_startoff),
-			       0, 0, XFS_EXT_NORM);
 }
 
 STATIC void
@@ -720,6 +731,7 @@ xfs_bmbt_write_verify(
 }
 
 const struct xfs_buf_ops xfs_bmbt_buf_ops = {
+	.name = "xfs_bmbt",
 	.verify_read = xfs_bmbt_read_verify,
 	.verify_write = xfs_bmbt_write_verify,
 };
@@ -760,7 +772,6 @@ static const struct xfs_btree_ops xfs_bmbt_ops = {
 	.get_minrecs		= xfs_bmbt_get_minrecs,
 	.get_dmaxrecs		= xfs_bmbt_get_dmaxrecs,
 	.init_key_from_rec	= xfs_bmbt_init_key_from_rec,
-	.init_rec_from_key	= xfs_bmbt_init_rec_from_key,
 	.init_rec_from_cur	= xfs_bmbt_init_rec_from_cur,
 	.init_ptr_from_cur	= xfs_bmbt_init_ptr_from_cur,
 	.key_diff		= xfs_bmbt_key_diff,
@@ -783,6 +794,7 @@ xfs_bmbt_init_cursor(
 {
 	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
 	struct xfs_btree_cur	*cur;
+	ASSERT(whichfork != XFS_COW_FORK);
 
 	cur = kmem_zone_zalloc(xfs_btree_cur_zone, KM_SLEEP);
 
@@ -800,7 +812,7 @@ xfs_bmbt_init_cursor(
 	cur->bc_private.b.forksize = XFS_IFORK_SIZE(ip, whichfork);
 	cur->bc_private.b.ip = ip;
 	cur->bc_private.b.firstblock = NULLFSBLOCK;
-	cur->bc_private.b.flist = NULL;
+	cur->bc_private.b.dfops = NULL;
 	cur->bc_private.b.allocated = 0;
 	cur->bc_private.b.flags = 0;
 	cur->bc_private.b.whichfork = whichfork;

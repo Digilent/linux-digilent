@@ -66,6 +66,8 @@
 #define MACB_USRIO		0x00c0
 #define MACB_WOL		0x00c4
 #define MACB_MID		0x00fc
+#define MACB_TBQPH		0x04C8
+#define MACB_RBQPH		0x04D4
 
 /* GEM register offsets. */
 #define GEM_NCFGR		0x0004 /* Network Config */
@@ -158,6 +160,7 @@
 
 #define GEM_ISR(hw_q)		(0x0400 + ((hw_q) << 2))
 #define GEM_TBQP(hw_q)		(0x0440 + ((hw_q) << 2))
+#define GEM_TBQPH(hw_q)		(0x04C8)
 #define GEM_RBQP(hw_q)		(0x0480 + ((hw_q) << 2))
 #define GEM_IER(hw_q)		(0x0600 + ((hw_q) << 2))
 #define GEM_IDR(hw_q)		(0x0620 + ((hw_q) << 2))
@@ -274,7 +277,8 @@
 #define GEM_RXBDEXT_SIZE	1
 #define GEM_TXBDEXT_OFFSET	29 /* Extended TX BD */
 #define GEM_TXBDEXT_SIZE	1
-
+#define GEM_ADDR64_OFFSET	30 /* Address bus width - 64b or 32b */
+#define GEM_ADDR64_SIZE		1
 
 /* Bitfields in NSR */
 #define MACB_NSR_LINK_OFFSET	0 /* pcs_link_state */
@@ -457,13 +461,14 @@
 #define MACB_CAPS_USRIO_HAS_CLKEN		0x00000002
 #define MACB_CAPS_USRIO_DEFAULT_IS_MII		0x00000004
 #define MACB_CAPS_NO_GIGABIT_HALF		0x00000008
+#define MACB_CAPS_USRIO_DISABLED		0x00000010
+#define MACB_CAPS_JUMBO				0x00000020
+#define MACB_CAPS_PCS				0x00000040
+#define MACB_CAPS_TSU				0x00000080
 #define MACB_CAPS_FIFO_MODE			0x10000000
 #define MACB_CAPS_GIGABIT_MODE_AVAILABLE	0x20000000
 #define MACB_CAPS_SG_DISABLED			0x40000000
 #define MACB_CAPS_MACB_IS_GEM			0x80000000
-#define MACB_CAPS_JUMBO				0x00000010
-#define MACB_CAPS_TSU				0x00000020
-#define MACB_CAPS_PCS				0x00000040
 
 #define NS_PER_SEC				1000000000ULL
 
@@ -532,6 +537,10 @@
 struct macb_dma_desc {
 	u32	addr;
 	u32	ctrl;
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+	u32     addrh;
+	u32     resvd;
+#endif
 #ifdef CONFIG_MACB_EXT_BD
 	u32	tsl;
 	u32	tsh;
@@ -832,7 +841,8 @@ struct macb_config {
 	u32			caps;
 	unsigned int		dma_burst_length;
 	int	(*clk_init)(struct platform_device *pdev, struct clk **pclk,
-			    struct clk **hclk, struct clk **tx_clk);
+			    struct clk **hclk, struct clk **tx_clk,
+			    struct clk **rx_clk);
 	int	(*init)(struct platform_device *pdev);
 	int	jumbo_max_len;
 };
@@ -846,6 +856,7 @@ struct macb_queue {
 	unsigned int		IDR;
 	unsigned int		IMR;
 	unsigned int		TBQP;
+	unsigned int		TBQPH;
 	unsigned int		RBQP;
 
 	unsigned int		tx_head, tx_tail;
@@ -880,6 +891,7 @@ struct macb {
 	struct clk		*pclk;
 	struct clk		*hclk;
 	struct clk		*tx_clk;
+	struct clk		*rx_clk;
 	struct net_device	*dev;
 	struct napi_struct	napi;
 	struct net_device_stats	stats;
@@ -896,6 +908,7 @@ struct macb {
 
 	struct mii_bus		*mii_bus;
 	struct phy_device	*phy_dev;
+	struct device_node	*phy_node;
 	int 			link;
 	int 			speed;
 	int 			duplex;
@@ -904,6 +917,7 @@ struct macb {
 	unsigned int		dma_burst_length;
 
 	phy_interface_t		phy_interface;
+	struct gpio_desc	*reset_gpio;
 
 	/* AT91RM9200 transmit */
 	struct sk_buff *skb;			/* holds skb until xmit interrupt completes */
@@ -923,6 +937,8 @@ struct macb {
 	int			phc_index;
 	unsigned int		ns_incr;
 	unsigned int		subns_incr;
+
+	struct tasklet_struct   hresp_err_tasklet;
 };
 
 static inline bool macb_is_gem(struct macb *bp)

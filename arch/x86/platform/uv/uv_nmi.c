@@ -24,10 +24,11 @@
 #include <linux/kdb.h>
 #include <linux/kexec.h>
 #include <linux/kgdb.h>
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/nmi.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/clocksource.h>
 
 #include <asm/apic.h>
 #include <asm/current.h>

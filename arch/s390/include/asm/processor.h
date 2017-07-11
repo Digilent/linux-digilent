@@ -18,12 +18,14 @@
 #define CIF_NOHZ_DELAY		2	/* delay HZ disable for a tick */
 #define CIF_FPU			3	/* restore FPU registers */
 #define CIF_IGNORE_IRQ		4	/* ignore interrupt (for udelay) */
+#define CIF_ENABLED_WAIT	5	/* in enabled wait state */
 
 #define _CIF_MCCK_PENDING	_BITUL(CIF_MCCK_PENDING)
 #define _CIF_ASCE		_BITUL(CIF_ASCE)
 #define _CIF_NOHZ_DELAY		_BITUL(CIF_NOHZ_DELAY)
 #define _CIF_FPU		_BITUL(CIF_FPU)
 #define _CIF_IGNORE_IRQ		_BITUL(CIF_IGNORE_IRQ)
+#define _CIF_ENABLED_WAIT	_BITUL(CIF_ENABLED_WAIT)
 
 #ifndef __ASSEMBLY__
 
@@ -52,6 +54,16 @@ static inline int test_cpu_flag(int flag)
 	return !!(S390_lowcore.cpu_flags & (1UL << flag));
 }
 
+/*
+ * Test CIF flag of another CPU. The caller needs to ensure that
+ * CPU hotplug can not happen, e.g. by disabling preemption.
+ */
+static inline int test_cpu_flag_of(int flag, int cpu)
+{
+	struct lowcore *lc = lowcore_ptr[cpu];
+	return !!(lc->cpu_flags & (1UL << flag));
+}
+
 #define arch_needs_cpu() test_cpu_flag(CIF_NOHZ_DELAY)
 
 /*
@@ -65,7 +77,10 @@ static inline void get_cpu_id(struct cpuid *ptr)
 	asm volatile("stidp %0" : "=Q" (*ptr));
 }
 
-extern void s390_adjust_jiffies(void);
+void s390_adjust_jiffies(void);
+void s390_update_cpu_mhz(void);
+void cpu_detect_mhz_feature(void);
+
 extern const struct seq_operations cpuinfo_op;
 extern int sysctl_ieee_emulation_warnings;
 extern void execve_tail(void);
@@ -93,11 +108,12 @@ typedef struct {
  * Thread structure
  */
 struct thread_struct {
-	struct fpu fpu;			/* FP and VX register save area */
 	unsigned int  acrs[NUM_ACRS];
         unsigned long ksp;              /* kernel stack pointer             */
 	mm_segment_t mm_segment;
 	unsigned long gmap_addr;	/* address of last gmap fault. */
+	unsigned int gmap_write_flag;	/* gmap fault write indication */
+	unsigned int gmap_int_code;	/* int code of last gmap fault */
 	unsigned int gmap_pfault;	/* signal of a pending guest pfault */
 	struct per_regs per_user;	/* User specified PER registers */
 	struct per_event per_event;	/* Cause of the last PER trap */
@@ -108,6 +124,11 @@ struct thread_struct {
 	/* cpu runtime instrumentation */
 	struct runtime_instr_cb *ri_cb;
 	unsigned char trap_tdb[256];	/* Transaction abort diagnose block */
+	/*
+	 * Warning: 'fpu' is dynamically-sized. It *MUST* be at
+	 * the end.
+	 */
+	struct fpu fpu;			/* FP and VX register save area */
 };
 
 /* Flag to disable transactions. */
@@ -143,10 +164,9 @@ struct stack_frame {
 
 #define ARCH_MIN_TASKALIGN	8
 
-extern __vector128 init_task_fpu_regs[__NUM_VXRS];
 #define INIT_THREAD {							\
 	.ksp = sizeof(init_stack) + (unsigned long) &init_stack,	\
-	.fpu.regs = (void *)&init_task_fpu_regs,			\
+	.fpu.regs = (void *) init_task.thread.fpu.fprs,			\
 }
 
 /*
@@ -154,16 +174,16 @@ extern __vector128 init_task_fpu_regs[__NUM_VXRS];
  */
 #define start_thread(regs, new_psw, new_stackp) do {			\
 	regs->psw.mask	= PSW_USER_BITS | PSW_MASK_EA | PSW_MASK_BA;	\
-	regs->psw.addr	= new_psw | PSW_ADDR_AMODE;			\
+	regs->psw.addr	= new_psw;					\
 	regs->gprs[15]	= new_stackp;					\
 	execve_tail();							\
 } while (0)
 
 #define start_thread31(regs, new_psw, new_stackp) do {			\
 	regs->psw.mask	= PSW_USER_BITS | PSW_MASK_BA;			\
-	regs->psw.addr	= new_psw | PSW_ADDR_AMODE;			\
+	regs->psw.addr	= new_psw;					\
 	regs->gprs[15]	= new_stackp;					\
-	crst_table_downgrade(current->mm, 1UL << 31);			\
+	crst_table_downgrade(current->mm);				\
 	execve_tail();							\
 } while (0)
 
@@ -171,6 +191,10 @@ extern __vector128 init_task_fpu_regs[__NUM_VXRS];
 struct task_struct;
 struct mm_struct;
 struct seq_file;
+
+typedef int (*dump_trace_func_t)(void *data, unsigned long address, int reliable);
+void dump_trace(dump_trace_func_t func, void *data,
+		struct task_struct *task, unsigned long sp);
 
 void show_cacheinfo(struct seq_file *m);
 
@@ -191,6 +215,14 @@ unsigned long get_wchan(struct task_struct *p);
 /* Has task runtime instrumentation enabled ? */
 #define is_ri_task(tsk) (!!(tsk)->thread.ri_cb)
 
+static inline unsigned long current_stack_pointer(void)
+{
+	unsigned long sp;
+
+	asm volatile("la %0,0(15)" : "=a" (sp));
+	return sp;
+}
+
 static inline unsigned short stap(void)
 {
 	unsigned short cpu_address;
@@ -205,6 +237,18 @@ static inline unsigned short stap(void)
 void cpu_relax(void);
 
 #define cpu_relax_lowlatency()  barrier()
+
+#define ECAG_CACHE_ATTRIBUTE	0
+#define ECAG_CPU_ATTRIBUTE	1
+
+static inline unsigned long __ecag(unsigned int asi, unsigned char parm)
+{
+	unsigned long val;
+
+	asm volatile(".insn	rsy,0xeb000000004c,%0,0,0(%1)" /* ecag */
+		     : "=d" (val) : "a" (asi << 8 | parm));
+	return val;
+}
 
 static inline void psw_set_key(unsigned int key)
 {

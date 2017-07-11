@@ -448,7 +448,7 @@ usb_dmac_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 static int usb_dmac_chan_terminate_all(struct dma_chan *chan)
 {
 	struct usb_dmac_chan *uchan = to_usb_dmac_chan(chan);
-	struct usb_dmac_desc *desc;
+	struct usb_dmac_desc *desc, *_desc;
 	unsigned long flags;
 	LIST_HEAD(head);
 	LIST_HEAD(list);
@@ -459,7 +459,7 @@ static int usb_dmac_chan_terminate_all(struct dma_chan *chan)
 	if (uchan->desc)
 		uchan->desc = NULL;
 	list_splice_init(&uchan->desc_got, &list);
-	list_for_each_entry(desc, &list, node)
+	list_for_each_entry_safe(desc, _desc, &list, node)
 		list_move_tail(&desc->node, &uchan->desc_freed);
 	spin_unlock_irqrestore(&uchan->vc.lock, flags);
 	vchan_dma_desc_free_list(&uchan->vc, &head);
@@ -600,27 +600,30 @@ static irqreturn_t usb_dmac_isr_channel(int irq, void *dev)
 {
 	struct usb_dmac_chan *chan = dev;
 	irqreturn_t ret = IRQ_NONE;
-	u32 mask = USB_DMACHCR_TE;
-	u32 check_bits = USB_DMACHCR_TE | USB_DMACHCR_SP;
+	u32 mask = 0;
 	u32 chcr;
+	bool xfer_end = false;
 
 	spin_lock(&chan->vc.lock);
 
 	chcr = usb_dmac_chan_read(chan, USB_DMACHCR);
-	if (chcr & check_bits)
-		mask |= USB_DMACHCR_DE | check_bits;
+	if (chcr & (USB_DMACHCR_TE | USB_DMACHCR_SP)) {
+		mask |= USB_DMACHCR_DE | USB_DMACHCR_TE | USB_DMACHCR_SP;
+		if (chcr & USB_DMACHCR_DE)
+			xfer_end = true;
+		ret |= IRQ_HANDLED;
+	}
 	if (chcr & USB_DMACHCR_NULL) {
 		/* An interruption of TE will happen after we set FTE */
 		mask |= USB_DMACHCR_NULL;
 		chcr |= USB_DMACHCR_FTE;
 		ret |= IRQ_HANDLED;
 	}
-	usb_dmac_chan_write(chan, USB_DMACHCR, chcr & ~mask);
+	if (mask)
+		usb_dmac_chan_write(chan, USB_DMACHCR, chcr & ~mask);
 
-	if (chcr & check_bits) {
+	if (xfer_end)
 		usb_dmac_isr_transfer_end(chan);
-		ret |= IRQ_HANDLED;
-	}
 
 	spin_unlock(&chan->vc.lock);
 

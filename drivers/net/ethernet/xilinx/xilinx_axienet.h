@@ -27,26 +27,26 @@
 /* Configuration options */
 
 /* Accept all incoming packets. Default: disabled (cleared) */
-#define XAE_OPTION_PROMISC			(1 << 0)
+#define XAE_OPTION_PROMISC			BIT(0)
 
 /* Jumbo frame support for Tx & Rx. Default: disabled (cleared) */
-#define XAE_OPTION_JUMBO			(1 << 1)
+#define XAE_OPTION_JUMBO			BIT(1)
 
 /* VLAN Rx & Tx frame support. Default: disabled (cleared) */
-#define XAE_OPTION_VLAN				(1 << 2)
+#define XAE_OPTION_VLAN				BIT(2)
 
 /* Enable recognition of flow control frames on Rx. Default: enabled (set) */
-#define XAE_OPTION_FLOW_CONTROL			(1 << 4)
+#define XAE_OPTION_FLOW_CONTROL			BIT(4)
 
 /* Strip FCS and PAD from incoming frames. Note: PAD from VLAN frames is not
  * stripped. Default: disabled (set)
  */
-#define XAE_OPTION_FCS_STRIP			(1 << 5)
+#define XAE_OPTION_FCS_STRIP			BIT(5)
 
 /* Generate FCS field and add PAD automatically for outgoing frames.
  * Default: enabled (set)
  */
-#define XAE_OPTION_FCS_INSERT			(1 << 6)
+#define XAE_OPTION_FCS_INSERT			BIT(6)
 
 /* Enable Length/Type error checking for incoming frames. When this option is
  * set, the MAC will filter frames that have a mismatched type/length field
@@ -54,13 +54,13 @@
  * types of frames are encountered. When this option is cleared, the MAC will
  * allow these types of frames to be received. Default: enabled (set)
  */
-#define XAE_OPTION_LENTYPE_ERR			(1 << 7)
+#define XAE_OPTION_LENTYPE_ERR			BIT(7)
 
 /* Enable the transmitter. Default: enabled (set) */
-#define XAE_OPTION_TXEN				(1 << 11)
+#define XAE_OPTION_TXEN				BIT(11)
 
 /*  Enable the receiver. Default: enabled (set) */
-#define XAE_OPTION_RXEN				(1 << 12)
+#define XAE_OPTION_RXEN				BIT(12)
 
 /*  Default options set when device is initialized or reset */
 #define XAE_OPTION_DEFAULTS				   \
@@ -140,11 +140,17 @@
 
 /* AXI Tx Timestamp Stream FIFO Register Definitions */
 #define XAXIFIFO_TXTS_ISR	0x00000000 /* Interrupt Status Register */
+#define XAXIFIFO_TXTS_TXFD	0x00000010 /* Tx Data Write Port */
+#define XAXIFIFO_TXTS_TLR	0x00000014 /* Transmit Length Register */
+#define XAXIFIFO_TXTS_RFO	0x0000001C /* Rx Fifo Occupancy */
+#define XAXIFIFO_TXTS_RDFR	0x00000018 /* Rx Fifo reset */
 #define XAXIFIFO_TXTS_RXFD	0x00000020 /* Rx Data Read Port */
 #define XAXIFIFO_TXTS_RLR	0x00000024 /* Receive Length Register */
+#define XAXIFIFO_TXTS_SRR	0x00000028 /* AXI4-Stream Reset */
 
 #define XAXIFIFO_TXTS_INT_RC_MASK	0x04000000
 #define XAXIFIFO_TXTS_RXFD_MASK		0x7FFFFFFF
+#define XAXIFIFO_TXTS_RESET_MASK	0x000000A5
 #define XAXIFIFO_TXTS_TAG_MASK		0xFFFF0000
 #define XAXIFIFO_TXTS_TAG_SHIFT		16
 
@@ -284,6 +290,7 @@
 #define XAE_EMMC_LINKSPD_10	0x00000000 /* Link Speed mask for 10 Mbit */
 #define XAE_EMMC_LINKSPD_100	0x40000000 /* Link Speed mask for 100 Mbit */
 #define XAE_EMMC_LINKSPD_1000	0x80000000 /* Link Speed mask for 1000 Mbit */
+#define XAE_EMMC_LINKSPD_2500	0x80000000 /* Link Speed mask for 2500 Mbit */
 
 /* Bit masks for Axi Ethernet PHYC register */
 #define XAE_PHYC_SGMIILINKSPEED_MASK	0xC0000000 /* SGMII link speed mask*/
@@ -332,10 +339,10 @@
 #define XAE_MULTICAST_CAM_TABLE_NUM	4
 
 /* Axi Ethernet Synthesis features */
-#define XAE_FEATURE_PARTIAL_RX_CSUM	(1 << 0)
-#define XAE_FEATURE_PARTIAL_TX_CSUM	(1 << 1)
-#define XAE_FEATURE_FULL_RX_CSUM	(1 << 2)
-#define XAE_FEATURE_FULL_TX_CSUM	(1 << 3)
+#define XAE_FEATURE_PARTIAL_RX_CSUM	BIT(0)
+#define XAE_FEATURE_PARTIAL_TX_CSUM	BIT(1)
+#define XAE_FEATURE_FULL_RX_CSUM	BIT(2)
+#define XAE_FEATURE_FULL_TX_CSUM	BIT(3)
 
 #define XAE_NO_CSUM_OFFLOAD		0
 
@@ -347,7 +354,7 @@
 
 #define XAXIENET_NAPI_WEIGHT		64
 
-/* Defintions of 1588 PTP in Axi Ethernet IP */
+/* Definitions of 1588 PTP in Axi Ethernet IP */
 #define TX_TS_OP_NOOP           0x0
 #define TX_TS_OP_ONESTEP        0x1
 #define TX_TS_OP_TWOSTEP        0x2
@@ -362,6 +369,32 @@
 #define out_be32(offset, val)	__raw_writel(val, offset)
 #endif
 #endif
+
+/* XXV MAC Register Definitions */
+#define XXV_TC_OFFSET			0x0000000C
+#define XXV_RCW1_OFFSET			0x00000014
+#define XXV_JUM_OFFSET			0x00000018
+#define XXV_TICKREG_OFFSET		0x00000020
+#define XXV_STATRX_BLKLCK_OFFSET	0x0000040C
+
+/* XXV MAC Register Mask Definitions */
+#define XXV_TC_TX_MASK		BIT(0)
+#define XXV_RCW1_RX_MASK	BIT(0)
+#define XXV_RCW1_FCS_MASK	BIT(1)
+#define XXV_TC_FCS_MASK		BIT(1)
+#define XXV_MIN_JUM_MASK	GENMASK(7, 0)
+#define XXV_MAX_JUM_MASK	GENMASK(10, 8)
+#define XXV_RX_BLKLCK_MASK	BIT(0)
+#define XXV_TICKREG_STATEN_MASK BIT(0)
+#define XXV_MAC_MIN_PKT_LEN	64
+
+/* PTP Packet length */
+#define XAE_TX_PTP_LEN		16
+#define XXV_TX_PTP_LEN		12
+
+/* Macros used when AXI DMA h/w is configured without DRE */
+#define XAE_TX_BUFFERS		64
+#define XAE_MAX_PKT_LEN		8192
 
 /**
  * struct axidma_bd - Axi Dma buffer descriptor layout
@@ -400,7 +433,7 @@ struct axidma_bd {
 	u32 app3;
 	u32 app4;
 	phys_addr_t sw_id_offset; /* first unused field by h/w */
-	u32 ptp_tx_skb;
+	phys_addr_t ptp_tx_skb;
 	u32 ptp_tx_ts_tag;
 	phys_addr_t tx_skb;
 	u32 tx_desc_mapping;
@@ -413,10 +446,8 @@ struct axidma_bd {
  * struct axienet_local - axienet private per device data
  * @ndev:	Pointer for net_device to which it will be attached.
  * @dev:	Pointer to device structure
- * @phy_dev:	Pointer to PHY device structure attached to the axienet_local
  * @phy_node:	Pointer to device node structure
  * @mii_bus:	Pointer to MII bus structure
- * @mdio_irqs:	IRQs table for MDIO bus required in mii_bus structure
  * @regs:	Base address for the axienet_local device address space
  * @dma_regs:	Base address for the axidma device address space
  * @dma_err_tasklet: Tasklet structure to process Axi DMA errors
@@ -432,6 +463,12 @@ struct axidma_bd {
  * @tx_bd_p:	Physical address(start address) of the TX buffer descr. ring
  * @rx_bd_v:	Virtual address of the RX buffer descriptor ring
  * @rx_bd_p:	Physical address(start address) of the RX buffer descr. ring
+ * @tx_buf:	Virtual address of the Tx buffer pool used by the driver when
+ *		DMA h/w is configured without DRE.
+ * @tx_bufs:	Virutal address of the Tx buffer address.
+ * @tx_bufs_dma: Physical address of the Tx buffer address used by the driver
+ *		 when DMA h/w is configured without DRE.
+ * @eth_hasdre: Tells whether DMA h/w is configured with dre or not.
  * @tx_bd_ci:	Stores the index of the Tx buffer descriptor in the ring being
  *		accessed currently. Used while alloc. BDs before a TX starts
  * @tx_bd_tail:	Stores the index of the Tx buffer descriptor in the ring being
@@ -448,24 +485,26 @@ struct axidma_bd {
  * @csum_offload_on_rx_path:	Stores the checksum selection on RX side.
  * @coalesce_count_rx:	Store the irq coalesce on RX side.
  * @coalesce_count_tx:	Store the irq coalesce on TX side.
- * @is_10Gmac:	  Check for 10g mac.
  * @phy_interface: Phy interface type.
  * @phy_flags:	Phy interface flags.
  * @eth_hasnobuf: Ethernet is configured in Non buf mode.
+ * @axienet_config: Ethernet config structure
  * @tx_ts_regs:	  Base address for the axififo device address space.
+ * @rx_ts_regs:	  Base address for the rx axififo device address space.
  * @tstamp_config: Hardware timestamp config structure.
+ * @tx_ptpheader: Stores the tx ptp header.
+ * @eth_clk: Clock resource for etherent mac.
+ * @dma_clk: Clock resource for dma controller.
  */
 struct axienet_local {
 	struct net_device *ndev;
 	struct device *dev;
 
 	/* Connection to PHY device */
-	struct phy_device *phy_dev;	/* Pointer to PHY device */
 	struct device_node *phy_node;
 
 	/* MDIO bus data */
 	struct mii_bus *mii_bus;	/* MII bus reference */
-	int mdio_irqs[PHY_MAX_ADDR];	/* IRQs table for MDIO bus */
 
 	/* IO registers, dma functions and IRQs */
 	void __iomem *regs;
@@ -490,6 +529,12 @@ struct axienet_local {
 	dma_addr_t tx_bd_p;
 	struct axidma_bd *rx_bd_v;
 	dma_addr_t rx_bd_p;
+
+	unsigned char *tx_buf[XAE_TX_BUFFERS];
+	unsigned char *tx_bufs;
+	dma_addr_t tx_bufs_dma;
+	bool eth_hasdre;
+
 	u32 tx_bd_ci;
 	u32 tx_bd_tail;
 	u32 rx_bd_ci;
@@ -502,15 +547,41 @@ struct axienet_local {
 
 	u32 coalesce_count_rx;
 	u32 coalesce_count_tx;
-	u32 is_10Gmac;
 	u32 phy_interface;
 	u32 phy_flags;
 	bool eth_hasnobuf;
+	const struct axienet_config *axienet_config;
 
 #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
 	void __iomem *tx_ts_regs;
+	void __iomem *rx_ts_regs;
 	struct hwtstamp_config tstamp_config;
+	u8 *tx_ptpheader;
 #endif
+	struct clk *eth_clk;
+	struct clk *dma_clk;
+};
+
+/**
+ * enum axienet_ip_type - AXIENET IP/MAC type.
+ *
+ * @XAXIENET_1G:	 IP is 1G MAC
+ * @XAXIENET_2_5G:	 IP type is 2.5G MAC.
+ * @XAXIENET_LEGACY_10G: IP type is legacy 10G MAC.
+ * @XAXIENET_10G_25G:	 IP type is 10G/25G MAC(XXV MAC).
+ *
+ */
+enum axienet_ip_type {
+	XAXIENET_1G = 0,
+	XAXIENET_2_5G,
+	XAXIENET_LEGACY_10G,
+	XAXIENET_10G_25G,
+};
+
+struct axienet_config {
+	enum axienet_ip_type mactype;
+	void (*setoptions)(struct net_device *ndev, u32 options);
+	u32 tx_ptplen;
 };
 
 /**
@@ -520,6 +591,12 @@ struct axienet_local {
  * @m_or:	Mask to be ORed for setting the option in the register
  */
 struct axienet_option {
+	u32 opt;
+	u32 reg;
+	u32 m_or;
+};
+
+struct xxvenet_option {
 	u32 opt;
 	u32 reg;
 	u32 m_or;
@@ -580,6 +657,33 @@ static inline void axienet_txts_iow(struct  axienet_local *lp, off_t reg,
 				    u32 value)
 {
 	out_be32((lp->tx_ts_regs + reg), value);
+}
+
+/**
+ * axienet_rxts_ior - Memory mapped AXI FIFO MM S register read
+ * @lp:         Pointer to axienet_local structure
+ * @reg:     Address offset from the base address of AXI FIFO MM S
+ *              core
+ *
+ * Return: the contents of the AXI FIFO MM S register
+ */
+
+static inline u32 axienet_rxts_ior(struct axienet_local *lp, off_t reg)
+{
+	return in_be32(lp->rx_ts_regs + reg);
+}
+
+/**
+ * axienet_rxts_iow - Memory mapper AXI FIFO MM S register write
+ * @lp:         Pointer to axienet_local structure
+ * @reg:     Address offset from the base address of AXI FIFO MM S
+ *              core.
+ * @value:      Value to be written into the AXI FIFO MM S register
+ */
+static inline void axienet_rxts_iow(struct  axienet_local *lp, off_t reg,
+				    u32 value)
+{
+	out_be32((lp->rx_ts_regs + reg), value);
 }
 #endif
 

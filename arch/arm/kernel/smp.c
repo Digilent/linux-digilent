@@ -69,16 +69,20 @@ enum ipi_msg_type {
 	IPI_TIMER,
 	IPI_RESCHEDULE,
 	IPI_CALL_FUNC,
-	IPI_CALL_FUNC_SINGLE,
 	IPI_CPU_STOP,
 	IPI_IRQ_WORK,
 	IPI_COMPLETION,
-	IPI_CPU_BACKTRACE = 15,
+	IPI_CPU_BACKTRACE,
+	/*
+	 * SGI8-15 can be reserved by secure firmware, and thus may
+	 * not be usable by the kernel. Please keep the above limited
+	 * to at most 8 entries.
+	 */
 };
 
 static DECLARE_COMPLETION(cpu_running);
 
-static struct smp_operations smp_ops;
+static struct smp_operations smp_ops __ro_after_init;
 
 void __init smp_set_ops(const struct smp_operations *ops)
 {
@@ -405,7 +409,7 @@ asmlinkage void secondary_start_kernel(void)
 	/*
 	 * OK, it's off to the idle thread for us
 	 */
-	cpu_startup_entry(CPUHP_ONLINE);
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 void __init smp_cpus_done(unsigned int max_cpus)
@@ -481,7 +485,6 @@ static void ipi_complete(void);
 #define IPI_DESC_STRING_IPI_TIMER "Timer broadcast interrupts"
 #define IPI_DESC_STRING_IPI_RESCHEDULE "Rescheduling interrupts"
 #define IPI_DESC_STRING_IPI_CALL_FUNC "Function call interrupts"
-#define IPI_DESC_STRING_IPI_CALL_FUNC_SINGLE "Single function call interrupts"
 #define IPI_DESC_STRING_IPI_CPU_STOP "CPU stop interrupts"
 #define IPI_DESC_STRING_IPI_IRQ_WORK "IRQ work interrupts"
 #define IPI_DESC_STRING_IPI_COMPLETION "completion interrupts"
@@ -494,21 +497,25 @@ static const char* ipi_desc_strings[] __tracepoint_string =
 			[IPI_TIMER] = IPI_DESC_STR(IPI_TIMER),
 			[IPI_RESCHEDULE] = IPI_DESC_STR(IPI_RESCHEDULE),
 			[IPI_CALL_FUNC] = IPI_DESC_STR(IPI_CALL_FUNC),
-			[IPI_CALL_FUNC_SINGLE] = IPI_DESC_STR(IPI_CALL_FUNC_SINGLE),
 			[IPI_CPU_STOP] = IPI_DESC_STR(IPI_CPU_STOP),
 			[IPI_IRQ_WORK] = IPI_DESC_STR(IPI_IRQ_WORK),
-			[IPI_COMPLETION] = IPI_DESC_STR(IPI_COMPLETION)
+			[IPI_COMPLETION] = IPI_DESC_STR(IPI_COMPLETION),
 		};
+
+
+static void tick_receive_broadcast_local(void)
+{
+	tick_receive_broadcast();
+}
 
 static struct ipi ipi_types[NR_IPI] = {
 #define S(x, f)	[x].desc = IPI_DESC_STR(x), [x].handler = f
 	S(IPI_WAKEUP, NULL),
 #ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
-	S(IPI_TIMER, tick_receive_broadcast),
+	S(IPI_TIMER, tick_receive_broadcast_local),
 #endif
 	S(IPI_RESCHEDULE, scheduler_ipi),
 	S(IPI_CALL_FUNC, generic_smp_call_function_interrupt),
-	S(IPI_CALL_FUNC_SINGLE, generic_smp_call_function_single_interrupt),
 	S(IPI_CPU_STOP, ipi_cpu_stop),
 #ifdef CONFIG_IRQ_WORK
 	S(IPI_IRQ_WORK, irq_work_run),
@@ -518,7 +525,7 @@ static struct ipi ipi_types[NR_IPI] = {
 
 static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
 {
-	trace_ipi_raise(target, ipi_desc_strings[ipinr]);
+	trace_ipi_raise_rcuidle(target, ipi_desc_strings[ipinr]);
 	__smp_cross_call(target, ipinr);
 }
 
@@ -560,7 +567,7 @@ void arch_send_wakeup_ipi_mask(const struct cpumask *mask)
 
 void arch_send_call_function_single_ipi(int cpu)
 {
-	smp_cross_call(cpumask_of(cpu), IPI_CALL_FUNC_SINGLE);
+	smp_cross_call(cpumask_of(cpu), IPI_CALL_FUNC);
 }
 
 #ifdef CONFIG_IRQ_WORK
@@ -761,19 +768,10 @@ core_initcall(register_cpufreq_notifier);
 
 static void raise_nmi(cpumask_t *mask)
 {
-	/*
-	 * Generate the backtrace directly if we are running in a calling
-	 * context that is not preemptible by the backtrace IPI. Note
-	 * that nmi_cpu_backtrace() automatically removes the current cpu
-	 * from mask.
-	 */
-	if (cpumask_test_cpu(smp_processor_id(), mask) && irqs_disabled())
-		nmi_cpu_backtrace(NULL);
-
 	smp_cross_call(mask, IPI_CPU_BACKTRACE);
 }
 
-void arch_trigger_all_cpu_backtrace(bool include_self)
+void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 {
-	nmi_trigger_all_cpu_backtrace(include_self, raise_nmi);
+	nmi_trigger_cpumask_backtrace(mask, exclude_self, raise_nmi);
 }

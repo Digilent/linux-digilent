@@ -79,18 +79,7 @@ static void sg_proc_cleanup(void);
  */
 #define SG_MAX_CDB_SIZE 252
 
-/*
- * Suppose you want to calculate the formula muldiv(x,m,d)=int(x * m / d)
- * Then when using 32 bit integers x * m may overflow during the calculation.
- * Replacing muldiv(x) by muldiv(x)=((x % d) * m) / d + int(x / d) * m
- * calculates the same, but prevents the overflow when both m and d
- * are "small" numbers (like HZ and USER_HZ).
- * Of course an overflow is inavoidable if the result of muldiv doesn't fit
- * in 32 bits.
- */
-#define MULDIV(X,MUL,DIV) ((((X % DIV) * MUL) / DIV) + ((X / DIV) * MUL))
-
-#define SG_DEFAULT_TIMEOUT MULDIV(SG_DEFAULT_TIMEOUT_USER, HZ, USER_HZ)
+#define SG_DEFAULT_TIMEOUT mult_frac(SG_DEFAULT_TIMEOUT_USER, HZ, USER_HZ)
 
 int sg_big_buff = SG_DEF_RESERVED_SIZE;
 /* N.B. This variable is readable and writeable via
@@ -652,7 +641,8 @@ sg_write(struct file *filp, const char __user *buf, size_t count, loff_t * ppos)
 	else
 		hp->dxfer_direction = (mxsize > 0) ? SG_DXFER_FROM_DEV : SG_DXFER_NONE;
 	hp->dxfer_len = mxsize;
-	if (hp->dxfer_direction == SG_DXFER_TO_DEV)
+	if ((hp->dxfer_direction == SG_DXFER_TO_DEV) ||
+	    (hp->dxfer_direction == SG_DXFER_TO_FROM_DEV))
 		hp->dxferp = (char __user *)buf + cmd_size;
 	else
 		hp->dxferp = NULL;
@@ -883,10 +873,11 @@ sg_ioctl(struct file *filp, unsigned int cmd_in, unsigned long arg)
 			return result;
 		if (val < 0)
 			return -EIO;
-		if (val >= MULDIV (INT_MAX, USER_HZ, HZ))
-		    val = MULDIV (INT_MAX, USER_HZ, HZ);
+		if (val >= mult_frac((s64)INT_MAX, USER_HZ, HZ))
+			val = min_t(s64, mult_frac((s64)INT_MAX, USER_HZ, HZ),
+				    INT_MAX);
 		sfp->timeout_user = val;
-		sfp->timeout = MULDIV (val, HZ, USER_HZ);
+		sfp->timeout = mult_frac(val, HZ, USER_HZ);
 
 		return 0;
 	case SG_GET_TIMEOUT:	/* N.B. User receives timeout as return value */
@@ -1261,7 +1252,7 @@ sg_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	sfp->mmap_called = 1;
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_private_data = sfp;
 	vma->vm_ops = &sg_mmap_vm_ops;
 	return 0;

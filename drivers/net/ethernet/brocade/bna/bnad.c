@@ -54,9 +54,7 @@ MODULE_PARM_DESC(bna_debugfs_enable, "Enables debugfs feature, default=1,"
  * Global variables
  */
 static u32 bnad_rxqs_per_cq = 2;
-static u32 bna_id;
-static struct mutex bnad_list_mutex;
-static LIST_HEAD(bnad_list);
+static atomic_t bna_id;
 static const u8 bnad_bcast_addr[] __aligned(2) =
 	{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
@@ -75,23 +73,6 @@ do {								\
 	(_res_info)->res_u.mem_info.num = (_num);		\
 	(_res_info)->res_u.mem_info.len = (_size);		\
 } while (0)
-
-static void
-bnad_add_to_list(struct bnad *bnad)
-{
-	mutex_lock(&bnad_list_mutex);
-	list_add_tail(&bnad->list_entry, &bnad_list);
-	bnad->id = bna_id++;
-	mutex_unlock(&bnad_list_mutex);
-}
-
-static void
-bnad_remove_from_list(struct bnad *bnad)
-{
-	mutex_lock(&bnad_list_mutex);
-	list_del(&bnad->list_entry);
-	mutex_unlock(&bnad_list_mutex);
-}
 
 /*
  * Reinitialize completions in CQ, once Rx is taken down
@@ -196,6 +177,7 @@ bnad_txcmpl_process(struct bnad *bnad, struct bna_tcb *tcb)
 		return 0;
 
 	hw_cons = *(tcb->hw_consumer_index);
+	rmb();
 	cons = tcb->consumer_index;
 	q_depth = tcb->q_depth;
 
@@ -542,39 +524,50 @@ bnad_cq_drop_packet(struct bnad *bnad, struct bna_rcb *rcb,
 }
 
 static void
-bnad_cq_setup_skb_frags(struct bna_rcb *rcb, struct sk_buff *skb,
-			u32 sop_ci, u32 nvecs, u32 last_fraglen)
+bnad_cq_setup_skb_frags(struct bna_ccb *ccb, struct sk_buff *skb, u32 nvecs)
 {
+	struct bna_rcb *rcb;
 	struct bnad *bnad;
-	u32 ci, vec, len, totlen = 0;
 	struct bnad_rx_unmap_q *unmap_q;
-	struct bnad_rx_unmap *unmap;
+	struct bna_cq_entry *cq, *cmpl;
+	u32 ci, pi, totlen = 0;
 
+	cq = ccb->sw_q;
+	pi = ccb->producer_index;
+	cmpl = &cq[pi];
+
+	rcb = bna_is_small_rxq(cmpl->rxq_id) ? ccb->rcb[1] : ccb->rcb[0];
 	unmap_q = rcb->unmap_q;
 	bnad = rcb->bnad;
+	ci = rcb->consumer_index;
 
 	/* prefetch header */
-	prefetch(page_address(unmap_q->unmap[sop_ci].page) +
-			unmap_q->unmap[sop_ci].page_offset);
+	prefetch(page_address(unmap_q->unmap[ci].page) +
+		 unmap_q->unmap[ci].page_offset);
 
-	for (vec = 1, ci = sop_ci; vec <= nvecs; vec++) {
+	while (nvecs--) {
+		struct bnad_rx_unmap *unmap;
+		u32 len;
+
 		unmap = &unmap_q->unmap[ci];
 		BNA_QE_INDX_INC(ci, rcb->q_depth);
 
 		dma_unmap_page(&bnad->pcidev->dev,
-				dma_unmap_addr(&unmap->vector, dma_addr),
-				unmap->vector.len, DMA_FROM_DEVICE);
+			       dma_unmap_addr(&unmap->vector, dma_addr),
+			       unmap->vector.len, DMA_FROM_DEVICE);
 
-		len = (vec == nvecs) ?
-			last_fraglen : unmap->vector.len;
+		len = ntohs(cmpl->length);
 		skb->truesize += unmap->vector.len;
 		totlen += len;
 
 		skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags,
-				unmap->page, unmap->page_offset, len);
+				   unmap->page, unmap->page_offset, len);
 
 		unmap->page = NULL;
 		unmap->vector.len = 0;
+
+		BNA_QE_INDX_INC(pi, ccb->q_depth);
+		cmpl = &cq[pi];
 	}
 
 	skb->len += totlen;
@@ -704,7 +697,7 @@ bnad_cq_process(struct bnad *bnad, struct bna_ccb *ccb, int budget)
 		if (BNAD_RXBUF_IS_SK_BUFF(unmap_q->type))
 			bnad_cq_setup_skb(bnad, skb, unmap, len);
 		else
-			bnad_cq_setup_skb_frags(rcb, skb, sop_ci, nvecs, len);
+			bnad_cq_setup_skb_frags(ccb, skb, nvecs);
 
 		rcb->rxq->rx_packets++;
 		rcb->rxq->rx_bytes += totlen;
@@ -3102,7 +3095,7 @@ bnad_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	BNA_QE_INDX_INC(prod, q_depth);
 	tcb->producer_index = prod;
 
-	smp_mb();
+	wmb();
 
 	if (unlikely(!test_bit(BNAD_TXQ_TX_STARTED, &tcb->flags)))
 		return NETDEV_TX_OK;
@@ -3110,7 +3103,6 @@ bnad_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	skb_tx_timestamp(skb);
 
 	bna_txq_prod_indx_doorbell(tcb);
-	smp_mb();
 
 	return NETDEV_TX_OK;
 }
@@ -3562,14 +3554,12 @@ bnad_lock_init(struct bnad *bnad)
 {
 	spin_lock_init(&bnad->bna_lock);
 	mutex_init(&bnad->conf_mutex);
-	mutex_init(&bnad_list_mutex);
 }
 
 static void
 bnad_lock_uninit(struct bnad *bnad)
 {
 	mutex_destroy(&bnad->conf_mutex);
-	mutex_destroy(&bnad_list_mutex);
 }
 
 /* PCI Initialization */
@@ -3642,7 +3632,7 @@ bnad_pci_probe(struct pci_dev *pdev,
 	}
 	bnad = netdev_priv(netdev);
 	bnad_lock_init(bnad);
-	bnad_add_to_list(bnad);
+	bnad->id = atomic_inc_return(&bna_id) - 1;
 
 	mutex_lock(&bnad->conf_mutex);
 	/*
@@ -3796,7 +3786,6 @@ pci_uninit:
 	bnad_pci_uninit(pdev);
 unlock_mutex:
 	mutex_unlock(&bnad->conf_mutex);
-	bnad_remove_from_list(bnad);
 	bnad_lock_uninit(bnad);
 	free_netdev(netdev);
 	return err;
@@ -3834,7 +3823,6 @@ bnad_pci_remove(struct pci_dev *pdev)
 	bnad_disable_msix(bnad);
 	bnad_pci_uninit(pdev);
 	mutex_unlock(&bnad->conf_mutex);
-	bnad_remove_from_list(bnad);
 	bnad_lock_uninit(bnad);
 	/* Remove the debugfs node for this bnad */
 	kfree(bnad->regdata);

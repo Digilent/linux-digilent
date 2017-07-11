@@ -20,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/irqreturn.h>
+#include <linux/pm_runtime.h>
 
 #include <linux/mei.h>
 
@@ -27,6 +28,9 @@
 #include "hw-txe.h"
 #include "client.h"
 #include "hbm.h"
+
+#include "mei-trace.h"
+
 
 /**
  * mei_txe_reg_read - Reads 32bit data from the txe device
@@ -640,8 +644,11 @@ static int mei_txe_fw_status(struct mei_device *dev,
 
 	fw_status->count = fw_src->count;
 	for (i = 0; i < fw_src->count && i < MEI_FW_STATUS_MAX; i++) {
-		ret = pci_read_config_dword(pdev,
-			fw_src->status[i], &fw_status->status[i]);
+		ret = pci_read_config_dword(pdev, fw_src->status[i],
+					    &fw_status->status[i]);
+		trace_mei_pci_cfg_read(dev->dev, "PCI_CFG_HSF_X",
+				       fw_src->status[i],
+				       fw_status->status[i]);
 		if (ret)
 			return ret;
 	}
@@ -929,6 +936,8 @@ static int mei_txe_hw_start(struct mei_device *dev)
 		return ret;
 	}
 
+	pm_runtime_set_active(dev->dev);
+
 	/* enable input ready interrupts:
 	 * SEC_IPC_HOST_INT_MASK.IPC_INPUT_READY_INT_MASK
 	 */
@@ -972,11 +981,13 @@ static bool mei_txe_check_and_ack_intrs(struct mei_device *dev, bool do_ack)
 	hisr = mei_txe_br_reg_read(hw, HISR_REG);
 
 	aliveness = mei_txe_aliveness_get(dev);
-	if (hhisr & IPC_HHIER_SEC && aliveness)
+	if (hhisr & IPC_HHIER_SEC && aliveness) {
 		ipc_isr = mei_txe_sec_reg_read_silent(hw,
 				SEC_IPC_HOST_INT_STATUS_REG);
-	else
+	} else {
 		ipc_isr = 0;
+		hhisr &= ~IPC_HHIER_SEC;
+	}
 
 	generated = generated ||
 		(hisr & HISR_INT_STS_MSK) ||

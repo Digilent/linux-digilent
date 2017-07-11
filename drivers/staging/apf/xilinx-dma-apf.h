@@ -40,7 +40,7 @@
  */
 #define XDMA_RESET_LOOP            1000000
 #define XDMA_HALT_LOOP             1000000
-#define XDMA_NO_CHANGE             0xFFFF;
+#define XDMA_NO_CHANGE             0xFFFF
 
 /* General register bits definitions
  */
@@ -90,7 +90,7 @@
 #define XDMA_BD_SF_SW_DONE_MASK		0x00000001
 
 /* driver defines */
-#define XDMA_MAX_BD_CNT			2048
+#define XDMA_MAX_BD_CNT			16384
 #define XDMA_MAX_CHANS_PER_DEVICE	2
 #define XDMA_MAX_TRANS_LEN		0x7FF000
 #define XDMA_MAX_APPWORDS		5
@@ -153,7 +153,8 @@ struct xdma_regs {
 	u32 dst;       /* 0x20 Destination Address Register (cdma) */
 	u32 dst_hi;
 	u32 btt_ref;   /* 0x28 Bytes To Transfer (cdma) or
-					park_ref (vdma) */
+			*		park_ref (vdma)
+			*/
 	u32 version;   /* 0x2c version (vdma) */
 };
 
@@ -178,6 +179,7 @@ struct xdma_chan {
 	int    max_len;				/* Maximum len per transfer */
 	int    err;				/* Channel has errors */
 	int    client_count;
+	struct scatterlist scratch_sglist[XDMA_MAX_BD_CNT];
 };
 
 struct xdma_device {
@@ -201,7 +203,7 @@ struct xdma_head {
 	u32 appwords_o[XDMA_MAX_APPWORDS];
 	unsigned int userflag;
 	u32 last_bd_index;
-	u32 is_dmabuf;
+	struct xlnk_dmabuf_reg *dmabuf;
 };
 
 struct xdma_chan *xdma_request_channel(char *name);
@@ -209,6 +211,7 @@ void xdma_release_channel(struct xdma_chan *chan);
 void xdma_release_all_channels(void);
 int xdma_submit(struct xdma_chan *chan,
 		xlnk_intptr_type userbuf,
+		void *kaddr,
 		unsigned int size,
 		unsigned int nappwords_i,
 		u32 *appwords_i,

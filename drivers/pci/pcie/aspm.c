@@ -139,7 +139,7 @@ static void pcie_set_clkpm_nocheck(struct pcie_link_state *link, int enable)
 static void pcie_set_clkpm(struct pcie_link_state *link, int enable)
 {
 	/* Don't enable Clock PM if the link is not Clock PM capable */
-	if (!link->clkpm_capable && enable)
+	if (!link->clkpm_capable)
 		enable = 0;
 	/* Need nothing if the specified equals to current state */
 	if (link->clkpm_enabled == enable)
@@ -834,21 +834,15 @@ static ssize_t link_state_store(struct device *dev,
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct pcie_link_state *link, *root = pdev->link_state->root;
-	u32 val, state = 0;
-
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
+	u32 state;
 
 	if (aspm_disabled)
 		return -EPERM;
-	if (n < 1 || val > 3)
-		return -EINVAL;
 
-	/* Convert requested state to ASPM state */
-	if (val & PCIE_LINK_STATE_L0S)
-		state |= ASPM_STATE_L0S;
-	if (val & PCIE_LINK_STATE_L1)
-		state |= ASPM_STATE_L1;
+	if (kstrtouint(buf, 10, &state))
+		return -EINVAL;
+	if ((state & ~ASPM_STATE_ALL) != 0)
+		return -EINVAL;
 
 	down_read(&pci_bus_sem);
 	mutex_lock(&aspm_lock);

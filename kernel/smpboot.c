@@ -186,6 +186,11 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 		kfree(td);
 		return PTR_ERR(tsk);
 	}
+	/*
+	 * Park the thread so that it could start right on the CPU
+	 * when it is available.
+	 */
+	kthread_park(tsk);
 	get_task_struct(tsk);
 	*per_cpu_ptr(ht->store, cpu) = tsk;
 	if (ht->create) {
@@ -226,7 +231,7 @@ static void smpboot_unpark_thread(struct smp_hotplug_thread *ht, unsigned int cp
 		kthread_unpark(tsk);
 }
 
-void smpboot_unpark_threads(unsigned int cpu)
+int smpboot_unpark_threads(unsigned int cpu)
 {
 	struct smp_hotplug_thread *cur;
 
@@ -235,6 +240,7 @@ void smpboot_unpark_threads(unsigned int cpu)
 		if (cpumask_test_cpu(cpu, cur->cpumask))
 			smpboot_unpark_thread(cur, cpu);
 	mutex_unlock(&smpboot_threads_lock);
+	return 0;
 }
 
 static void smpboot_park_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
@@ -245,7 +251,7 @@ static void smpboot_park_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 		kthread_park(tsk);
 }
 
-void smpboot_park_threads(unsigned int cpu)
+int smpboot_park_threads(unsigned int cpu)
 {
 	struct smp_hotplug_thread *cur;
 
@@ -253,6 +259,7 @@ void smpboot_park_threads(unsigned int cpu)
 	list_for_each_entry_reverse(cur, &hotplug_threads, list)
 		smpboot_park_thread(cur, cpu);
 	mutex_unlock(&smpboot_threads_lock);
+	return 0;
 }
 
 static void smpboot_destroy_threads(struct smp_hotplug_thread *ht)

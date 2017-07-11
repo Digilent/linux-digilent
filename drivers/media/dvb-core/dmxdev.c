@@ -556,7 +556,7 @@ static int dvb_dmxdev_start_feed(struct dmxdev *dmxdev,
 				 struct dmxdev_filter *filter,
 				 struct dmxdev_feed *feed)
 {
-	struct timespec timeout = { 0 };
+	ktime_t timeout = ktime_set(0, 0);
 	struct dmx_pes_filter_params *para = &filter->params.pes;
 	dmx_output_t otype;
 	int ret;
@@ -1244,9 +1244,9 @@ int dvb_dmxdev_init(struct dmxdev *dmxdev, struct dvb_adapter *dvb_adapter)
 	}
 
 	dvb_register_device(dvb_adapter, &dmxdev->dvbdev, &dvbdev_demux, dmxdev,
-			    DVB_DEVICE_DEMUX);
+			    DVB_DEVICE_DEMUX, dmxdev->filternum);
 	dvb_register_device(dvb_adapter, &dmxdev->dvr_dvbdev, &dvbdev_dvr,
-			    dmxdev, DVB_DEVICE_DVR);
+			    dmxdev, DVB_DEVICE_DVR, dmxdev->filternum);
 
 	dvb_ringbuffer_init(&dmxdev->dvr_buffer, NULL, 8192);
 

@@ -44,6 +44,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_TMDS,
 		.name = "sil164",
 		.dvo_reg = DVOC,
+		.dvo_srcdim_reg = DVOC_SRCDIM,
 		.slave_addr = SIL164_ADDR,
 		.dev_ops = &sil164_ops,
 	},
@@ -51,6 +52,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_TMDS,
 		.name = "ch7xxx",
 		.dvo_reg = DVOC,
+		.dvo_srcdim_reg = DVOC_SRCDIM,
 		.slave_addr = CH7xxx_ADDR,
 		.dev_ops = &ch7xxx_ops,
 	},
@@ -58,6 +60,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_TMDS,
 		.name = "ch7xxx",
 		.dvo_reg = DVOC,
+		.dvo_srcdim_reg = DVOC_SRCDIM,
 		.slave_addr = 0x75, /* For some ch7010 */
 		.dev_ops = &ch7xxx_ops,
 	},
@@ -65,6 +68,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_LVDS,
 		.name = "ivch",
 		.dvo_reg = DVOA,
+		.dvo_srcdim_reg = DVOA_SRCDIM,
 		.slave_addr = 0x02, /* Might also be 0x44, 0x84, 0xc4 */
 		.dev_ops = &ivch_ops,
 	},
@@ -72,6 +76,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_TMDS,
 		.name = "tfp410",
 		.dvo_reg = DVOC,
+		.dvo_srcdim_reg = DVOC_SRCDIM,
 		.slave_addr = TFP410_ADDR,
 		.dev_ops = &tfp410_ops,
 	},
@@ -79,6 +84,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.type = INTEL_DVO_CHIP_LVDS,
 		.name = "ch7017",
 		.dvo_reg = DVOC,
+		.dvo_srcdim_reg = DVOC_SRCDIM,
 		.slave_addr = 0x75,
 		.gpio = GMBUS_PIN_DPB,
 		.dev_ops = &ch7017_ops,
@@ -87,6 +93,7 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 	        .type = INTEL_DVO_CHIP_TMDS,
 		.name = "ns2501",
 		.dvo_reg = DVOB,
+		.dvo_srcdim_reg = DVOB_SRCDIM,
 		.slave_addr = NS2501_ADDR,
 		.dev_ops = &ns2501_ops,
        }
@@ -115,7 +122,7 @@ static struct intel_dvo *intel_attached_dvo(struct drm_connector *connector)
 static bool intel_dvo_connector_get_hw_state(struct intel_connector *connector)
 {
 	struct drm_device *dev = connector->base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct intel_dvo *intel_dvo = intel_attached_dvo(&connector->base);
 	u32 tmp;
 
@@ -131,7 +138,7 @@ static bool intel_dvo_get_hw_state(struct intel_encoder *encoder,
 				   enum pipe *pipe)
 {
 	struct drm_device *dev = encoder->base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
 	u32 tmp;
 
@@ -148,7 +155,7 @@ static bool intel_dvo_get_hw_state(struct intel_encoder *encoder,
 static void intel_dvo_get_config(struct intel_encoder *encoder,
 				 struct intel_crtc_state *pipe_config)
 {
-	struct drm_i915_private *dev_priv = encoder->base.dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
 	u32 tmp, flags = 0;
 
@@ -167,11 +174,13 @@ static void intel_dvo_get_config(struct intel_encoder *encoder,
 	pipe_config->base.adjusted_mode.crtc_clock = pipe_config->port_clock;
 }
 
-static void intel_disable_dvo(struct intel_encoder *encoder)
+static void intel_disable_dvo(struct intel_encoder *encoder,
+			      struct intel_crtc_state *old_crtc_state,
+			      struct drm_connector_state *old_conn_state)
 {
-	struct drm_i915_private *dev_priv = encoder->base.dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
-	u32 dvo_reg = intel_dvo->dev.dvo_reg;
+	i915_reg_t dvo_reg = intel_dvo->dev.dvo_reg;
 	u32 temp = I915_READ(dvo_reg);
 
 	intel_dvo->dev.dev_ops->dpms(&intel_dvo->dev, false);
@@ -179,17 +188,18 @@ static void intel_disable_dvo(struct intel_encoder *encoder)
 	I915_READ(dvo_reg);
 }
 
-static void intel_enable_dvo(struct intel_encoder *encoder)
+static void intel_enable_dvo(struct intel_encoder *encoder,
+			     struct intel_crtc_state *pipe_config,
+			     struct drm_connector_state *conn_state)
 {
-	struct drm_i915_private *dev_priv = encoder->base.dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
-	struct intel_crtc *crtc = to_intel_crtc(encoder->base.crtc);
-	u32 dvo_reg = intel_dvo->dev.dvo_reg;
+	i915_reg_t dvo_reg = intel_dvo->dev.dvo_reg;
 	u32 temp = I915_READ(dvo_reg);
 
 	intel_dvo->dev.dev_ops->mode_set(&intel_dvo->dev,
-					 &crtc->config->base.mode,
-					 &crtc->config->base.adjusted_mode);
+					 &pipe_config->base.mode,
+					 &pipe_config->base.adjusted_mode);
 
 	I915_WRITE(dvo_reg, temp | DVO_ENABLE);
 	I915_READ(dvo_reg);
@@ -228,7 +238,8 @@ intel_dvo_mode_valid(struct drm_connector *connector,
 }
 
 static bool intel_dvo_compute_config(struct intel_encoder *encoder,
-				     struct intel_crtc_state *pipe_config)
+				     struct intel_crtc_state *pipe_config,
+				     struct drm_connector_state *conn_state)
 {
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
 	const struct drm_display_mode *fixed_mode =
@@ -246,29 +257,18 @@ static bool intel_dvo_compute_config(struct intel_encoder *encoder,
 	return true;
 }
 
-static void intel_dvo_pre_enable(struct intel_encoder *encoder)
+static void intel_dvo_pre_enable(struct intel_encoder *encoder,
+				 struct intel_crtc_state *pipe_config,
+				 struct drm_connector_state *conn_state)
 {
-	struct drm_device *dev = encoder->base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_crtc *crtc = to_intel_crtc(encoder->base.crtc);
-	const struct drm_display_mode *adjusted_mode = &crtc->config->base.adjusted_mode;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
+	struct intel_crtc *crtc = to_intel_crtc(pipe_config->base.crtc);
+	const struct drm_display_mode *adjusted_mode = &pipe_config->base.adjusted_mode;
 	struct intel_dvo *intel_dvo = enc_to_dvo(encoder);
 	int pipe = crtc->pipe;
 	u32 dvo_val;
-	u32 dvo_reg = intel_dvo->dev.dvo_reg, dvo_srcdim_reg;
-
-	switch (dvo_reg) {
-	case DVOA:
-	default:
-		dvo_srcdim_reg = DVOA_SRCDIM;
-		break;
-	case DVOB:
-		dvo_srcdim_reg = DVOB_SRCDIM;
-		break;
-	case DVOC:
-		dvo_srcdim_reg = DVOC_SRCDIM;
-		break;
-	}
+	i915_reg_t dvo_reg = intel_dvo->dev.dvo_reg;
+	i915_reg_t dvo_srcdim_reg = intel_dvo->dev.dvo_srcdim_reg;
 
 	/* Save the data order, since I don't know what it should be set to. */
 	dvo_val = I915_READ(dvo_reg) &
@@ -310,7 +310,7 @@ intel_dvo_detect(struct drm_connector *connector, bool force)
 
 static int intel_dvo_get_modes(struct drm_connector *connector)
 {
-	struct drm_i915_private *dev_priv = connector->dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(connector->dev);
 	const struct drm_display_mode *fixed_mode =
 		to_intel_connector(connector)->panel.fixed_mode;
 
@@ -346,6 +346,8 @@ static void intel_dvo_destroy(struct drm_connector *connector)
 static const struct drm_connector_funcs intel_dvo_connector_funcs = {
 	.dpms = drm_atomic_helper_connector_dpms,
 	.detect = intel_dvo_detect,
+	.late_register = intel_connector_register,
+	.early_unregister = intel_connector_unregister,
 	.destroy = intel_dvo_destroy,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.atomic_get_property = intel_connector_atomic_get_property,
@@ -356,7 +358,6 @@ static const struct drm_connector_funcs intel_dvo_connector_funcs = {
 static const struct drm_connector_helper_funcs intel_dvo_connector_helper_funcs = {
 	.mode_valid = intel_dvo_mode_valid,
 	.get_modes = intel_dvo_get_modes,
-	.best_encoder = intel_best_encoder,
 };
 
 static void intel_dvo_enc_destroy(struct drm_encoder *encoder)
@@ -383,7 +384,7 @@ static struct drm_display_mode *
 intel_dvo_get_current_mode(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct intel_dvo *intel_dvo = intel_attached_dvo(connector);
 	uint32_t dvo_val = I915_READ(intel_dvo->dev.dvo_reg);
 	struct drm_display_mode *mode = NULL;
@@ -411,9 +412,21 @@ intel_dvo_get_current_mode(struct drm_connector *connector)
 	return mode;
 }
 
+static char intel_dvo_port_name(i915_reg_t dvo_reg)
+{
+	if (i915_mmio_reg_equal(dvo_reg, DVOA))
+		return 'A';
+	else if (i915_mmio_reg_equal(dvo_reg, DVOB))
+		return 'B';
+	else if (i915_mmio_reg_equal(dvo_reg, DVOC))
+		return 'C';
+	else
+		return '?';
+}
+
 void intel_dvo_init(struct drm_device *dev)
 {
-	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct intel_encoder *intel_encoder;
 	struct intel_dvo *intel_dvo;
 	struct intel_connector *intel_connector;
@@ -433,8 +446,6 @@ void intel_dvo_init(struct drm_device *dev)
 	intel_dvo->attached_connector = intel_connector;
 
 	intel_encoder = &intel_dvo->base;
-	drm_encoder_init(dev, &intel_encoder->base,
-			 &intel_dvo_enc_funcs, encoder_type);
 
 	intel_encoder->disable = intel_disable_dvo;
 	intel_encoder->enable = intel_enable_dvo;
@@ -443,7 +454,6 @@ void intel_dvo_init(struct drm_device *dev)
 	intel_encoder->compute_config = intel_dvo_compute_config;
 	intel_encoder->pre_enable = intel_dvo_pre_enable;
 	intel_connector->get_hw_state = intel_dvo_connector_get_hw_state;
-	intel_connector->unregister = intel_connector_unregister;
 
 	/* Now, try to find a controller */
 	for (i = 0; i < ARRAY_SIZE(intel_dvo_devices); i++) {
@@ -501,6 +511,10 @@ void intel_dvo_init(struct drm_device *dev)
 		if (!dvoinit)
 			continue;
 
+		drm_encoder_init(dev, &intel_encoder->base,
+				 &intel_dvo_enc_funcs, encoder_type,
+				 "DVO %c", intel_dvo_port_name(dvo->dvo_reg));
+
 		intel_encoder->type = INTEL_OUTPUT_DVO;
 		intel_encoder->crtc_mask = (1 << 0) | (1 << 1);
 		switch (dvo->type) {
@@ -542,11 +556,9 @@ void intel_dvo_init(struct drm_device *dev)
 			intel_dvo->panel_wants_dither = true;
 		}
 
-		drm_connector_register(connector);
 		return;
 	}
 
-	drm_encoder_cleanup(&intel_encoder->base);
 	kfree(intel_dvo);
 	kfree(intel_connector);
 }

@@ -91,7 +91,8 @@ static struct drm_framebuffer_funcs xilinx_drm_fb_funcs = {
  * Return: a xilinx_drm_fb object, or ERR_PTR.
  */
 static struct xilinx_drm_fb *
-xilinx_drm_fb_alloc(struct drm_device *drm, struct drm_mode_fb_cmd2 *mode_cmd,
+xilinx_drm_fb_alloc(struct drm_device *drm,
+		    const struct drm_mode_fb_cmd2 *mode_cmd,
 		    struct drm_gem_cma_object **obj, unsigned int num_planes)
 {
 	struct xilinx_drm_fb *fb;
@@ -467,9 +468,9 @@ void xilinx_drm_fb_restore_mode(struct drm_fb_helper *fb_helper)
  *
  * Return: a drm_framebuffer object if successful, or ERR_PTR.
  */
-struct drm_framebuffer *xilinx_drm_fb_create(struct drm_device *drm,
-					     struct drm_file *file_priv,
-					     struct drm_mode_fb_cmd2 *mode_cmd)
+struct drm_framebuffer *
+xilinx_drm_fb_create(struct drm_device *drm, struct drm_file *file_priv,
+		     const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct xilinx_drm_fb *fb;
 	struct drm_gem_cma_object *objs[4];
@@ -479,12 +480,6 @@ struct drm_framebuffer *xilinx_drm_fb_create(struct drm_device *drm,
 	int ret;
 	int i;
 
-	if (!xilinx_drm_check_format(drm, mode_cmd->pixel_format)) {
-		DRM_ERROR("unsupported pixel format %08x\n",
-			  mode_cmd->pixel_format);
-		return ERR_PTR(-EINVAL);
-	}
-
 	hsub = drm_format_horz_chroma_subsampling(mode_cmd->pixel_format);
 	vsub = drm_format_vert_chroma_subsampling(mode_cmd->pixel_format);
 
@@ -493,7 +488,7 @@ struct drm_framebuffer *xilinx_drm_fb_create(struct drm_device *drm,
 		unsigned int height = mode_cmd->height / (i ? vsub : 1);
 		unsigned int min_size;
 
-		obj = drm_gem_object_lookup(drm, file_priv,
+		obj = drm_gem_object_lookup(file_priv,
 					    mode_cmd->handles[i]);
 		if (!obj) {
 			DRM_ERROR("Failed to lookup GEM object\n");

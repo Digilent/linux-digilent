@@ -401,9 +401,7 @@ int bcmgenet_mii_probe(struct net_device *dev)
 	 * Ethernet MAC ISRs
 	 */
 	if (priv->internal_phy)
-		priv->mii_bus->irq[phydev->addr] = PHY_IGNORE_INTERRUPT;
-	else
-		priv->mii_bus->irq[phydev->addr] = PHY_POLL;
+		priv->phydev->irq = PHY_IGNORE_INTERRUPT;
 
 	return 0;
 }
@@ -477,12 +475,6 @@ static int bcmgenet_mii_alloc(struct bcmgenet_priv *priv)
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%s-%d",
 		 priv->pdev->name, priv->pdev->id);
 
-	bus->irq = kcalloc(PHY_MAX_ADDR, sizeof(int), GFP_KERNEL);
-	if (!bus->irq) {
-		mdiobus_free(priv->mii_bus);
-		return -ENOMEM;
-	}
-
 	return 0;
 }
 
@@ -550,8 +542,10 @@ static int bcmgenet_mii_of_init(struct bcmgenet_priv *priv)
 	/* Make sure we initialize MoCA PHYs with a link down */
 	if (phy_mode == PHY_INTERFACE_MODE_MOCA) {
 		phydev = of_phy_find_device(dn);
-		if (phydev)
+		if (phydev) {
 			phydev->link = 0;
+			put_device(&phydev->mdio.dev);
+		}
 	}
 
 	return 0;
@@ -581,7 +575,7 @@ static int bcmgenet_mii_pd_init(struct bcmgenet_priv *priv)
 		}
 
 		if (pd->phy_address >= 0 && pd->phy_address < PHY_MAX_ADDR)
-			phydev = mdio->phy_map[pd->phy_address];
+			phydev = mdiobus_get_phy(mdio, pd->phy_address);
 		else
 			phydev = phy_find_first(mdio);
 
@@ -633,6 +627,7 @@ static int bcmgenet_mii_bus_init(struct bcmgenet_priv *priv)
 int bcmgenet_mii_init(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
+	struct device_node *dn = priv->pdev->dev.of_node;
 	int ret;
 
 	ret = bcmgenet_mii_alloc(priv);
@@ -646,9 +641,10 @@ int bcmgenet_mii_init(struct net_device *dev)
 	return 0;
 
 out:
+	if (of_phy_is_fixed_link(dn))
+		of_phy_deregister_fixed_link(dn);
 	of_node_put(priv->phy_dn);
 	mdiobus_unregister(priv->mii_bus);
-	kfree(priv->mii_bus->irq);
 	mdiobus_free(priv->mii_bus);
 	return ret;
 }
@@ -656,9 +652,11 @@ out:
 void bcmgenet_mii_exit(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
+	struct device_node *dn = priv->pdev->dev.of_node;
 
+	if (of_phy_is_fixed_link(dn))
+		of_phy_deregister_fixed_link(dn);
 	of_node_put(priv->phy_dn);
 	mdiobus_unregister(priv->mii_bus);
-	kfree(priv->mii_bus->irq);
 	mdiobus_free(priv->mii_bus);
 }

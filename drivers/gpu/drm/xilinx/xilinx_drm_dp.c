@@ -29,10 +29,15 @@
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-zynqmp.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
+#include <linux/pm_runtime.h>
 
 #include "xilinx_drm_dp_sub.h"
 #include "xilinx_drm_drv.h"
+
+static uint xilinx_drm_dp_aux_timeout_ms = 50;
+module_param_named(aux_timeout_ms, xilinx_drm_dp_aux_timeout_ms, uint, 0444);
+MODULE_PARM_DESC(aux_timeout_ms,
+		 "DP aux timeout value in msec (default: 50)");
 
 /* Link configuration registers */
 #define XILINX_DP_TX_LINK_BW_SET			0x0
@@ -205,6 +210,8 @@
 #define XILINX_DP_TX_PHY_POSTCURSOR_LANE_1		0x250
 #define XILINX_DP_TX_PHY_POSTCURSOR_LANE_2		0x254
 #define XILINX_DP_TX_PHY_POSTCURSOR_LANE_3		0x258
+#define XILINX_DP_SUB_TX_PHY_PRECURSOR_LANE_0		0x24c
+#define XILINX_DP_SUB_TX_PHY_PRECURSOR_LANE_1		0x250
 #define XILINX_DP_TX_PHY_STATUS				0x280
 #define XILINX_DP_TX_PHY_STATUS_PLL_LOCKED_SHIFT	4
 #define XILINX_DP_TX_PHY_STATUS_FPGA_PLL_LOCKED		(1 << 6)
@@ -252,10 +259,12 @@ struct xilinx_drm_dp_link_config {
  * struct xilinx_drm_dp_mode - Configured mode of DisplayPort
  * @bw_code: code for bandwidth(link rate)
  * @lane_cnt: number of lanes
+ * @pclock: pixel clock frequency of current mode
  */
 struct xilinx_drm_dp_mode {
 	u8 bw_code;
 	u8 lane_cnt;
+	int pclock;
 };
 
 /**
@@ -293,6 +302,7 @@ struct xilinx_drm_dp_config {
  * @config: IP core configuration from DTS
  * @aux: aux channel
  * @dp_sub: DisplayPort subsystem
+ * @phy: PHY handles for DP lanes
  * @aclk: clock source device for internal axi4-lite clock
  * @aud_clk: clock source device for audio clock
  * @dpms: current dpms state
@@ -300,6 +310,7 @@ struct xilinx_drm_dp_config {
  * @link_config: common link configuration between IP core and sink device
  * @mode: current mode between IP core and sink device
  * @train_set: set of training data
+ * @suspend: flag to set when going in suspend mode
  */
 struct xilinx_drm_dp {
 	struct drm_encoder *encoder;
@@ -318,6 +329,7 @@ struct xilinx_drm_dp {
 	struct xilinx_drm_dp_link_config link_config;
 	struct xilinx_drm_dp_mode mode;
 	u8 train_set[DP_MAX_LANES];
+	bool suspend;
 };
 
 static inline struct xilinx_drm_dp *to_dp(struct drm_encoder *encoder)
@@ -443,6 +455,72 @@ static int xilinx_drm_dp_phy_ready(struct xilinx_drm_dp *dp)
 }
 
 /**
+ * xilinx_drm_dp_max_rate - Calculate and return available max pixel clock
+ * @link_rate: link rate (Kilo-bytes / sec)
+ * @lane_num: number of lanes
+ * @bpp: bits per pixel
+ *
+ * Return: max pixel clock (KHz) supported by current link config.
+ */
+static inline int xilinx_drm_dp_max_rate(int link_rate, u8 lane_num, u8 bpp)
+{
+	return link_rate * lane_num * 8 / bpp;
+}
+
+/**
+ * xilinx_drm_dp_mode_configure - Configure the link values
+ * @dp: DisplayPort IP core structure
+ * @pclock: pixel clock for requested display mode
+ * @current_bw: current link rate
+ *
+ * Find the link configuration values, rate and lane count for requested pixel
+ * clock @pclock. The @pclock is stored in the mode to be used in other
+ * functions later. The returned rate is downshifted from the current rate
+ * @current_bw.
+ *
+ * Return: Current link rate code, or -EINVAL.
+ */
+static int xilinx_drm_dp_mode_configure(struct xilinx_drm_dp *dp, int pclock,
+					u8 current_bw)
+{
+	int max_rate = dp->link_config.max_rate;
+	u8 bws[3] = { DP_LINK_BW_1_62, DP_LINK_BW_2_7, DP_LINK_BW_5_4 };
+	u8 max_lanes = dp->link_config.max_lanes;
+	u8 max_link_rate_code = drm_dp_link_rate_to_bw_code(max_rate);
+	u8 bpp = dp->config.bpp;
+	u8 lane_cnt;
+	s8 clock, i;
+
+	for (i = ARRAY_SIZE(bws) - 1; i >= 0; i--) {
+		if (current_bw && bws[i] >= current_bw)
+			continue;
+
+		if (bws[i] <= max_link_rate_code)
+			break;
+	}
+
+	for (lane_cnt = 1; lane_cnt <= max_lanes; lane_cnt <<= 1) {
+		for (clock = i; clock >= 0; clock--) {
+			int bw;
+			u32 rate;
+
+			bw = drm_dp_bw_code_to_link_rate(bws[clock]);
+			rate = xilinx_drm_dp_max_rate(bw, lane_cnt, bpp);
+			if (pclock <= rate) {
+				dp->mode.bw_code = bws[clock];
+				dp->mode.lane_cnt = lane_cnt;
+				dp->mode.pclock = pclock;
+				return bws[clock];
+			}
+		}
+	}
+
+	DRM_ERROR("failed to configure link values\n");
+
+	return -EINVAL;
+}
+
+/**
  * xilinx_drm_dp_adjust_train - Adjust train values
  * @dp: DisplayPort IP core structure
  * @link_status: link status from sink which contains requested training values
@@ -515,9 +593,11 @@ static int xilinx_drm_dp_update_vs_emph(struct xilinx_drm_dp *dp)
 			  DP_TRAIN_PRE_EMPHASIS_SHIFT;
 
 		if (dp->phy[i]) {
+			u32 reg = XILINX_DP_SUB_TX_PHY_PRECURSOR_LANE_0 + i * 4;
+
 			xpsgtr_margining_factor(dp->phy[i], p_level, v_level);
 			xpsgtr_override_deemph(dp->phy[i], p_level, v_level);
-
+			xilinx_drm_writel(dp->iomem, reg, 0x2);
 		} else {
 			u32 reg;
 
@@ -731,16 +811,12 @@ static int xilinx_drm_dp_train(struct xilinx_drm_dp *dp)
 	memset(dp->train_set, 0, 4);
 
 	ret = xilinx_drm_dp_link_train_cr(dp);
-	if (ret) {
-		DRM_ERROR("failed to train clock recovery\n");
+	if (ret)
 		return ret;
-	}
 
 	ret = xilinx_drm_dp_link_train_ce(dp);
-	if (ret) {
-		DRM_ERROR("failed to train channel eq\n");
+	if (ret)
 		return ret;
-	}
 
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET,
 			  DP_TRAINING_PATTERN_DISABLE);
@@ -754,6 +830,145 @@ static int xilinx_drm_dp_train(struct xilinx_drm_dp *dp)
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_SCRAMBLING_DISABLE, 0);
 
 	return 0;
+}
+
+/**
+ * xilinx_drm_dp_train_loop - Downshift the link rate during training
+ * @dp: DisplayPort IP core structure
+ *
+ * Train the link by downshifting the link rate if training is not successful.
+ */
+static void xilinx_drm_dp_train_loop(struct xilinx_drm_dp *dp)
+{
+	struct xilinx_drm_dp_mode *mode = &dp->mode;
+	u8 bw = mode->bw_code;
+	int ret;
+
+	do {
+		ret = xilinx_drm_dp_train(dp);
+		if (!ret)
+			return;
+
+		ret = xilinx_drm_dp_mode_configure(dp, mode->pclock, bw);
+		if (ret < 0)
+			return;
+		bw = ret;
+	} while (bw >= DP_LINK_BW_1_62);
+
+	DRM_ERROR("failed to train the DP link\n");
+}
+
+/**
+ * xilinx_drm_dp_init_aux - Initialize the DP aux
+ * @dp: DisplayPort IP core structure
+ *
+ * Initialize the DP aux. The aux clock is derived from the axi clock, so
+ * this function gets the axi clock frequency and calculates the filter
+ * value. Additionally, the interrupts and transmitter are enabled.
+ *
+ * Return: 0 on success, error value otherwise
+ */
+static int xilinx_drm_dp_init_aux(struct xilinx_drm_dp *dp)
+{
+	int clock_rate;
+	u32 reg, w;
+
+	clock_rate = clk_get_rate(dp->aclk);
+	if (clock_rate < XILINX_DP_TX_CLK_DIVIDER_MHZ) {
+		DRM_ERROR("aclk should be higher than 1MHz\n");
+		return -EINVAL;
+	}
+
+	/* Allowable values for this register are: 8, 16, 24, 32, 40, 48 */
+	for (w = 8; w <= 48; w += 8) {
+		/* AUX pulse width should be between 0.4 to 0.6 usec */
+		if (w >= (4 * clock_rate / 10000000) &&
+		    w <= (6 * clock_rate / 10000000))
+			break;
+	}
+
+	if (w > 48) {
+		DRM_ERROR("aclk frequency too high\n");
+		return -EINVAL;
+	}
+	reg = w << XILINX_DP_TX_CLK_DIVIDER_AUX_FILTER_SHIFT;
+
+	reg |= clock_rate / XILINX_DP_TX_CLK_DIVIDER_MHZ;
+	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_CLK_DIVIDER, reg);
+
+	if (dp->dp_sub)
+		xilinx_drm_writel(dp->iomem, XILINX_DP_SUB_TX_INTR_EN,
+				  XILINX_DP_TX_INTR_ALL);
+	else
+		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_INTR_MASK,
+				  ~XILINX_DP_TX_INTR_ALL);
+	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_ENABLE, 1);
+
+	return 0;
+}
+
+/**
+ * xilinx_drm_dp_init_phy - Initialize the phy
+ * @dp: DisplayPort IP core structure
+ *
+ * Initialize the phy.
+ *
+ * Return: 0 if the phy instances are initialized correctly, or the error code
+ * returned from the callee functions.
+ */
+static int xilinx_drm_dp_init_phy(struct xilinx_drm_dp *dp)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < dp->config.max_lanes; i++) {
+		ret = phy_init(dp->phy[i]);
+		if (ret) {
+			dev_err(dp->dev, "failed to init phy lane %d\n", i);
+			return ret;
+		}
+	}
+
+	if (dp->dp_sub)
+		xilinx_drm_writel(dp->iomem, XILINX_DP_SUB_TX_INTR_DS,
+				  XILINX_DP_TX_INTR_ALL);
+	else
+		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_INTR_MASK,
+				  XILINX_DP_TX_INTR_ALL);
+
+	xilinx_drm_clr(dp->iomem, XILINX_DP_TX_PHY_CONFIG,
+		       XILINX_DP_TX_PHY_CONFIG_ALL_RESET);
+
+	/* Wait for PLL to be locked for the primary (1st) */
+	if (dp->phy[0]) {
+		ret = xpsgtr_wait_pll_lock(dp->phy[0]);
+		if (ret) {
+			dev_err(dp->dev, "failed to lock pll\n");
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * xilinx_drm_dp_exit_phy - Exit the phy
+ * @dp: DisplayPort IP core structure
+ *
+ * Exit the phy.
+ */
+static void xilinx_drm_dp_exit_phy(struct xilinx_drm_dp *dp)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < dp->config.max_lanes; i++) {
+		ret = phy_exit(dp->phy[i]);
+		if (ret) {
+			dev_err(dp->dev,
+				"failed to exit phy (%d) %d\n", i, ret);
+		}
+	}
 }
 
 static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
@@ -770,10 +985,18 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 
 	switch (dpms) {
 	case DRM_MODE_DPMS_ON:
+		pm_runtime_get_sync(dp->dev);
+
+		if (dp->suspend) {
+			xilinx_drm_dp_init_phy(dp);
+			xilinx_drm_dp_init_aux(dp);
+			dp->suspend = false;
+		}
+
 		if (dp->aud_clk)
 			xilinx_drm_writel(iomem, XILINX_DP_TX_AUDIO_CONTROL, 1);
-
 		xilinx_drm_writel(iomem, XILINX_DP_TX_PHY_POWER_DOWN, 0);
+
 		for (i = 0; i < 3; i++) {
 			ret = drm_dp_dpcd_writeb(&dp->aux, DP_SET_POWER,
 						 DP_SET_POWER_D0);
@@ -781,12 +1004,15 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 				break;
 			usleep_range(300, 500);
 		}
-		xilinx_drm_dp_train(dp);
+		xilinx_drm_dp_train_loop(dp);
 		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_SW_RESET,
 				  XILINX_DP_TX_SW_RESET_ALL);
 		xilinx_drm_writel(iomem, XILINX_DP_TX_ENABLE_MAIN_STREAM, 1);
 
 		return;
+	case DRM_MODE_DPMS_SUSPEND:
+		dp->suspend = true;
+		xilinx_drm_dp_exit_phy(dp);
 	default:
 		xilinx_drm_writel(iomem, XILINX_DP_TX_ENABLE_MAIN_STREAM, 0);
 		drm_dp_dpcd_writeb(&dp->aux, DP_SET_POWER, DP_SET_POWER_D3);
@@ -794,6 +1020,8 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 				  XILINX_DP_TX_PHY_POWER_DOWN_ALL);
 		if (dp->aud_clk)
 			xilinx_drm_writel(iomem, XILINX_DP_TX_AUDIO_CONTROL, 0);
+
+		pm_runtime_put_sync(dp->dev);
 
 		return;
 	}
@@ -833,19 +1061,6 @@ static bool xilinx_drm_dp_mode_fixup(struct drm_encoder *encoder,
 	}
 
 	return true;
-}
-
-/**
- * xilinx_drm_dp_max_rate - Calculate and return available max pixel clock
- * @link_rate: link rate (Kilo-bytes / sec)
- * @lane_num: number of lanes
- * @bpp: bits per pixel
- *
- * Return: max pixel clock (KHz) supported by current link config.
- */
-static inline int xilinx_drm_dp_max_rate(int link_rate, u8 lane_num, u8 bpp)
-{
-	return link_rate * lane_num * 8 / bpp;
 }
 
 static int xilinx_drm_dp_mode_valid(struct drm_encoder *encoder,
@@ -980,50 +1195,18 @@ static void xilinx_drm_dp_mode_set_stream(struct xilinx_drm_dp *dp,
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_USER_DATA_CNT_PER_LANE, reg);
 }
 
-/**
- * xilinx_drm_dp_mode_configure - Configure the link values
- * @dp: DisplayPort IP core structure
- * @pclock: pixel clock for requested display mode
- *
- * Find the link configuration values, rate and lane count for requested pixel
- * clock @pclock.
- */
-static void xilinx_drm_dp_mode_configure(struct xilinx_drm_dp *dp, int pclock)
-{
-	int max_rate = dp->link_config.max_rate;
-	u8 bws[3] = { DP_LINK_BW_1_62, DP_LINK_BW_2_7, DP_LINK_BW_5_4 };
-	u8 max_lanes = dp->link_config.max_lanes;
-	u8 max_link_rate_code = drm_dp_link_rate_to_bw_code(max_rate);
-	u8 bpp = dp->config.bpp;
-	u8 lane_cnt, i;
-	s8 clock;
-
-	for (i = 0; i < ARRAY_SIZE(bws); i++)
-		if (bws[i] == max_link_rate_code)
-			break;
-
-	for (lane_cnt = 1; lane_cnt <= max_lanes; lane_cnt <<= 1)
-		for (clock = i; clock >= 0; clock--) {
-			int bw;
-			u32 rate;
-
-			bw = drm_dp_bw_code_to_link_rate(bws[clock]);
-			rate = xilinx_drm_dp_max_rate(bw, lane_cnt, bpp);
-			if (pclock <= rate) {
-				dp->mode.bw_code = bws[clock];
-				dp->mode.lane_cnt = lane_cnt;
-				return;
-			}
-		}
-}
 
 static void xilinx_drm_dp_mode_set(struct drm_encoder *encoder,
 				   struct drm_display_mode *mode,
 				   struct drm_display_mode *adjusted_mode)
 {
 	struct xilinx_drm_dp *dp = to_dp(encoder);
+	int ret;
 
-	xilinx_drm_dp_mode_configure(dp, adjusted_mode->clock);
+	ret = xilinx_drm_dp_mode_configure(dp, adjusted_mode->clock, 0);
+	if (ret < 0)
+		return;
+
 	xilinx_drm_dp_mode_set_stream(dp, adjusted_mode);
 	xilinx_drm_dp_mode_set_transfer_unit(dp, adjusted_mode);
 }
@@ -1092,47 +1275,13 @@ static int xilinx_drm_dp_encoder_init(struct platform_device *pdev,
 				      struct drm_encoder_slave *encoder)
 {
 	struct xilinx_drm_dp *dp = platform_get_drvdata(pdev);
-	int clock_rate;
-	u32 reg, w;
 
 	encoder->slave_priv = dp;
 	encoder->slave_funcs = &xilinx_drm_dp_encoder_funcs;
 
 	dp->encoder = &encoder->base;
 
-	/* Get aclk rate */
-	clock_rate = clk_get_rate(dp->aclk);
-	if (clock_rate < XILINX_DP_TX_CLK_DIVIDER_MHZ) {
-		DRM_ERROR("aclk should be higher than 1MHz\n");
-		return -EINVAL;
-	}
-
-	/* Allowable values for this register are: 8, 16, 24, 32, 40, 48 */
-	for (w = 8; w <= 48; w += 8) {
-		/* AUX pulse width should be between 0.4 to 0.6 usec */
-		if (w >= (4 * clock_rate / 10000000) &&
-		    w <= (6 * clock_rate / 10000000))
-			break;
-	}
-
-	if (w > 48) {
-		DRM_ERROR("aclk frequency too high\n");
-		return -EINVAL;
-	}
-	reg = w << XILINX_DP_TX_CLK_DIVIDER_AUX_FILTER_SHIFT;
-
-	reg |= clock_rate / XILINX_DP_TX_CLK_DIVIDER_MHZ;
-	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_CLK_DIVIDER, reg);
-
-	if (dp->dp_sub)
-		xilinx_drm_writel(dp->iomem, XILINX_DP_SUB_TX_INTR_EN,
-				  XILINX_DP_TX_INTR_ALL);
-	else
-		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_INTR_MASK,
-				  ~XILINX_DP_TX_INTR_ALL);
-	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_ENABLE, 1);
-
-	return 0;
+	return xilinx_drm_dp_init_aux(dp);
 }
 
 static irqreturn_t xilinx_drm_dp_irq_handler(int irq, void *data)
@@ -1168,7 +1317,7 @@ static irqreturn_t xilinx_drm_dp_irq_handler(int irq, void *data)
 		if (status[4] & DP_LINK_STATUS_UPDATED ||
 		    !drm_dp_clock_recovery_ok(&status[2], dp->mode.lane_cnt) ||
 		    !drm_dp_channel_eq_ok(&status[2], dp->mode.lane_cnt))
-			xilinx_drm_dp_train(dp);
+			xilinx_drm_dp_train_loop(dp);
 	}
 
 	return IRQ_HANDLED;
@@ -1179,13 +1328,27 @@ xilinx_drm_dp_aux_transfer(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg)
 {
 	struct xilinx_drm_dp *dp = container_of(aux, struct xilinx_drm_dp, aux);
 	int ret;
+	unsigned int i, iter;
 
-	ret = xilinx_drm_dp_aux_cmd_submit(dp, msg->request, msg->address,
-					   msg->buffer, msg->size, &msg->reply);
-	if (ret < 0)
-		return ret;
+	/* Number of loops = timeout in msec / aux delay (400 usec) */
+	iter = xilinx_drm_dp_aux_timeout_ms * 1000 / 400;
+	iter = iter ? iter : 1;
 
-	return msg->size;
+	for (i = 0; i < iter; i++) {
+		ret = xilinx_drm_dp_aux_cmd_submit(dp, msg->request,
+						   msg->address, msg->buffer,
+						   msg->size, &msg->reply);
+		if (!ret) {
+			dev_dbg(dp->dev, "aux %d retries\n", i);
+			return msg->size;
+		}
+
+		usleep_range(400, 500);
+	}
+
+	dev_dbg(dp->dev, "failed to do aux transfer (%d)\n", ret);
+
+	return ret;
 }
 
 static int xilinx_drm_dp_parse_of(struct xilinx_drm_dp *dp)
@@ -1394,38 +1557,15 @@ static int xilinx_drm_dp_probe(struct platform_device *pdev)
 			if (IS_ERR(dp->phy[i])) {
 				dev_err(dp->dev, "failed to get phy lane\n");
 				ret = PTR_ERR(dp->phy[i]);
-				goto error_dp_sub;
-			}
-
-			ret = phy_init(dp->phy[i]);
-			if (ret) {
-				dev_err(dp->dev,
-					"failed to init phy lane %d\n", i);
+				dp->phy[i] = NULL;
 				goto error_dp_sub;
 			}
 		}
-
-		xilinx_drm_writel(dp->iomem, XILINX_DP_SUB_TX_INTR_DS,
-				  XILINX_DP_TX_INTR_ALL);
-		xilinx_drm_clr(dp->iomem, XILINX_DP_TX_PHY_CONFIG,
-			       XILINX_DP_TX_PHY_CONFIG_ALL_RESET);
-		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_PHY_POWER_DOWN, 0);
-
-		/* Wait for PLL to be locked for the primary (1st) */
-		if (dp->phy[0]) {
-			ret = xpsgtr_wait_pll_lock(dp->phy[0]);
-			if (ret) {
-				dev_err(dp->dev, "failed to lock pll\n");
-				goto error_dp_sub;
-			}
-		}
-	} else {
-		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_INTR_MASK,
-				  XILINX_DP_TX_INTR_ALL);
-		xilinx_drm_clr(dp->iomem, XILINX_DP_TX_PHY_CONFIG,
-				XILINX_DP_TX_PHY_CONFIG_ALL_RESET);
-		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_PHY_POWER_DOWN, 0);
 	}
+
+	ret = xilinx_drm_dp_init_phy(dp);
+	if (ret)
+		goto error_phy;
 
 	dp->aux.name = "Xilinx DP AUX";
 	dp->aux.dev = dp->dev;
@@ -1433,7 +1573,7 @@ static int xilinx_drm_dp_probe(struct platform_device *pdev)
 	ret = drm_dp_aux_register(&dp->aux);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to initialize DP aux\n");
-		return ret;
+		goto error;
 	}
 
 	irq = platform_get_irq(pdev, 0);
@@ -1473,20 +1613,16 @@ static int xilinx_drm_dp_probe(struct platform_device *pdev)
 		 ((version & XILINX_DP_TX_CORE_ID_REVISION_MASK) >>
 		  XILINX_DP_TX_CORE_ID_REVISION_SHIFT));
 
+	pm_runtime_enable(dp->dev);
+
 	return 0;
 
 error:
 	drm_dp_aux_unregister(&dp->aux);
 error_dp_sub:
-	if (dp->dp_sub) {
-		for (i = 0; i < dp->config.max_lanes; i++) {
-			if (dp->phy[i]) {
-				phy_exit(dp->phy[i]);
-				dp->phy[i] = NULL;
-			}
-		}
-	}
 	xilinx_drm_dp_sub_put(dp->dp_sub);
+error_phy:
+	xilinx_drm_dp_exit_phy(dp);
 error_aud_clk:
 	if (dp->aud_clk)
 		clk_disable_unprepare(dp->aud_clk);
@@ -1498,21 +1634,12 @@ error_aclk:
 static int xilinx_drm_dp_remove(struct platform_device *pdev)
 {
 	struct xilinx_drm_dp *dp = platform_get_drvdata(pdev);
-	unsigned int i;
 
+	pm_runtime_disable(dp->dev);
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_ENABLE, 0);
 
 	drm_dp_aux_unregister(&dp->aux);
-
-	if (dp->dp_sub) {
-		for (i = 0; i < dp->config.max_lanes; i++) {
-			if (dp->phy[i]) {
-				phy_exit(dp->phy[i]);
-				dp->phy[i] = NULL;
-			}
-		}
-	}
-
+	xilinx_drm_dp_exit_phy(dp);
 	xilinx_drm_dp_sub_put(dp->dp_sub);
 
 	if (dp->aud_clk)

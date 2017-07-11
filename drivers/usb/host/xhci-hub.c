@@ -50,14 +50,18 @@ static u8 usb_bos_descriptor [] = {
 	0x00,				/* bU1DevExitLat, set later. */
 	0x00, 0x00,			/* __le16 bU2DevExitLat, set later. */
 	/* Second device capability, SuperSpeedPlus */
-	0x0c,				/* bLength 12, will be adjusted later */
+	0x1c,				/* bLength 28, will be adjusted later */
 	USB_DT_DEVICE_CAPABILITY,	/* Device Capability */
 	USB_SSP_CAP_TYPE,		/* bDevCapabilityType SUPERSPEED_PLUS */
 	0x00,				/* bReserved 0 */
-	0x00, 0x00, 0x00, 0x00,		/* bmAttributes, get from xhci psic */
-	0x00, 0x00,			/* wFunctionalitySupport */
+	0x23, 0x00, 0x00, 0x00,		/* bmAttributes, SSAC=3 SSIC=1 */
+	0x01, 0x00,			/* wFunctionalitySupport */
 	0x00, 0x00,			/* wReserved 0 */
-	/* Sublink Speed Attributes are added in xhci_create_usb3_bos_desc() */
+	/* Default Sublink Speed Attributes, overwrite if custom PSI exists */
+	0x34, 0x00, 0x05, 0x00,		/* 5Gbps, symmetric, rx, ID = 4 */
+	0xb4, 0x00, 0x05, 0x00,		/* 5Gbps, symmetric, tx, ID = 4 */
+	0x35, 0x40, 0x0a, 0x00,		/* 10Gbps, SSP, symmetric, rx, ID = 5 */
+	0xb5, 0x40, 0x0a, 0x00,		/* 10Gbps, SSP, symmetric, tx, ID = 5 */
 };
 
 static int xhci_create_usb3_bos_desc(struct xhci_hcd *xhci, char *buf,
@@ -72,10 +76,14 @@ static int xhci_create_usb3_bos_desc(struct xhci_hcd *xhci, char *buf,
 	ssp_cap_size = sizeof(usb_bos_descriptor) - desc_size;
 
 	/* does xhci support USB 3.1 Enhanced SuperSpeed */
-	if (xhci->usb3_rhub.min_rev >= 0x01 && xhci->usb3_rhub.psi_uid_count) {
-		/* two SSA entries for each unique PSI ID, one RX and one TX */
-		ssa_count = xhci->usb3_rhub.psi_uid_count * 2;
-		ssa_size = ssa_count * sizeof(u32);
+	if (xhci->usb3_rhub.min_rev >= 0x01) {
+		/* does xhci provide a PSI table for SSA speed attributes? */
+		if (xhci->usb3_rhub.psi_count) {
+			/* two SSA entries for each unique PSI ID, RX and TX */
+			ssa_count = xhci->usb3_rhub.psi_uid_count * 2;
+			ssa_size = ssa_count * sizeof(u32);
+			ssp_cap_size -= 16; /* skip copying the default SSA */
+		}
 		desc_size += ssp_cap_size;
 		usb3_1 = true;
 	}
@@ -102,7 +110,8 @@ static int xhci_create_usb3_bos_desc(struct xhci_hcd *xhci, char *buf,
 		put_unaligned_le16(HCS_U2_LATENCY(temp), &buf[13]);
 	}
 
-	if (usb3_1) {
+	/* If PSI table exists, add the custom speed attributes from it */
+	if (usb3_1 && xhci->usb3_rhub.psi_count) {
 		u32 ssp_cap_base, bm_attrib, psi;
 		int offset;
 
@@ -377,6 +386,9 @@ static int xhci_stop_device(struct xhci_hcd *xhci, int slot_id, int suspend)
 
 	ret = 0;
 	virt_dev = xhci->devs[slot_id];
+	if (!virt_dev)
+		return -ENODEV;
+
 	cmd = xhci_alloc_command(xhci, false, true, GFP_NOIO);
 	if (!cmd) {
 		xhci_dbg(xhci, "Couldn't allocate command structure.\n");
@@ -855,7 +867,7 @@ static u32 xhci_get_port_status(struct usb_hcd *hcd,
 		xhci_hub_report_usb2_link_state(&status, raw_port_status);
 	}
 	if (bus_state->port_c_suspend & (1 << wIndex))
-		status |= 1 << USB_PORT_FEAT_C_SUSPEND;
+		status |= USB_PORT_STAT_C_SUSPEND << 16;
 
 	return status;
 }
@@ -1154,7 +1166,7 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				xhci_set_link_state(xhci, port_array, wIndex,
 							XDEV_RESUME);
 				spin_unlock_irqrestore(&xhci->lock, flags);
-				msleep(20);
+				msleep(USB_RESUME_TIMEOUT);
 				spin_lock_irqsave(&xhci->lock, flags);
 				xhci_set_link_state(xhci, port_array, wIndex,
 							XDEV_U0);
@@ -1343,6 +1355,35 @@ int xhci_bus_suspend(struct usb_hcd *hcd)
 	return 0;
 }
 
+/*
+ * Workaround for missing Cold Attach Status (CAS) if device re-plugged in S3.
+ * warm reset a USB3 device stuck in polling or compliance mode after resume.
+ * See Intel 100/c230 series PCH specification update Doc #332692-006 Errata #8
+ */
+static bool xhci_port_missing_cas_quirk(int port_index,
+					     __le32 __iomem **port_array)
+{
+	u32 portsc;
+
+	portsc = readl(port_array[port_index]);
+
+	/* if any of these are set we are not stuck */
+	if (portsc & (PORT_CONNECT | PORT_CAS))
+		return false;
+
+	if (((portsc & PORT_PLS_MASK) != XDEV_POLLING) &&
+	    ((portsc & PORT_PLS_MASK) != XDEV_COMP_MODE))
+		return false;
+
+	/* clear wakeup/change bits, and do a warm port reset */
+	portsc &= ~(PORT_RWC_BITS | PORT_CEC | PORT_WAKE_BITS);
+	portsc |= PORT_WR;
+	writel(portsc, port_array[port_index]);
+	/* flush write */
+	readl(port_array[port_index]);
+	return true;
+}
+
 int xhci_bus_resume(struct usb_hcd *hcd)
 {
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
@@ -1380,6 +1421,14 @@ int xhci_bus_resume(struct usb_hcd *hcd)
 		u32 temp;
 
 		temp = readl(port_array[port_index]);
+
+		/* warm reset CAS limited ports stuck in polling/compliance */
+		if ((xhci->quirks & XHCI_MISSING_CAS) &&
+		    (hcd->speed >= HCD_USB3) &&
+		    xhci_port_missing_cas_quirk(port_index, port_array)) {
+			xhci_dbg(xhci, "reset stuck port %d\n", port_index);
+			continue;
+		}
 		if (DEV_SUPERSPEED_ANY(temp))
 			temp &= ~(PORT_RWC_BITS | PORT_CEC | PORT_WAKE_BITS);
 		else
@@ -1398,7 +1447,7 @@ int xhci_bus_resume(struct usb_hcd *hcd)
 
 	if (need_usb2_u3_exit) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
-		msleep(20);
+		msleep(USB_RESUME_TIMEOUT);
 		spin_lock_irqsave(&xhci->lock, flags);
 	}
 

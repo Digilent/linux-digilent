@@ -1,5 +1,5 @@
 #include "../util.h"
-#include "../cache.h"
+#include "../config.h"
 #include "../../perf.h"
 #include "libslang.h"
 #include "ui.h"
@@ -528,11 +528,11 @@ static struct ui_browser_colorset {
 		.colorset = HE_COLORSET_SELECTED,
 		.name	  = "selected",
 		.fg	  = "black",
-		.bg	  = "lightgray",
+		.bg	  = "yellow",
 	},
 	{
-		.colorset = HE_COLORSET_CODE,
-		.name	  = "code",
+		.colorset = HE_COLORSET_JUMP_ARROWS,
+		.name	  = "jump_arrows",
 		.fg	  = "blue",
 		.bg	  = "default",
 	},

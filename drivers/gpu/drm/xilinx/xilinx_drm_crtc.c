@@ -42,6 +42,7 @@ struct xilinx_drm_crtc {
 	struct xilinx_cresample *cresample;
 	struct xilinx_rgb2yuv *rgb2yuv;
 	struct clk *pixel_clock;
+	bool pixel_clock_enabled;
 	struct xilinx_vtc *vtc;
 	struct xilinx_drm_plane_manager *plane_manager;
 	int dpms;
@@ -56,6 +57,7 @@ struct xilinx_drm_crtc {
 static void xilinx_drm_crtc_dpms(struct drm_crtc *base_crtc, int dpms)
 {
 	struct xilinx_drm_crtc *crtc = to_xilinx_crtc(base_crtc);
+	int ret;
 
 	DRM_DEBUG_KMS("dpms: %d -> %d\n", crtc->dpms, dpms);
 
@@ -66,6 +68,15 @@ static void xilinx_drm_crtc_dpms(struct drm_crtc *base_crtc, int dpms)
 
 	switch (dpms) {
 	case DRM_MODE_DPMS_ON:
+		if (!crtc->pixel_clock_enabled) {
+			ret = clk_prepare_enable(crtc->pixel_clock);
+			if (ret) {
+				DRM_ERROR("failed to enable a pixel clock\n");
+				crtc->pixel_clock_enabled = false;
+			}
+		}
+		crtc->pixel_clock_enabled = true;
+
 		xilinx_drm_plane_manager_dpms(crtc->plane_manager, dpms);
 		xilinx_drm_plane_dpms(base_crtc->primary, dpms);
 		if (crtc->rgb2yuv)
@@ -90,6 +101,10 @@ static void xilinx_drm_crtc_dpms(struct drm_crtc *base_crtc, int dpms)
 		}
 		xilinx_drm_plane_dpms(base_crtc->primary, dpms);
 		xilinx_drm_plane_manager_dpms(crtc->plane_manager, dpms);
+		if (crtc->pixel_clock_enabled) {
+			clk_disable_unprepare(crtc->pixel_clock);
+			crtc->pixel_clock_enabled = false;
+		}
 		break;
 	}
 }
@@ -128,6 +143,11 @@ static int xilinx_drm_crtc_mode_set(struct drm_crtc *base_crtc,
 	long diff;
 	int ret;
 
+	if (crtc->pixel_clock_enabled) {
+		clk_disable_unprepare(crtc->pixel_clock);
+		crtc->pixel_clock_enabled = false;
+	}
+
 	/* set pixel clock */
 	ret = clk_set_rate(crtc->pixel_clock, adjusted_mode->clock * 1000);
 	if (ret) {
@@ -137,7 +157,7 @@ static int xilinx_drm_crtc_mode_set(struct drm_crtc *base_crtc,
 
 	diff = clk_get_rate(crtc->pixel_clock) - adjusted_mode->clock * 1000;
 	if (abs(diff) > (adjusted_mode->clock * 1000) / 20)
-		DRM_INFO("actual pixel clock rate(%d) is off by %ld\n",
+		DRM_DEBUG_KMS("actual pixel clock rate(%d) is off by %ld\n",
 				adjusted_mode->clock, diff);
 
 	if (crtc->vtc) {
@@ -258,7 +278,10 @@ void xilinx_drm_crtc_destroy(struct drm_crtc *base_crtc)
 	if (crtc->dp_sub)
 		xilinx_drm_dp_sub_put(crtc->dp_sub);
 
-	clk_disable_unprepare(crtc->pixel_clock);
+	if (crtc->pixel_clock_enabled) {
+		clk_disable_unprepare(crtc->pixel_clock);
+		crtc->pixel_clock_enabled = false;
+	}
 
 	xilinx_drm_plane_remove_manager(crtc->plane_manager);
 }
@@ -286,8 +309,8 @@ void xilinx_drm_crtc_cancel_page_flip(struct drm_crtc *base_crtc,
 	event = crtc->event;
 	if (event && (event->base.file_priv == file)) {
 		crtc->event = NULL;
-		event->base.destroy(&event->base);
-		drm_vblank_put(drm, 0);
+		kfree(&event->base);
+		drm_crtc_vblank_put(base_crtc);
 	}
 	spin_unlock_irqrestore(&drm->event_lock, flags);
 }
@@ -304,8 +327,8 @@ static void xilinx_drm_crtc_finish_page_flip(struct drm_crtc *base_crtc)
 	event = crtc->event;
 	crtc->event = NULL;
 	if (event) {
-		drm_send_vblank_event(drm, 0, event);
-		drm_vblank_put(drm, 0);
+		drm_crtc_send_vblank_event(base_crtc, event);
+		drm_crtc_vblank_put(base_crtc);
 	}
 	spin_unlock_irqrestore(&drm->event_lock, flags);
 }
@@ -340,7 +363,7 @@ static int xilinx_drm_crtc_page_flip(struct drm_crtc *base_crtc,
 
 	if (event) {
 		event->pipe = 0;
-		drm_vblank_get(drm, 0);
+		drm_crtc_vblank_get(base_crtc);
 		spin_lock_irqsave(&drm->event_lock, flags);
 		crtc->event = event;
 		spin_unlock_irqrestore(&drm->event_lock, flags);
@@ -481,7 +504,7 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 	/* probe a plane manager */
 	crtc->plane_manager = xilinx_drm_plane_probe_manager(drm);
 	if (IS_ERR(crtc->plane_manager)) {
-		if ((int)crtc->plane_manager != -EPROBE_DEFER)
+		if (PTR_ERR(crtc->plane_manager) != -EPROBE_DEFER)
 			DRM_ERROR("failed to probe a plane manager\n");
 		return ERR_CAST(crtc->plane_manager);
 	}
@@ -500,16 +523,23 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 
 	crtc->pixel_clock = devm_clk_get(drm->dev, NULL);
 	if (IS_ERR(crtc->pixel_clock)) {
-		DRM_DEBUG_KMS("failed to get pixel clock\n");
-		ret = -EPROBE_DEFER;
-		goto err_plane;
+		if (PTR_ERR(crtc->pixel_clock) == -EPROBE_DEFER) {
+			ret = PTR_ERR(crtc->pixel_clock);
+			goto err_plane;
+		} else {
+			DRM_DEBUG_KMS("failed to get pixel clock\n");
+			crtc->pixel_clock = NULL;
+		}
+
 	}
 
 	ret = clk_prepare_enable(crtc->pixel_clock);
 	if (ret) {
-		DRM_DEBUG_KMS("failed to prepare/enable clock\n");
+		DRM_ERROR("failed to enable a pixel clock\n");
+		crtc->pixel_clock_enabled = false;
 		goto err_plane;
 	}
+	crtc->pixel_clock_enabled = true;
 
 	sub_node = of_parse_phandle(drm->dev->of_node, "xlnx,vtc", 0);
 	if (sub_node) {
@@ -518,7 +548,7 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 		if (IS_ERR(crtc->vtc)) {
 			DRM_ERROR("failed to probe video timing controller\n");
 			ret = PTR_ERR(crtc->vtc);
-			goto err_plane;
+			goto err_pixel_clk;
 		}
 	}
 
@@ -527,22 +557,27 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 		ret = PTR_ERR(crtc->dp_sub);
 		if (ret != -EPROBE_DEFER)
 			DRM_ERROR("failed to get a dp_sub\n");
-		goto err_plane;
+		goto err_pixel_clk;
 	}
 
 	crtc->dpms = DRM_MODE_DPMS_OFF;
 
 	/* initialize drm crtc */
 	ret = drm_crtc_init_with_planes(drm, &crtc->base, primary_plane,
-					NULL, &xilinx_drm_crtc_funcs);
+					NULL, &xilinx_drm_crtc_funcs, NULL);
 	if (ret) {
 		DRM_ERROR("failed to initialize crtc\n");
-		goto err_plane;
+		goto err_pixel_clk;
 	}
 	drm_crtc_helper_add(&crtc->base, &xilinx_drm_crtc_helper_funcs);
 
 	return &crtc->base;
 
+err_pixel_clk:
+	if (crtc->pixel_clock_enabled) {
+		clk_disable_unprepare(crtc->pixel_clock);
+		crtc->pixel_clock_enabled = false;
+	}
 err_plane:
 	xilinx_drm_plane_remove_manager(crtc->plane_manager);
 	return ERR_PTR(ret);

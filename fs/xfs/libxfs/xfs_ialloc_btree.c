@@ -32,6 +32,7 @@
 #include "xfs_trace.h"
 #include "xfs_cksum.h"
 #include "xfs_trans.h"
+#include "xfs_rmap.h"
 
 
 STATIC int
@@ -96,6 +97,7 @@ xfs_inobt_alloc_block(
 	memset(&args, 0, sizeof(args));
 	args.tp = cur->bc_tp;
 	args.mp = cur->bc_mp;
+	xfs_rmap_ag_owner(&args.oinfo, XFS_RMAP_OWN_INOBT);
 	args.fsbno = XFS_AGB_TO_FSB(args.mp, cur->bc_private.a.agno, sbno);
 	args.minlen = 1;
 	args.maxlen = 1;
@@ -125,16 +127,12 @@ xfs_inobt_free_block(
 	struct xfs_btree_cur	*cur,
 	struct xfs_buf		*bp)
 {
-	xfs_fsblock_t		fsbno;
-	int			error;
+	struct xfs_owner_info	oinfo;
 
-	fsbno = XFS_DADDR_TO_FSB(cur->bc_mp, XFS_BUF_ADDR(bp));
-	error = xfs_free_extent(cur->bc_tp, fsbno, 1);
-	if (error)
-		return error;
-
-	xfs_trans_binval(cur->bc_tp, bp);
-	return error;
+	xfs_rmap_ag_owner(&oinfo, XFS_RMAP_OWN_INOBT);
+	return xfs_free_extent(cur->bc_tp,
+			XFS_DADDR_TO_FSB(cur->bc_mp, XFS_BUF_ADDR(bp)), 1,
+			&oinfo, XFS_AG_RESV_NONE);
 }
 
 STATIC int
@@ -151,14 +149,6 @@ xfs_inobt_init_key_from_rec(
 	union xfs_btree_rec	*rec)
 {
 	key->inobt.ir_startino = rec->inobt.ir_startino;
-}
-
-STATIC void
-xfs_inobt_init_rec_from_key(
-	union xfs_btree_key	*key,
-	union xfs_btree_rec	*rec)
-{
-	rec->inobt.ir_startino = key->inobt.ir_startino;
 }
 
 STATIC void
@@ -221,7 +211,6 @@ xfs_inobt_verify(
 {
 	struct xfs_mount	*mp = bp->b_target->bt_mount;
 	struct xfs_btree_block	*block = XFS_BUF_TO_BLOCK(bp);
-	struct xfs_perag	*pag = bp->b_pag;
 	unsigned int		level;
 
 	/*
@@ -237,14 +226,7 @@ xfs_inobt_verify(
 	switch (block->bb_magic) {
 	case cpu_to_be32(XFS_IBT_CRC_MAGIC):
 	case cpu_to_be32(XFS_FIBT_CRC_MAGIC):
-		if (!xfs_sb_version_hascrc(&mp->m_sb))
-			return false;
-		if (!uuid_equal(&block->bb_u.s.bb_uuid, &mp->m_sb.sb_meta_uuid))
-			return false;
-		if (block->bb_u.s.bb_blkno != cpu_to_be64(bp->b_bn))
-			return false;
-		if (pag &&
-		    be32_to_cpu(block->bb_u.s.bb_owner) != pag->pag_agno)
+		if (!xfs_btree_sblock_v5hdr_verify(bp))
 			return false;
 		/* fall through */
 	case cpu_to_be32(XFS_IBT_MAGIC):
@@ -254,24 +236,12 @@ xfs_inobt_verify(
 		return 0;
 	}
 
-	/* numrecs and level verification */
+	/* level verification */
 	level = be16_to_cpu(block->bb_level);
 	if (level >= mp->m_in_maxlevels)
 		return false;
-	if (be16_to_cpu(block->bb_numrecs) > mp->m_inobt_mxr[level != 0])
-		return false;
 
-	/* sibling pointer verification */
-	if (!block->bb_u.s.bb_leftsib ||
-	    (be32_to_cpu(block->bb_u.s.bb_leftsib) >= mp->m_sb.sb_agblocks &&
-	     block->bb_u.s.bb_leftsib != cpu_to_be32(NULLAGBLOCK)))
-		return false;
-	if (!block->bb_u.s.bb_rightsib ||
-	    (be32_to_cpu(block->bb_u.s.bb_rightsib) >= mp->m_sb.sb_agblocks &&
-	     block->bb_u.s.bb_rightsib != cpu_to_be32(NULLAGBLOCK)))
-		return false;
-
-	return true;
+	return xfs_btree_sblock_verify(bp, mp->m_inobt_mxr[level != 0]);
 }
 
 static void
@@ -304,6 +274,7 @@ xfs_inobt_write_verify(
 }
 
 const struct xfs_buf_ops xfs_inobt_buf_ops = {
+	.name = "xfs_inobt",
 	.verify_read = xfs_inobt_read_verify,
 	.verify_write = xfs_inobt_write_verify,
 };
@@ -341,7 +312,6 @@ static const struct xfs_btree_ops xfs_inobt_ops = {
 	.get_minrecs		= xfs_inobt_get_minrecs,
 	.get_maxrecs		= xfs_inobt_get_maxrecs,
 	.init_key_from_rec	= xfs_inobt_init_key_from_rec,
-	.init_rec_from_key	= xfs_inobt_init_rec_from_key,
 	.init_rec_from_cur	= xfs_inobt_init_rec_from_cur,
 	.init_ptr_from_cur	= xfs_inobt_init_ptr_from_cur,
 	.key_diff		= xfs_inobt_key_diff,
@@ -363,7 +333,6 @@ static const struct xfs_btree_ops xfs_finobt_ops = {
 	.get_minrecs		= xfs_inobt_get_minrecs,
 	.get_maxrecs		= xfs_inobt_get_maxrecs,
 	.init_key_from_rec	= xfs_inobt_init_key_from_rec,
-	.init_rec_from_key	= xfs_inobt_init_rec_from_key,
 	.init_rec_from_cur	= xfs_inobt_init_rec_from_cur,
 	.init_ptr_from_cur	= xfs_finobt_init_ptr_from_cur,
 	.key_diff		= xfs_inobt_key_diff,

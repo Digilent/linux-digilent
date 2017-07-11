@@ -58,7 +58,7 @@ static struct kobj_type ktype_veth_pool;
 
 static const char ibmveth_driver_name[] = "ibmveth";
 static const char ibmveth_driver_string[] = "IBM Power Virtual Ethernet Driver";
-#define ibmveth_driver_version "1.05"
+#define ibmveth_driver_version "1.06"
 
 MODULE_AUTHOR("Santiago Leon <santil@linux.vnet.ibm.com>");
 MODULE_DESCRIPTION("IBM Power Virtual Ethernet Driver");
@@ -137,6 +137,11 @@ static inline int ibmveth_rxq_frame_offset(struct ibmveth_adapter *adapter)
 	return ibmveth_rxq_flags(adapter) & IBMVETH_RXQ_OFF_MASK;
 }
 
+static inline int ibmveth_rxq_large_packet(struct ibmveth_adapter *adapter)
+{
+	return ibmveth_rxq_flags(adapter) & IBMVETH_RXQ_LRG_PKT;
+}
+
 static inline int ibmveth_rxq_frame_length(struct ibmveth_adapter *adapter)
 {
 	return be32_to_cpu(adapter->rx_queue.queue_addr[adapter->rx_queue.index].length);
@@ -169,7 +174,7 @@ static int ibmveth_alloc_buffer_pool(struct ibmveth_buff_pool *pool)
 	if (!pool->free_map)
 		return -1;
 
-	pool->dma_addr = kmalloc(sizeof(dma_addr_t) * pool->size, GFP_KERNEL);
+	pool->dma_addr = kcalloc(pool->size, sizeof(dma_addr_t), GFP_KERNEL);
 	if (!pool->dma_addr) {
 		kfree(pool->free_map);
 		pool->free_map = NULL;
@@ -186,8 +191,6 @@ static int ibmveth_alloc_buffer_pool(struct ibmveth_buff_pool *pool)
 		pool->free_map = NULL;
 		return -1;
 	}
-
-	memset(pool->dma_addr, 0, sizeof(dma_addr_t) * pool->size);
 
 	for (i = 0; i < pool->size; ++i)
 		pool->free_map[i] = i;
@@ -763,7 +766,7 @@ static netdev_features_t ibmveth_fix_features(struct net_device *dev,
 	 */
 
 	if (!(features & NETIF_F_RXCSUM))
-		features &= ~NETIF_F_ALL_CSUM;
+		features &= ~NETIF_F_CSUM_MASK;
 
 	return features;
 }
@@ -928,7 +931,8 @@ static int ibmveth_set_features(struct net_device *dev,
 		rc1 = ibmveth_set_csum_offload(dev, rx_csum);
 		if (rc1 && !adapter->rx_csum)
 			dev->features =
-				features & ~(NETIF_F_ALL_CSUM | NETIF_F_RXCSUM);
+				features & ~(NETIF_F_CSUM_MASK |
+					     NETIF_F_RXCSUM);
 	}
 
 	if (large_send != adapter->large_send) {
@@ -1167,9 +1171,51 @@ map_failed:
 	if (!firmware_has_feature(FW_FEATURE_CMO))
 		netdev_err(netdev, "tx: unable to map xmit buffer\n");
 	adapter->tx_map_failed++;
-	skb_linearize(skb);
+	if (skb_linearize(skb)) {
+		netdev->stats.tx_dropped++;
+		goto out;
+	}
 	force_bounce = 1;
 	goto retry_bounce;
+}
+
+static void ibmveth_rx_mss_helper(struct sk_buff *skb, u16 mss, int lrg_pkt)
+{
+	int offset = 0;
+
+	/* only TCP packets will be aggregated */
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr *iph = (struct iphdr *)skb->data;
+
+		if (iph->protocol == IPPROTO_TCP) {
+			offset = iph->ihl * 4;
+			skb_shinfo(skb)->gso_type = SKB_GSO_TCPV4;
+		} else {
+			return;
+		}
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		struct ipv6hdr *iph6 = (struct ipv6hdr *)skb->data;
+
+		if (iph6->nexthdr == IPPROTO_TCP) {
+			offset = sizeof(struct ipv6hdr);
+			skb_shinfo(skb)->gso_type = SKB_GSO_TCPV6;
+		} else {
+			return;
+		}
+	} else {
+		return;
+	}
+	/* if mss is not set through Large Packet bit/mss in rx buffer,
+	 * expect that the mss will be written to the tcp header checksum.
+	 */
+	if (lrg_pkt) {
+		skb_shinfo(skb)->gso_size = mss;
+	} else if (offset) {
+		struct tcphdr *tcph = (struct tcphdr *)(skb->data + offset);
+
+		skb_shinfo(skb)->gso_size = ntohs(tcph->check);
+		tcph->check = 0;
+	}
 }
 
 static int ibmveth_poll(struct napi_struct *napi, int budget)
@@ -1180,6 +1226,7 @@ static int ibmveth_poll(struct napi_struct *napi, int budget)
 	int frames_processed = 0;
 	unsigned long lpar_rc;
 	struct iphdr *iph;
+	u16 mss = 0;
 
 restart_poll:
 	while (frames_processed < budget) {
@@ -1197,8 +1244,20 @@ restart_poll:
 			int length = ibmveth_rxq_frame_length(adapter);
 			int offset = ibmveth_rxq_frame_offset(adapter);
 			int csum_good = ibmveth_rxq_csum_good(adapter);
+			int lrg_pkt = ibmveth_rxq_large_packet(adapter);
 
 			skb = ibmveth_rxq_get_buffer(adapter);
+
+			/* if the large packet bit is set in the rx queue
+			 * descriptor, the mss will be written by PHYP eight
+			 * bytes from the start of the rx buffer, which is
+			 * skb->data at this stage
+			 */
+			if (lrg_pkt) {
+				__be64 *rxmss = (__be64 *)(skb->data + 8);
+
+				mss = (u16)be64_to_cpu(*rxmss);
+			}
 
 			new_skb = NULL;
 			if (length < rx_copybreak)
@@ -1233,9 +1292,13 @@ restart_poll:
 					if (iph->check == 0xffff) {
 						iph->check = 0;
 						iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
-						adapter->rx_large_packets++;
 					}
 				}
+			}
+
+			if (length > netdev->mtu + ETH_HLEN) {
+				ibmveth_rx_mss_helper(skb, mss, lrg_pkt);
+				adapter->rx_large_packets++;
 			}
 
 			napi_gro_receive(napi, skb);	/* send it up */

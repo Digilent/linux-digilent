@@ -45,6 +45,12 @@ static inline void ipu_cm_write(struct ipu_soc *ipu, u32 value, unsigned offset)
 	writel(value, ipu->cm_reg + offset);
 }
 
+int ipu_get_num(struct ipu_soc *ipu)
+{
+	return ipu->id;
+}
+EXPORT_SYMBOL_GPL(ipu_get_num);
+
 void ipu_srm_dp_sync_update(struct ipu_soc *ipu)
 {
 	u32 val;
@@ -724,6 +730,137 @@ void ipu_set_ic_src_mux(struct ipu_soc *ipu, int csi_id, bool vdi)
 }
 EXPORT_SYMBOL_GPL(ipu_set_ic_src_mux);
 
+
+/* Frame Synchronization Unit Channel Linking */
+
+struct fsu_link_reg_info {
+	int chno;
+	u32 reg;
+	u32 mask;
+	u32 val;
+};
+
+struct fsu_link_info {
+	struct fsu_link_reg_info src;
+	struct fsu_link_reg_info sink;
+};
+
+static const struct fsu_link_info fsu_link_info[] = {
+	{
+		.src  = { IPUV3_CHANNEL_IC_PRP_ENC_MEM, IPU_FS_PROC_FLOW2,
+			  FS_PRP_ENC_DEST_SEL_MASK, FS_PRP_ENC_DEST_SEL_IRT_ENC },
+		.sink = { IPUV3_CHANNEL_MEM_ROT_ENC, IPU_FS_PROC_FLOW1,
+			  FS_PRPENC_ROT_SRC_SEL_MASK, FS_PRPENC_ROT_SRC_SEL_ENC },
+	}, {
+		.src =  { IPUV3_CHANNEL_IC_PRP_VF_MEM, IPU_FS_PROC_FLOW2,
+			  FS_PRPVF_DEST_SEL_MASK, FS_PRPVF_DEST_SEL_IRT_VF },
+		.sink = { IPUV3_CHANNEL_MEM_ROT_VF, IPU_FS_PROC_FLOW1,
+			  FS_PRPVF_ROT_SRC_SEL_MASK, FS_PRPVF_ROT_SRC_SEL_VF },
+	}, {
+		.src =  { IPUV3_CHANNEL_IC_PP_MEM, IPU_FS_PROC_FLOW2,
+			  FS_PP_DEST_SEL_MASK, FS_PP_DEST_SEL_IRT_PP },
+		.sink = { IPUV3_CHANNEL_MEM_ROT_PP, IPU_FS_PROC_FLOW1,
+			  FS_PP_ROT_SRC_SEL_MASK, FS_PP_ROT_SRC_SEL_PP },
+	}, {
+		.src =  { IPUV3_CHANNEL_CSI_DIRECT, 0 },
+		.sink = { IPUV3_CHANNEL_CSI_VDI_PREV, IPU_FS_PROC_FLOW1,
+			  FS_VDI_SRC_SEL_MASK, FS_VDI_SRC_SEL_CSI_DIRECT },
+	},
+};
+
+static const struct fsu_link_info *find_fsu_link_info(int src, int sink)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(fsu_link_info); i++) {
+		if (src == fsu_link_info[i].src.chno &&
+		    sink == fsu_link_info[i].sink.chno)
+			return &fsu_link_info[i];
+	}
+
+	return NULL;
+}
+
+/*
+ * Links a source channel to a sink channel in the FSU.
+ */
+int ipu_fsu_link(struct ipu_soc *ipu, int src_ch, int sink_ch)
+{
+	const struct fsu_link_info *link;
+	u32 src_reg, sink_reg;
+	unsigned long flags;
+
+	link = find_fsu_link_info(src_ch, sink_ch);
+	if (!link)
+		return -EINVAL;
+
+	spin_lock_irqsave(&ipu->lock, flags);
+
+	if (link->src.mask) {
+		src_reg = ipu_cm_read(ipu, link->src.reg);
+		src_reg &= ~link->src.mask;
+		src_reg |= link->src.val;
+		ipu_cm_write(ipu, src_reg, link->src.reg);
+	}
+
+	if (link->sink.mask) {
+		sink_reg = ipu_cm_read(ipu, link->sink.reg);
+		sink_reg &= ~link->sink.mask;
+		sink_reg |= link->sink.val;
+		ipu_cm_write(ipu, sink_reg, link->sink.reg);
+	}
+
+	spin_unlock_irqrestore(&ipu->lock, flags);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ipu_fsu_link);
+
+/*
+ * Unlinks source and sink channels in the FSU.
+ */
+int ipu_fsu_unlink(struct ipu_soc *ipu, int src_ch, int sink_ch)
+{
+	const struct fsu_link_info *link;
+	u32 src_reg, sink_reg;
+	unsigned long flags;
+
+	link = find_fsu_link_info(src_ch, sink_ch);
+	if (!link)
+		return -EINVAL;
+
+	spin_lock_irqsave(&ipu->lock, flags);
+
+	if (link->src.mask) {
+		src_reg = ipu_cm_read(ipu, link->src.reg);
+		src_reg &= ~link->src.mask;
+		ipu_cm_write(ipu, src_reg, link->src.reg);
+	}
+
+	if (link->sink.mask) {
+		sink_reg = ipu_cm_read(ipu, link->sink.reg);
+		sink_reg &= ~link->sink.mask;
+		ipu_cm_write(ipu, sink_reg, link->sink.reg);
+	}
+
+	spin_unlock_irqrestore(&ipu->lock, flags);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ipu_fsu_unlink);
+
+/* Link IDMAC channels in the FSU */
+int ipu_idmac_link(struct ipuv3_channel *src, struct ipuv3_channel *sink)
+{
+	return ipu_fsu_link(src->ipu, src->num, sink->num);
+}
+EXPORT_SYMBOL_GPL(ipu_idmac_link);
+
+/* Unlink IDMAC channels in the FSU */
+int ipu_idmac_unlink(struct ipuv3_channel *src, struct ipuv3_channel *sink)
+{
+	return ipu_fsu_unlink(src->ipu, src->num, sink->num);
+}
+EXPORT_SYMBOL_GPL(ipu_idmac_unlink);
+
 struct ipu_devtype {
 	const char *name;
 	unsigned long cm_ofs;
@@ -833,6 +970,20 @@ static int ipu_submodules_init(struct ipu_soc *ipu,
 		goto err_ic;
 	}
 
+	ret = ipu_vdi_init(ipu, dev, ipu_base + devtype->vdi_ofs,
+			   IPU_CONF_VDI_EN | IPU_CONF_ISP_EN |
+			   IPU_CONF_IC_INPUT);
+	if (ret) {
+		unit = "vdi";
+		goto err_vdi;
+	}
+
+	ret = ipu_image_convert_init(ipu, dev);
+	if (ret) {
+		unit = "image_convert";
+		goto err_image_convert;
+	}
+
 	ret = ipu_di_init(ipu, dev, 0, ipu_base + devtype->disp0_ofs,
 			  IPU_CONF_DI0_EN, ipu_clk);
 	if (ret) {
@@ -887,6 +1038,10 @@ err_dc:
 err_di_1:
 	ipu_di_exit(ipu, 0);
 err_di_0:
+	ipu_image_convert_exit(ipu);
+err_image_convert:
+	ipu_vdi_exit(ipu);
+err_vdi:
 	ipu_ic_exit(ipu);
 err_ic:
 	ipu_csi_exit(ipu, 1);
@@ -971,6 +1126,8 @@ static void ipu_submodules_exit(struct ipu_soc *ipu)
 	ipu_dc_exit(ipu);
 	ipu_di_exit(ipu, 1);
 	ipu_di_exit(ipu, 0);
+	ipu_image_convert_exit(ipu);
+	ipu_vdi_exit(ipu);
 	ipu_ic_exit(ipu);
 	ipu_csi_exit(ipu, 1);
 	ipu_csi_exit(ipu, 0);
@@ -997,21 +1154,21 @@ struct ipu_platform_reg {
 };
 
 /* These must be in the order of the corresponding device tree port nodes */
-static const struct ipu_platform_reg client_reg[] = {
+static struct ipu_platform_reg client_reg[] = {
 	{
 		.pdata = {
 			.csi = 0,
 			.dma[0] = IPUV3_CHANNEL_CSI0,
 			.dma[1] = -EINVAL,
 		},
-		.name = "imx-ipuv3-camera",
+		.name = "imx-ipuv3-csi",
 	}, {
 		.pdata = {
 			.csi = 1,
 			.dma[0] = IPUV3_CHANNEL_CSI1,
 			.dma[1] = -EINVAL,
 		},
-		.name = "imx-ipuv3-camera",
+		.name = "imx-ipuv3-csi",
 	}, {
 		.pdata = {
 			.di = 0,
@@ -1048,8 +1205,19 @@ static int ipu_add_client_devices(struct ipu_soc *ipu, unsigned long ipu_base)
 	mutex_unlock(&ipu_client_id_mutex);
 
 	for (i = 0; i < ARRAY_SIZE(client_reg); i++) {
-		const struct ipu_platform_reg *reg = &client_reg[i];
+		struct ipu_platform_reg *reg = &client_reg[i];
 		struct platform_device *pdev;
+		struct device_node *of_node;
+
+		/* Associate subdevice with the corresponding port node */
+		of_node = of_graph_get_port_by_id(dev->of_node, i);
+		if (!of_node) {
+			dev_info(dev,
+				 "no port@%d node in %s, not using %s%d\n",
+				 i, dev->of_node->full_name,
+				 (i / 2) ? "DI" : "CSI", i % 2);
+			continue;
+		}
 
 		pdev = platform_device_alloc(reg->name, id++);
 		if (!pdev) {
@@ -1059,15 +1227,7 @@ static int ipu_add_client_devices(struct ipu_soc *ipu, unsigned long ipu_base)
 
 		pdev->dev.parent = dev;
 
-		/* Associate subdevice with the corresponding port node */
-		pdev->dev.of_node = of_graph_get_port_by_id(dev->of_node, i);
-		if (!pdev->dev.of_node) {
-			dev_err(dev, "missing port@%d node in %s\n", i,
-				dev->of_node->full_name);
-			ret = -ENODEV;
-			goto err_register;
-		}
-
+		reg->pdata.of_node = of_node;
 		ret = platform_device_add_data(pdev, &reg->pdata,
 					       sizeof(reg->pdata));
 		if (!ret)
@@ -1076,6 +1236,12 @@ static int ipu_add_client_devices(struct ipu_soc *ipu, unsigned long ipu_base)
 			platform_device_put(pdev);
 			goto err_register;
 		}
+
+		/*
+		 * Set of_node only after calling platform_device_add. Otherwise
+		 * the platform:imx-ipuv3-crtc modalias won't be used.
+		 */
+		pdev->dev.of_node = of_node;
 	}
 
 	return 0;
@@ -1198,15 +1364,16 @@ EXPORT_SYMBOL_GPL(ipu_dump);
 
 static int ipu_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *of_id =
-			of_match_device(imx_ipu_dt_ids, &pdev->dev);
+	struct device_node *np = pdev->dev.of_node;
 	struct ipu_soc *ipu;
 	struct resource *res;
 	unsigned long ipu_base;
 	int i, ret, irq_sync, irq_err;
 	const struct ipu_devtype *devtype;
 
-	devtype = of_id->data;
+	devtype = of_device_get_match_data(&pdev->dev);
+	if (!devtype)
+		return -EINVAL;
 
 	irq_sync = platform_get_irq(pdev, 0);
 	irq_err = platform_get_irq(pdev, 1);
@@ -1228,6 +1395,7 @@ static int ipu_probe(struct platform_device *pdev)
 		ipu->channel[i].ipu = ipu;
 	ipu->devtype = devtype;
 	ipu->ipu_type = devtype->type;
+	ipu->id = of_alias_get_id(np, "ipu");
 
 	spin_lock_init(&ipu->lock);
 	mutex_init(&ipu->channel_lock);
@@ -1289,10 +1457,6 @@ static int ipu_probe(struct platform_device *pdev)
 	ipu->irq_sync = irq_sync;
 	ipu->irq_err = irq_err;
 
-	ret = ipu_irq_init(ipu);
-	if (ret)
-		goto out_failed_irq;
-
 	ret = device_reset(&pdev->dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to reset: %d\n", ret);
@@ -1301,6 +1465,10 @@ static int ipu_probe(struct platform_device *pdev)
 	ret = ipu_memory_reset(ipu);
 	if (ret)
 		goto out_failed_reset;
+
+	ret = ipu_irq_init(ipu);
+	if (ret)
+		goto out_failed_irq;
 
 	/* Set MCU_T to divide MCU access window into 2 */
 	ipu_cm_write(ipu, 0x00400000L | (IPU_MCU_T_DEFAULT << 18),
@@ -1324,9 +1492,9 @@ static int ipu_probe(struct platform_device *pdev)
 failed_add_clients:
 	ipu_submodules_exit(ipu);
 failed_submodules_init:
-out_failed_reset:
 	ipu_irq_exit(ipu);
 out_failed_irq:
+out_failed_reset:
 	clk_disable_unprepare(ipu->clk);
 	return ret;
 }

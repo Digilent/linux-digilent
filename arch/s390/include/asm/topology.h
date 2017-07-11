@@ -7,17 +7,19 @@
 struct sysinfo_15_1_x;
 struct cpu;
 
-#ifdef CONFIG_SCHED_BOOK
+#ifdef CONFIG_SCHED_TOPOLOGY
 
 struct cpu_topology_s390 {
 	unsigned short thread_id;
 	unsigned short core_id;
 	unsigned short socket_id;
 	unsigned short book_id;
+	unsigned short drawer_id;
 	unsigned short node_id;
 	cpumask_t thread_mask;
 	cpumask_t core_mask;
 	cpumask_t book_mask;
+	cpumask_t drawer_mask;
 };
 
 DECLARE_PER_CPU(struct cpu_topology_s390, cpu_topology);
@@ -30,6 +32,8 @@ DECLARE_PER_CPU(struct cpu_topology_s390, cpu_topology);
 #define topology_core_cpumask(cpu)	  (&per_cpu(cpu_topology, cpu).core_mask)
 #define topology_book_id(cpu)		  (per_cpu(cpu_topology, cpu).book_id)
 #define topology_book_cpumask(cpu)	  (&per_cpu(cpu_topology, cpu).book_mask)
+#define topology_drawer_id(cpu)		  (per_cpu(cpu_topology, cpu).drawer_id)
+#define topology_drawer_cpumask(cpu)	  (&per_cpu(cpu_topology, cpu).drawer_mask)
 
 #define mc_capable() 1
 
@@ -40,13 +44,13 @@ void store_topology(struct sysinfo_15_1_x *info);
 void topology_expect_change(void);
 const struct cpumask *cpu_coregroup_mask(int cpu);
 
-#else /* CONFIG_SCHED_BOOK */
+#else /* CONFIG_SCHED_TOPOLOGY */
 
 static inline void topology_schedule_update(void) { }
 static inline int topology_cpu_init(struct cpu *cpu) { return 0; }
 static inline void topology_expect_change(void) { }
 
-#endif /* CONFIG_SCHED_BOOK */
+#endif /* CONFIG_SCHED_TOPOLOGY */
 
 #define POLARIZATION_UNKNOWN	(-1)
 #define POLARIZATION_HRZ	(0)

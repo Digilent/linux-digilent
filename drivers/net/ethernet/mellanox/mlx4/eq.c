@@ -151,6 +151,17 @@ void mlx4_gen_slave_eqe(struct work_struct *work)
 	      eqe = next_slave_event_eqe(slave_eq)) {
 		slave = eqe->slave_id;
 
+		if (eqe->type == MLX4_EVENT_TYPE_PORT_CHANGE &&
+		    eqe->subtype == MLX4_PORT_CHANGE_SUBTYPE_DOWN &&
+		    mlx4_is_bonded(dev)) {
+			struct mlx4_port_cap port_cap;
+
+			if (!mlx4_QUERY_PORT(dev, 1, &port_cap) && port_cap.link_state)
+				goto consume;
+
+			if (!mlx4_QUERY_PORT(dev, 2, &port_cap) && port_cap.link_state)
+				goto consume;
+		}
 		/* All active slaves need to receive the event */
 		if (slave == ALL_SLAVES) {
 			for (i = 0; i <= dev->persist->num_vfs; i++) {
@@ -174,6 +185,7 @@ void mlx4_gen_slave_eqe(struct work_struct *work)
 				mlx4_warn(dev, "Failed to generate event for slave %d\n",
 					  slave);
 		}
+consume:
 		++slave_eq->cons;
 	}
 }
@@ -594,7 +606,9 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 					break;
 				for (i = 0; i < dev->persist->num_vfs + 1;
 				     i++) {
-					if (!test_bit(i, slaves_port.slaves))
+					int reported_port = mlx4_is_bonded(dev) ? 1 : mlx4_phys_to_slave_port(dev, i, port);
+
+					if (!test_bit(i, slaves_port.slaves) && !mlx4_is_bonded(dev))
 						continue;
 					if (dev->caps.port_type[port] == MLX4_PORT_TYPE_ETH) {
 						if (i == mlx4_master_func_num(dev))
@@ -606,7 +620,7 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 							eqe->event.port_change.port =
 								cpu_to_be32(
 								(be32_to_cpu(eqe->event.port_change.port) & 0xFFFFFFF)
-								| (mlx4_phys_to_slave_port(dev, i, port) << 28));
+								| (reported_port << 28));
 							mlx4_slave_event(dev, i, eqe);
 						}
 					} else {  /* IB port */
@@ -636,7 +650,9 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 					for (i = 0;
 					     i < dev->persist->num_vfs + 1;
 					     i++) {
-						if (!test_bit(i, slaves_port.slaves))
+						int reported_port = mlx4_is_bonded(dev) ? 1 : mlx4_phys_to_slave_port(dev, i, port);
+
+						if (!test_bit(i, slaves_port.slaves) && !mlx4_is_bonded(dev))
 							continue;
 						if (i == mlx4_master_func_num(dev))
 							continue;
@@ -645,7 +661,7 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 							eqe->event.port_change.port =
 								cpu_to_be32(
 								(be32_to_cpu(eqe->event.port_change.port) & 0xFFFFFFF)
-								| (mlx4_phys_to_slave_port(dev, i, port) << 28));
+								| (reported_port << 28));
 							mlx4_slave_event(dev, i, eqe);
 						}
 					}
@@ -924,9 +940,10 @@ static void __iomem *mlx4_get_eq_uar(struct mlx4_dev *dev, struct mlx4_eq *eq)
 
 	if (!priv->eq_table.uar_map[index]) {
 		priv->eq_table.uar_map[index] =
-			ioremap(pci_resource_start(dev->persist->pdev, 2) +
-				((eq->eqn / 4) << PAGE_SHIFT),
-				PAGE_SIZE);
+			ioremap(
+				pci_resource_start(dev->persist->pdev, 2) +
+				((eq->eqn / 4) << (dev->uar_page_shift)),
+				(1 << (dev->uar_page_shift)));
 		if (!priv->eq_table.uar_map[index]) {
 			mlx4_err(dev, "Couldn't map EQ doorbell for EQN 0x%06x\n",
 				 eq->eqn);
@@ -1288,8 +1305,8 @@ int mlx4_init_eq_table(struct mlx4_dev *dev)
 	return 0;
 
 err_out_unmap:
-	while (i >= 0)
-		mlx4_free_eq(dev, &priv->eq_table.eq[i--]);
+	while (i > 0)
+		mlx4_free_eq(dev, &priv->eq_table.eq[--i]);
 #ifdef CONFIG_RFS_ACCEL
 	for (i = 1; i <= dev->caps.num_ports; i++) {
 		if (mlx4_priv(dev)->port[i].rmap) {
@@ -1344,53 +1361,49 @@ void mlx4_cleanup_eq_table(struct mlx4_dev *dev)
 	kfree(priv->eq_table.uar_map);
 }
 
-/* A test that verifies that we can accept interrupts on all
- * the irq vectors of the device.
+/* A test that verifies that we can accept interrupts
+ * on the vector allocated for asynchronous events
+ */
+int mlx4_test_async(struct mlx4_dev *dev)
+{
+	return mlx4_NOP(dev);
+}
+EXPORT_SYMBOL(mlx4_test_async);
+
+/* A test that verifies that we can accept interrupts
+ * on the given irq vector of the tested port.
  * Interrupts are checked using the NOP command.
  */
-int mlx4_test_interrupts(struct mlx4_dev *dev)
+int mlx4_test_interrupt(struct mlx4_dev *dev, int vector)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
-	int i;
 	int err;
 
-	err = mlx4_NOP(dev);
-	/* When not in MSI_X, there is only one irq to check */
-	if (!(dev->flags & MLX4_FLAG_MSI_X) || mlx4_is_slave(dev))
-		return err;
+	/* Temporary use polling for command completions */
+	mlx4_cmd_use_polling(dev);
 
-	/* A loop over all completion vectors, for each vector we will check
-	 * whether it works by mapping command completions to that vector
-	 * and performing a NOP command
-	 */
-	for(i = 0; !err && (i < dev->caps.num_comp_vectors); ++i) {
-		/* Make sure request_irq was called */
-		if (!priv->eq_table.eq[i].have_irq)
-			continue;
-
-		/* Temporary use polling for command completions */
-		mlx4_cmd_use_polling(dev);
-
-		/* Map the new eq to handle all asynchronous events */
-		err = mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
-				  priv->eq_table.eq[i].eqn);
-		if (err) {
-			mlx4_warn(dev, "Failed mapping eq for interrupt test\n");
-			mlx4_cmd_use_events(dev);
-			break;
-		}
-
-		/* Go back to using events */
-		mlx4_cmd_use_events(dev);
-		err = mlx4_NOP(dev);
+	/* Map the new eq to handle all asynchronous events */
+	err = mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
+			  priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(vector)].eqn);
+	if (err) {
+		mlx4_warn(dev, "Failed mapping eq for interrupt test\n");
+		goto out;
 	}
 
+	/* Go back to using events */
+	mlx4_cmd_use_events(dev);
+	err = mlx4_NOP(dev);
+
 	/* Return to default */
+	mlx4_cmd_use_polling(dev);
+out:
 	mlx4_MAP_EQ(dev, get_async_ev_mask(dev), 0,
 		    priv->eq_table.eq[MLX4_EQ_ASYNC].eqn);
+	mlx4_cmd_use_events(dev);
+
 	return err;
 }
-EXPORT_SYMBOL(mlx4_test_interrupts);
+EXPORT_SYMBOL(mlx4_test_interrupt);
 
 bool mlx4_is_eq_vector_valid(struct mlx4_dev *dev, u8 port, int vector)
 {

@@ -133,6 +133,12 @@ static void sysrq_handle_crash(int key)
 {
 	char *killer = NULL;
 
+	/* we need to release the RCU read lock here,
+	 * otherwise we get an annoying
+	 * 'BUG: sleeping function called from invalid context'
+	 * complaint from the kernel before the panic.
+	 */
+	rcu_read_unlock();
 	panic_on_oops = 1;	/* force panic */
 	wmb();
 	*killer = 1;
@@ -357,6 +363,7 @@ static void moom_callback(struct work_struct *ignored)
 	struct oom_control oc = {
 		.zonelist = node_zonelist(first_memory_node, gfp_mask),
 		.nodemask = NULL,
+		.memcg = NULL,
 		.gfp_mask = gfp_mask,
 		.order = -1,
 	};

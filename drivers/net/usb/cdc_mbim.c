@@ -602,6 +602,21 @@ static const struct driver_info cdc_mbim_info_ndp_to_end = {
 	.data = CDC_NCM_FLAG_NDP_TO_END,
 };
 
+/* Some modems (e.g. Telit LE922A6) do not work properly with altsetting
+ * toggle done in cdc_ncm_bind_common. CDC_MBIM_FLAG_AVOID_ALTSETTING_TOGGLE
+ * flag is used to avoid this procedure.
+ */
+static const struct driver_info cdc_mbim_info_avoid_altsetting_toggle = {
+	.description = "CDC MBIM",
+	.flags = FLAG_NO_SETINT | FLAG_MULTI_PACKET | FLAG_WWAN,
+	.bind = cdc_mbim_bind,
+	.unbind = cdc_mbim_unbind,
+	.manage_power = cdc_mbim_manage_power,
+	.rx_fixup = cdc_mbim_rx_fixup,
+	.tx_fixup = cdc_mbim_tx_fixup,
+	.data = CDC_MBIM_FLAG_AVOID_ALTSETTING_TOGGLE,
+};
+
 static const struct usb_device_id mbim_devs[] = {
 	/* This duplicate NCM entry is intentional. MBIM devices can
 	 * be disguised as NCM by default, and this is necessary to
@@ -617,10 +632,21 @@ static const struct usb_device_id mbim_devs[] = {
 	{ USB_VENDOR_AND_INTERFACE_INFO(0x0bdb, USB_CLASS_COMM, USB_CDC_SUBCLASS_MBIM, USB_CDC_PROTO_NONE),
 	  .driver_info = (unsigned long)&cdc_mbim_info,
 	},
-	/* Huawei E3372 fails unless NDP comes after the IP packets */
-	{ USB_DEVICE_AND_INTERFACE_INFO(0x12d1, 0x157d, USB_CLASS_COMM, USB_CDC_SUBCLASS_MBIM, USB_CDC_PROTO_NONE),
+
+	/* Some Huawei devices, ME906s-158 (12d1:15c1) and E3372
+	 * (12d1:157d), are known to fail unless the NDP is placed
+	 * after the IP packets.  Applying the quirk to all Huawei
+	 * devices is broader than necessary, but harmless.
+	 */
+	{ USB_VENDOR_AND_INTERFACE_INFO(0x12d1, USB_CLASS_COMM, USB_CDC_SUBCLASS_MBIM, USB_CDC_PROTO_NONE),
 	  .driver_info = (unsigned long)&cdc_mbim_info_ndp_to_end,
 	},
+
+	/* Telit LE922A6 in MBIM composition */
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x1bc7, 0x1041, USB_CLASS_COMM, USB_CDC_SUBCLASS_MBIM, USB_CDC_PROTO_NONE),
+	  .driver_info = (unsigned long)&cdc_mbim_info_avoid_altsetting_toggle,
+	},
+
 	/* default entry */
 	{ USB_INTERFACE_INFO(USB_CLASS_COMM, USB_CDC_SUBCLASS_MBIM, USB_CDC_PROTO_NONE),
 	  .driver_info = (unsigned long)&cdc_mbim_info_zlp,

@@ -1008,6 +1008,8 @@ int cxlflash_disk_virtual_open(struct scsi_device *sdev, void *arg)
 	virt->last_lba = last_lba;
 	virt->rsrc_handle = rsrc_handle;
 
+	if (lli->port_sel == BOTH_PORTS)
+		virt->hdr.return_flags |= DK_CXLFLASH_ALL_PORTS_ACTIVE;
 out:
 	if (likely(ctxi))
 		put_context(ctxi);
@@ -1133,14 +1135,13 @@ int cxlflash_disk_clone(struct scsi_device *sdev,
 	    ctxid_dst = DECODE_CTXID(clone->context_id_dst),
 	    rctxid_src = clone->context_id_src,
 	    rctxid_dst = clone->context_id_dst;
-	int adap_fd_src = clone->adap_fd_src;
 	int i, j;
 	int rc = 0;
 	bool found;
 	LIST_HEAD(sidecar);
 
-	pr_debug("%s: ctxid_src=%llu ctxid_dst=%llu adap_fd_src=%d\n",
-		 __func__, ctxid_src, ctxid_dst, adap_fd_src);
+	pr_debug("%s: ctxid_src=%llu ctxid_dst=%llu\n",
+		 __func__, ctxid_src, ctxid_dst);
 
 	/* Do not clone yourself */
 	if (unlikely(rctxid_src == rctxid_dst)) {
@@ -1160,13 +1161,6 @@ int cxlflash_disk_clone(struct scsi_device *sdev,
 	if (unlikely(!ctxi_src || !ctxi_dst)) {
 		pr_debug("%s: Bad context! (%llu,%llu)\n", __func__,
 			 ctxid_src, ctxid_dst);
-		rc = -EINVAL;
-		goto out;
-	}
-
-	if (unlikely(adap_fd_src != ctxi_src->lfd)) {
-		pr_debug("%s: Invalid source adapter fd! (%d)\n",
-			 __func__, adap_fd_src);
 		rc = -EINVAL;
 		goto out;
 	}
@@ -1255,7 +1249,6 @@ int cxlflash_disk_clone(struct scsi_device *sdev,
 
 out_success:
 	list_splice(&sidecar, &ctxi_dst->luns);
-	sys_close(adap_fd_src);
 
 	/* fall through */
 out:

@@ -33,6 +33,7 @@
 #define DP83867_CTRL		0x1f
 
 /* Extended Registers */
+#define DP83867_CFG4		0x0031
 #define DP83867_RGMIICTL	0x0032
 #define DP83867_RGMIIDCTL	0x0086
 
@@ -59,6 +60,7 @@
 
 /* PHY CTRL bits */
 #define DP83867_PHYCR_FIFO_DEPTH_SHIFT		14
+#define DP83867_PHYCR_FIFO_DEPTH_MASK		(3 << 14)
 #define DP83867_MDI_CROSSOVER		5
 #define DP83867_MDI_CROSSOVER_AUTO	0b10
 #define DP83867_MDI_CROSSOVER_MDIX	0b01
@@ -77,10 +79,20 @@
 #define MII_DP83867_CFG2_SPEEDOPT_INTLOW	0x2000
 #define MII_DP83867_CFG2_MASK			0x003F
 
+/* CFG4 bits */
+#define DP83867_CFG4_SGMII_AUTONEG_TIMER_MASK	0x60
+#define DP83867_CFG4_SGMII_AUTONEG_TIMER_16MS	0x00
+#define DP83867_CFG4_SGMII_AUTONEG_TIMER_2US	0x20
+#define DP83867_CFG4_SGMII_AUTONEG_TIMER_800US	0x40
+#define DP83867_CFG4_SGMII_AUTONEG_TIMER_11MS	0x60
+#define DP83867_CFG4_RESVDBIT7	BIT(7)
+#define DP83867_CFG4_RESVDBIT8	BIT(8)
+
 struct dp83867_private {
 	int rx_id_delay;
 	int tx_id_delay;
 	int fifo_depth;
+	bool rxctrl_strap_worka;
 };
 
 static int dp83867_ack_interrupt(struct phy_device *phydev)
@@ -119,14 +131,11 @@ static int dp83867_config_intr(struct phy_device *phydev)
 static int dp83867_of_init(struct phy_device *phydev)
 {
 	struct dp83867_private *dp83867 = phydev->priv;
-	struct device *dev = &phydev->dev;
+	struct device *dev = &phydev->mdio.dev;
 	struct device_node *of_node = dev->of_node;
 	int ret;
 
-	if (!of_node && dev->parent->of_node)
-		of_node = dev->parent->of_node;
-
-	if (!phydev->dev.of_node)
+	if (!of_node)
 		return -ENODEV;
 
 	ret = of_property_read_u32(of_node, "ti,rx-internal-delay",
@@ -138,6 +147,10 @@ static int dp83867_of_init(struct phy_device *phydev)
 				   &dp83867->tx_id_delay);
 	if (ret)
 		return ret;
+
+	dp83867->rxctrl_strap_worka =
+				of_property_read_bool(of_node,
+						      "ti,rxctrl-strap-worka");
 
 	return of_property_read_u32(of_node, "ti,fifo-depth",
 				   &dp83867->fifo_depth);
@@ -156,7 +169,7 @@ static int dp83867_config_init(struct phy_device *phydev)
 	u16 val, delay, cfg2;
 
 	if (!phydev->priv) {
-		dp83867 = devm_kzalloc(&phydev->dev, sizeof(*dp83867),
+		dp83867 = devm_kzalloc(&phydev->mdio.dev, sizeof(*dp83867),
 				       GFP_KERNEL);
 		if (!dp83867)
 			return -ENOMEM;
@@ -175,6 +188,26 @@ static int dp83867_config_init(struct phy_device *phydev)
 			(dp83867->fifo_depth << DP83867_PHYCR_FIFO_DEPTH_SHIFT));
 		if (ret)
 			return ret;
+
+		val = phy_read(phydev, MII_DP83867_PHYCTRL);
+		if (val < 0)
+			return val;
+		val &= ~DP83867_PHYCR_FIFO_DEPTH_MASK;
+		val |= (dp83867->fifo_depth << DP83867_PHYCR_FIFO_DEPTH_SHIFT);
+		ret = phy_write(phydev, MII_DP83867_PHYCTRL, val);
+		if (ret)
+			return ret;
+
+		/* This is a SW workaround for link instability if
+		 * RX_CTRL is not strapped to mode 3 or 4 in HW.
+		 */
+		if (dp83867->rxctrl_strap_worka) {
+			val = phy_read_mmd_indirect(phydev, DP83867_CFG4,
+						    DP83867_DEVADDR);
+			val &= ~DP83867_CFG4_RESVDBIT7;
+			phy_write_mmd_indirect(phydev, DP83867_CFG4,
+					       DP83867_DEVADDR, val);
+		}
 	} else {
 		phy_write(phydev, MII_BMCR,
 			  (BMCR_ANENABLE | BMCR_FULLDPLX | BMCR_SPEED1000));
@@ -189,7 +222,7 @@ static int dp83867_config_init(struct phy_device *phydev)
 		phy_write(phydev, MII_DP83867_CFG2, cfg2);
 
 		phy_write_mmd_indirect(phydev, DP83867_RGMIICTL,
-				       DP83867_DEVADDR, phydev->addr, 0x0);
+				       DP83867_DEVADDR, 0x0);
 
 		phy_write(phydev, MII_DP83867_PHYCTRL,
 			  DP83867_PHYCTRL_SGMIIEN |
@@ -197,12 +230,26 @@ static int dp83867_config_init(struct phy_device *phydev)
 			  (dp83867->fifo_depth << DP83867_PHYCTRL_RXFIFO_SHIFT) |
 			  (dp83867->fifo_depth  << DP83867_PHYCTRL_TXFIFO_SHIFT));
 		phy_write(phydev, MII_DP83867_BISCR, 0x0);
+
+		/* This is a SW workaround for link instability if
+		 * RX_CTRL is not strapped to mode 3 or 4 in HW.
+		 */
+		if (dp83867->rxctrl_strap_worka) {
+			val = phy_read_mmd_indirect(phydev, DP83867_CFG4,
+						    DP83867_DEVADDR);
+			val &= ~DP83867_CFG4_RESVDBIT7;
+			val |= DP83867_CFG4_RESVDBIT8;
+			val &= ~DP83867_CFG4_SGMII_AUTONEG_TIMER_MASK;
+			val |= DP83867_CFG4_SGMII_AUTONEG_TIMER_11MS;
+			phy_write_mmd_indirect(phydev, DP83867_CFG4,
+					       DP83867_DEVADDR, val);
+		}
 	}
 
 	if ((phydev->interface >= PHY_INTERFACE_MODE_RGMII_ID) &&
 	    (phydev->interface <= PHY_INTERFACE_MODE_RGMII_RXID)) {
 		val = phy_read_mmd_indirect(phydev, DP83867_RGMIICTL,
-					    DP83867_DEVADDR, phydev->addr);
+					    DP83867_DEVADDR);
 
 		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_ID)
 			val |= (DP83867_RGMII_TX_CLK_DELAY_EN | DP83867_RGMII_RX_CLK_DELAY_EN);
@@ -214,13 +261,13 @@ static int dp83867_config_init(struct phy_device *phydev)
 			val |= DP83867_RGMII_RX_CLK_DELAY_EN;
 
 		phy_write_mmd_indirect(phydev, DP83867_RGMIICTL,
-				       DP83867_DEVADDR, phydev->addr, val);
+				       DP83867_DEVADDR, val);
 
 		delay = (dp83867->rx_id_delay |
 			(dp83867->tx_id_delay << DP83867_RGMII_TX_CLK_DELAY_SHIFT));
 
 		phy_write_mmd_indirect(phydev, DP83867_RGMIIDCTL,
-				       DP83867_DEVADDR, phydev->addr, delay);
+				       DP83867_DEVADDR, delay);
 	}
 
 	return 0;
@@ -256,8 +303,6 @@ static struct phy_driver dp83867_driver[] = {
 		.read_status	= genphy_read_status,
 		.suspend	= genphy_suspend,
 		.resume		= genphy_resume,
-
-		.driver		= {.owner = THIS_MODULE,}
 	},
 };
 module_phy_driver(dp83867_driver);

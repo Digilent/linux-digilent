@@ -5,7 +5,7 @@
  *  Copyright (C) 1997-1999 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  */
  
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/string.h>
@@ -324,18 +324,6 @@ static void __update_mmu_tsb_insert(struct mm_struct *mm, unsigned long tsb_inde
 	tsb_insert(tsb, tag, tte);
 }
 
-#if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-static inline bool is_hugetlb_pte(pte_t pte)
-{
-	if ((tlb_type == hypervisor &&
-	     (pte_val(pte) & _PAGE_SZALL_4V) == _PAGE_SZHUGE_4V) ||
-	    (tlb_type != hypervisor &&
-	     (pte_val(pte) & _PAGE_SZALL_4U) == _PAGE_SZHUGE_4U))
-		return true;
-	return false;
-}
-#endif
-
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long address, pte_t *ptep)
 {
 	struct mm_struct *mm;
@@ -358,10 +346,13 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long address, pte_t *
 	spin_lock_irqsave(&mm->context.lock, flags);
 
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	if (mm->context.huge_pte_count && is_hugetlb_pte(pte))
+	if ((mm->context.hugetlb_pte_count || mm->context.thp_pte_count) &&
+	    is_hugetlb_pte(pte)) {
+		/* We are fabricating 8MB pages using 4MB real hw pages.  */
+		pte_val(pte) |= (address & (1UL << REAL_HPAGE_SHIFT));
 		__update_mmu_tsb_insert(mm, MM_TSB_HUGE, REAL_HPAGE_SHIFT,
 					address, pte_val(pte));
-	else
+	} else
 #endif
 		__update_mmu_tsb_insert(mm, MM_TSB_BASE, PAGE_SHIFT,
 					address, pte_val(pte));
@@ -811,8 +802,10 @@ struct mdesc_mblock {
 };
 static struct mdesc_mblock *mblocks;
 static int num_mblocks;
+static int find_numa_node_for_addr(unsigned long pa,
+				   struct node_mem_mask *pnode_mask);
 
-static unsigned long ra_to_pa(unsigned long addr)
+static unsigned long __init ra_to_pa(unsigned long addr)
 {
 	int i;
 
@@ -828,8 +821,11 @@ static unsigned long ra_to_pa(unsigned long addr)
 	return addr;
 }
 
-static int find_node(unsigned long addr)
+static int __init find_node(unsigned long addr)
 {
+	static bool search_mdesc = true;
+	static struct node_mem_mask last_mem_mask = { ~0UL, ~0UL };
+	static int last_index;
 	int i;
 
 	addr = ra_to_pa(addr);
@@ -839,13 +835,30 @@ static int find_node(unsigned long addr)
 		if ((addr & p->mask) == p->val)
 			return i;
 	}
-	/* The following condition has been observed on LDOM guests.*/
-	WARN_ONCE(1, "find_node: A physical address doesn't match a NUMA node"
-		" rule. Some physical memory will be owned by node 0.");
-	return 0;
+	/* The following condition has been observed on LDOM guests because
+	 * node_masks only contains the best latency mask and value.
+	 * LDOM guest's mdesc can contain a single latency group to
+	 * cover multiple address range. Print warning message only if the
+	 * address cannot be found in node_masks nor mdesc.
+	 */
+	if ((search_mdesc) &&
+	    ((addr & last_mem_mask.mask) != last_mem_mask.val)) {
+		/* find the available node in the mdesc */
+		last_index = find_numa_node_for_addr(addr, &last_mem_mask);
+		numadbg("find_node: latency group for address 0x%lx is %d\n",
+			addr, last_index);
+		if ((last_index < 0) || (last_index >= num_node_masks)) {
+			/* WARN_ONCE() and use default group 0 */
+			WARN_ONCE(1, "find_node: A physical address doesn't match a NUMA node rule. Some physical memory will be owned by node 0.");
+			search_mdesc = false;
+			last_index = 0;
+		}
+	}
+
+	return last_index;
 }
 
-static u64 memblock_nid_range(u64 start, u64 end, int *nid)
+static u64 __init memblock_nid_range(u64 start, u64 end, int *nid)
 {
 	*nid = find_node(start);
 	start += PAGE_SIZE;
@@ -1169,7 +1182,42 @@ int __node_distance(int from, int to)
 	return numa_latency[from][to];
 }
 
-static int find_best_numa_node_for_mlgroup(struct mdesc_mlgroup *grp)
+static int find_numa_node_for_addr(unsigned long pa,
+				   struct node_mem_mask *pnode_mask)
+{
+	struct mdesc_handle *md = mdesc_grab();
+	u64 node, arc;
+	int i = 0;
+
+	node = mdesc_node_by_name(md, MDESC_NODE_NULL, "latency-groups");
+	if (node == MDESC_NODE_NULL)
+		goto out;
+
+	mdesc_for_each_node_by_name(md, node, "group") {
+		mdesc_for_each_arc(arc, md, node, MDESC_ARC_TYPE_FWD) {
+			u64 target = mdesc_arc_target(md, arc);
+			struct mdesc_mlgroup *m = find_mlgroup(target);
+
+			if (!m)
+				continue;
+			if ((pa & m->mask) == m->match) {
+				if (pnode_mask) {
+					pnode_mask->mask = m->mask;
+					pnode_mask->val = m->match;
+				}
+				mdesc_release(md);
+				return i;
+			}
+		}
+		i++;
+	}
+
+out:
+	mdesc_release(md);
+	return -1;
+}
+
+static int __init find_best_numa_node_for_mlgroup(struct mdesc_mlgroup *grp)
 {
 	int i;
 
@@ -1182,8 +1230,8 @@ static int find_best_numa_node_for_mlgroup(struct mdesc_mlgroup *grp)
 	return i;
 }
 
-static void find_numa_latencies_for_group(struct mdesc_handle *md, u64 grp,
-					  int index)
+static void __init find_numa_latencies_for_group(struct mdesc_handle *md,
+						 u64 grp, int index)
 {
 	u64 arc;
 
@@ -1266,13 +1314,6 @@ static int __init numa_parse_mdesc(void)
 	struct mdesc_handle *md = mdesc_grab();
 	int i, j, err, count;
 	u64 node;
-
-	/* Some sane defaults for numa latency values */
-	for (i = 0; i < MAX_NUMNODES; i++) {
-		for (j = 0; j < MAX_NUMNODES; j++)
-			numa_latency[i][j] = (i == j) ?
-				LOCAL_DISTANCE : REMOTE_DISTANCE;
-	}
 
 	node = mdesc_node_by_name(md, MDESC_NODE_NULL, "latency-groups");
 	if (node == MDESC_NODE_NULL) {
@@ -1369,9 +1410,17 @@ static int __init numa_parse_sun4u(void)
 
 static int __init bootmem_init_numa(void)
 {
+	int i, j;
 	int err = -1;
 
 	numadbg("bootmem_init_numa()\n");
+
+	/* Some sane defaults for numa latency values */
+	for (i = 0; i < MAX_NUMNODES; i++) {
+		for (j = 0; j < MAX_NUMNODES; j++)
+			numa_latency[i][j] = (i == j) ?
+				LOCAL_DISTANCE : REMOTE_DISTANCE;
+	}
 
 	if (numa_enabled) {
 		if (tlb_type == hypervisor)
@@ -1768,6 +1817,7 @@ static void __init setup_page_offset(void)
 			max_phys_bits = 47;
 			break;
 		case SUN4V_CHIP_SPARC_M7:
+		case SUN4V_CHIP_SPARC_SN:
 		default:
 			/* M7 and later support 52-bit virtual addresses.  */
 			sparc64_va_hole_top =    0xfff8000000000000UL;
@@ -1985,6 +2035,7 @@ static void __init sun4v_linear_pte_xor_finalize(void)
 	 */
 	switch (sun4v_chip_type) {
 	case SUN4V_CHIP_SPARC_M7:
+	case SUN4V_CHIP_SPARC_SN:
 		pagecv_flag = 0x00;
 		break;
 	default:
@@ -2087,7 +2138,6 @@ void __init paging_init(void)
 {
 	unsigned long end_pfn, shift, phys_base;
 	unsigned long real_end, i;
-	int node;
 
 	setup_page_offset();
 
@@ -2137,6 +2187,7 @@ void __init paging_init(void)
 	 */
 	switch (sun4v_chip_type) {
 	case SUN4V_CHIP_SPARC_M7:
+	case SUN4V_CHIP_SPARC_SN:
 		page_cache4v_flag = _PAGE_CP_4V;
 		break;
 	default:
@@ -2254,21 +2305,6 @@ void __init paging_init(void)
 
 	/* Setup bootmem... */
 	last_valid_pfn = end_pfn = bootmem_init(phys_base);
-
-	/* Once the OF device tree and MDESC have been setup, we know
-	 * the list of possible cpus.  Therefore we can allocate the
-	 * IRQ stacks.
-	 */
-	for_each_possible_cpu(i) {
-		node = cpu_to_node(i);
-
-		softirq_stack[i] = __alloc_bootmem_node(NODE_DATA(node),
-							THREAD_SIZE,
-							THREAD_SIZE, 0);
-		hardirq_stack[i] = __alloc_bootmem_node(NODE_DATA(node),
-							THREAD_SIZE,
-							THREAD_SIZE, 0);
-	}
 
 	kernel_physical_mapping_init();
 
@@ -2712,8 +2748,7 @@ void __flush_tlb_all(void)
 pte_t *pte_alloc_one_kernel(struct mm_struct *mm,
 			    unsigned long address)
 {
-	struct page *page = alloc_page(GFP_KERNEL | __GFP_NOTRACK |
-				       __GFP_REPEAT | __GFP_ZERO);
+	struct page *page = alloc_page(GFP_KERNEL | __GFP_NOTRACK | __GFP_ZERO);
 	pte_t *pte = NULL;
 
 	if (page)
@@ -2725,8 +2760,7 @@ pte_t *pte_alloc_one_kernel(struct mm_struct *mm,
 pgtable_t pte_alloc_one(struct mm_struct *mm,
 			unsigned long address)
 {
-	struct page *page = alloc_page(GFP_KERNEL | __GFP_NOTRACK |
-				       __GFP_REPEAT | __GFP_ZERO);
+	struct page *page = alloc_page(GFP_KERNEL | __GFP_NOTRACK | __GFP_ZERO);
 	if (!page)
 		return NULL;
 	if (!pgtable_page_ctor(page)) {
@@ -2832,9 +2866,10 @@ void hugetlb_setup(struct pt_regs *regs)
 	 * the Data-TLB for huge pages.
 	 */
 	if (tlb_type == cheetah_plus) {
+		bool need_context_reload = false;
 		unsigned long ctx;
 
-		spin_lock(&ctx_alloc_lock);
+		spin_lock_irq(&ctx_alloc_lock);
 		ctx = mm->context.sparc64_ctx_val;
 		ctx &= ~CTX_PGSZ_MASK;
 		ctx |= CTX_PGSZ_BASE << CTX_PGSZ0_SHIFT;
@@ -2853,26 +2888,29 @@ void hugetlb_setup(struct pt_regs *regs)
 			 * also executing in this address space.
 			 */
 			mm->context.sparc64_ctx_val = ctx;
-			on_each_cpu(context_reload, mm, 0);
+			need_context_reload = true;
 		}
-		spin_unlock(&ctx_alloc_lock);
+		spin_unlock_irq(&ctx_alloc_lock);
+
+		if (need_context_reload)
+			on_each_cpu(context_reload, mm, 0);
 	}
 }
 #endif
 
 static struct resource code_resource = {
 	.name	= "Kernel code",
-	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+	.flags	= IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM
 };
 
 static struct resource data_resource = {
 	.name	= "Kernel data",
-	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+	.flags	= IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM
 };
 
 static struct resource bss_resource = {
 	.name	= "Kernel bss",
-	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+	.flags	= IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM
 };
 
 static inline resource_size_t compute_kern_paddr(void *addr)
@@ -2908,7 +2946,7 @@ static int __init report_memory(void)
 		res->name = "System RAM";
 		res->start = pavail[i].phys_addr;
 		res->end = pavail[i].phys_addr + pavail[i].reg_size - 1;
-		res->flags = IORESOURCE_BUSY | IORESOURCE_MEM;
+		res->flags = IORESOURCE_BUSY | IORESOURCE_SYSTEM_RAM;
 
 		if (insert_resource(&iomem_resource, res) < 0) {
 			pr_warn("Resource insertion failed.\n");

@@ -18,6 +18,7 @@
 #include <linux/moduleparam.h>
 #include <linux/jump_label.h>
 #include <linux/export.h>
+#include <linux/extable.h>	/* only as arch move module.h -> extable.h */
 #include <linux/rbtree_latch.h>
 
 #include <linux/percpu.h>
@@ -37,6 +38,7 @@ struct modversion_info {
 };
 
 struct module;
+struct exception_table_entry;
 
 struct module_kobject {
 	struct kobject kobj;
@@ -155,18 +157,6 @@ extern void cleanup_module(void);
 #define __INITRODATA_OR_MODULE __INITRODATA
 #endif /*CONFIG_MODULES*/
 
-/* Archs provide a method of finding the correct exception table. */
-struct exception_table_entry;
-
-const struct exception_table_entry *
-search_extable(const struct exception_table_entry *first,
-	       const struct exception_table_entry *last,
-	       unsigned long value);
-void sort_extable(struct exception_table_entry *start,
-		  struct exception_table_entry *finish);
-void sort_main_extable(void);
-void trim_init_extable(struct module *m);
-
 /* Generic info of form tag = "info" */
 #define MODULE_INFO(tag, info) __MODULE_INFO(tag, tag, info)
 
@@ -268,9 +258,6 @@ extern const typeof(name) __mod_##type##__##name##_device_table		\
  * files require multiple MODULE_FIRMWARE() specifiers */
 #define MODULE_FIRMWARE(_firmware) MODULE_INFO(firmware, _firmware)
 
-/* Given an address, look for it in the exception tables */
-const struct exception_table_entry *search_exception_tables(unsigned long add);
-
 struct notifier_block;
 
 #ifdef CONFIG_MODULES
@@ -301,6 +288,45 @@ struct mod_tree_node {
 	struct module *mod;
 	struct latch_tree_node node;
 };
+
+struct module_layout {
+	/* The actual code + data. */
+	void *base;
+	/* Total size. */
+	unsigned int size;
+	/* The size of the executable code.  */
+	unsigned int text_size;
+	/* Size of RO section of the module (text+rodata) */
+	unsigned int ro_size;
+	/* Size of RO after init section */
+	unsigned int ro_after_init_size;
+
+#ifdef CONFIG_MODULES_TREE_LOOKUP
+	struct mod_tree_node mtn;
+#endif
+};
+
+#ifdef CONFIG_MODULES_TREE_LOOKUP
+/* Only touch one cacheline for common rbtree-for-core-layout case. */
+#define __module_layout_align ____cacheline_aligned
+#else
+#define __module_layout_align
+#endif
+
+struct mod_kallsyms {
+	Elf_Sym *symtab;
+	unsigned int num_symtab;
+	char *strtab;
+};
+
+#ifdef CONFIG_LIVEPATCH
+struct klp_modinfo {
+	Elf_Ehdr hdr;
+	Elf_Shdr *sechdrs;
+	char *secstrings;
+	unsigned int symndx;
+};
+#endif
 
 struct module {
 	enum module_state state;
@@ -366,37 +392,9 @@ struct module {
 	/* Startup function. */
 	int (*init)(void);
 
-	/*
-	 * If this is non-NULL, vfree() after init() returns.
-	 *
-	 * Cacheline align here, such that:
-	 *   module_init, module_core, init_size, core_size,
-	 *   init_text_size, core_text_size and mtn_core::{mod,node[0]}
-	 * are on the same cacheline.
-	 */
-	void *module_init	____cacheline_aligned;
-
-	/* Here is the actual code + data, vfree'd on unload. */
-	void *module_core;
-
-	/* Here are the sizes of the init and core sections */
-	unsigned int init_size, core_size;
-
-	/* The size of the executable code in each section.  */
-	unsigned int init_text_size, core_text_size;
-
-#ifdef CONFIG_MODULES_TREE_LOOKUP
-	/*
-	 * We want mtn_core::{mod,node[0]} to be in the same cacheline as the
-	 * above entries such that a regular lookup will only touch one
-	 * cacheline.
-	 */
-	struct mod_tree_node	mtn_core;
-	struct mod_tree_node	mtn_init;
-#endif
-
-	/* Size of RO sections of the module (text+rodata) */
-	unsigned int init_ro_size, core_ro_size;
+	/* Core layout: rbtree is accessed frequently, so keep together. */
+	struct module_layout core_layout __module_layout_align;
+	struct module_layout init_layout;
 
 	/* Arch-specific module values */
 	struct mod_arch_specific arch;
@@ -411,15 +409,10 @@ struct module {
 #endif
 
 #ifdef CONFIG_KALLSYMS
-	/*
-	 * We keep the symbol and string tables for kallsyms.
-	 * The core_* fields below are temporary, loader-only (they
-	 * could really be discarded after module init).
-	 */
-	Elf_Sym *symtab, *core_symtab;
-	unsigned int num_symtab, core_num_syms;
-	char *strtab, *core_strtab;
-
+	/* Protected by RCU and/or module_mutex: use rcu_dereference() */
+	struct mod_kallsyms *kallsyms;
+	struct mod_kallsyms core_kallsyms;
+	
 	/* Section attributes */
 	struct module_sect_attrs *sect_attrs;
 
@@ -461,7 +454,11 @@ struct module {
 #endif
 
 #ifdef CONFIG_LIVEPATCH
+	bool klp; /* Is this a livepatch module? */
 	bool klp_alive;
+
+	/* Elf information */
+	struct klp_modinfo *klp_info;
 #endif
 
 #ifdef CONFIG_MODULE_UNLOAD
@@ -505,15 +502,15 @@ bool is_module_text_address(unsigned long addr);
 static inline bool within_module_core(unsigned long addr,
 				      const struct module *mod)
 {
-	return (unsigned long)mod->module_core <= addr &&
-	       addr < (unsigned long)mod->module_core + mod->core_size;
+	return (unsigned long)mod->core_layout.base <= addr &&
+	       addr < (unsigned long)mod->core_layout.base + mod->core_layout.size;
 }
 
 static inline bool within_module_init(unsigned long addr,
 				      const struct module *mod)
 {
-	return (unsigned long)mod->module_init <= addr &&
-	       addr < (unsigned long)mod->module_init + mod->init_size;
+	return (unsigned long)mod->init_layout.base <= addr &&
+	       addr < (unsigned long)mod->init_layout.base + mod->init_layout.size;
 }
 
 static inline bool within_module(unsigned long addr, const struct module *mod)
@@ -567,8 +564,8 @@ int module_kallsyms_on_each_symbol(int (*fn)(void *, const char *,
 					     struct module *, unsigned long),
 				   void *data);
 
-extern void __module_put_and_exit(struct module *mod, long code)
-	__attribute__((noreturn));
+extern void __noreturn __module_put_and_exit(struct module *mod,
+			long code);
 #define module_put_and_exit(code) __module_put_and_exit(THIS_MODULE, code)
 
 #ifdef CONFIG_MODULE_UNLOAD
@@ -622,9 +619,6 @@ const char *module_address_lookup(unsigned long addr,
 int lookup_module_symbol_name(unsigned long addr, char *symname);
 int lookup_module_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *offset, char *modname, char *name);
 
-/* For extable.c to search modules' exception tables. */
-const struct exception_table_entry *search_module_extables(unsigned long addr);
-
 int register_module_notifier(struct notifier_block *nb);
 int unregister_module_notifier(struct notifier_block *nb);
 
@@ -635,14 +629,19 @@ static inline bool module_requested_async_probing(struct module *module)
 	return module && module->async_probe_requested;
 }
 
-#else /* !CONFIG_MODULES... */
-
-/* Given an address, look for it in the exception tables. */
-static inline const struct exception_table_entry *
-search_module_extables(unsigned long addr)
+#ifdef CONFIG_LIVEPATCH
+static inline bool is_livepatch_module(struct module *mod)
 {
-	return NULL;
+	return mod->klp;
 }
+#else /* !CONFIG_LIVEPATCH */
+static inline bool is_livepatch_module(struct module *mod)
+{
+	return false;
+}
+#endif /* CONFIG_LIVEPATCH */
+
+#else /* !CONFIG_MODULES... */
 
 static inline struct module *__module_address(unsigned long addr)
 {
@@ -768,9 +767,13 @@ extern int module_sysfs_initialized;
 #ifdef CONFIG_DEBUG_SET_MODULE_RONX
 extern void set_all_modules_text_rw(void);
 extern void set_all_modules_text_ro(void);
+extern void module_enable_ro(const struct module *mod, bool after_init);
+extern void module_disable_ro(const struct module *mod);
 #else
 static inline void set_all_modules_text_rw(void) { }
 static inline void set_all_modules_text_ro(void) { }
+static inline void module_enable_ro(const struct module *mod, bool after_init) { }
+static inline void module_disable_ro(const struct module *mod) { }
 #endif
 
 #ifdef CONFIG_GENERIC_BUG
