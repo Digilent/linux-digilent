@@ -35,7 +35,10 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
-#define DGLNT_ENC_MAX_FREQ 150000
+/*
+ * Default frame maximums/prefs; can be set in devicetree
+ */
+#define DGLNT_ENC_MAX_FREQ 150000  //KHz
 #define DGLNT_ENC_MAX_H 1920
 #define DGLNT_ENC_MAX_V 1080
 #define DGLNT_ENC_PREF_H 1280
@@ -45,6 +48,11 @@ struct dglnt_encoder {
 	struct drm_encoder *encoder;
 	struct i2c_adapter *i2c_bus;
    bool i2c_present;
+   u32 fmax;
+   u32 hmax;
+   u32 vmax;
+   u32 hpref;
+   u32 vpref;
 };
 
 static inline struct dglnt_encoder *to_dglnt_encoder(struct drm_encoder *encoder)
@@ -81,11 +89,12 @@ static void dglnt_encoder_restore(struct drm_encoder *encoder)
 static int dglnt_encoder_mode_valid(struct drm_encoder *encoder,
 				    struct drm_display_mode *mode)
 {
+   struct dglnt_encoder *dglnt = to_dglnt_encoder(encoder);
    if (mode && 
       !(mode->flags & ((DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLCLK) | DRM_MODE_FLAG_3D_MASK)) &&
-      (mode->clock <= DGLNT_ENC_MAX_FREQ) &&
-      (mode->hdisplay <= DGLNT_ENC_MAX_H) && 
-      (mode->vdisplay <= DGLNT_ENC_MAX_V)) 
+      (mode->clock <= dglnt->fmax) &&
+      (mode->hdisplay <= dglnt->hmax) && 
+      (mode->vdisplay <= dglnt->vmax)) 
          return MODE_OK;
    return MODE_BAD;
 }
@@ -100,6 +109,11 @@ static int dglnt_encoder_get_modes(struct drm_encoder *encoder,
    if (dglnt->i2c_present)
    {
       edid = drm_get_edid(connector, dglnt->i2c_bus);
+
+      /*
+       *Other drivers tend to call update edid property after the call to 
+       *drm_add_edid_modes. If problems with modesetting, this could be why.
+       */
       drm_mode_connector_update_edid_property(connector, edid);
       if (edid) 
       {
@@ -109,8 +123,8 @@ static int dglnt_encoder_get_modes(struct drm_encoder *encoder,
    }
    else
    {
-      num_modes = drm_add_modes_noedid(connector, DGLNT_ENC_MAX_H, DGLNT_ENC_MAX_V);
-      drm_set_preferred_mode(connector, DGLNT_ENC_PREF_H, DGLNT_ENC_PREF_V);
+      num_modes = drm_add_modes_noedid(connector, dglnt->hmax, dglnt->vmax);
+      drm_set_preferred_mode(connector, dglnt->hpref, dglnt->vpref);
    }   
 	return num_modes;
 }
@@ -147,6 +161,7 @@ static int dglnt_encoder_encoder_init(struct platform_device *pdev,
 {
 	struct dglnt_encoder *dglnt = platform_get_drvdata(pdev);
 	struct device_node *sub_node;
+   int ret;
 
 	encoder->slave_priv = dglnt;
 	encoder->slave_funcs = &dglnt_encoder_slave_funcs;
@@ -155,6 +170,7 @@ static int dglnt_encoder_encoder_init(struct platform_device *pdev,
 
     /* get i2c adapter for edid */
    dglnt->i2c_present = false;
+
 	sub_node = of_parse_phandle(pdev->dev.of_node, "dglnt,edid-i2c", 0);
 	if (sub_node) 
    {
@@ -165,6 +181,38 @@ static int dglnt_encoder_encoder_init(struct platform_device *pdev,
          dglnt->i2c_present = true;
 	   of_node_put(sub_node);
    }
+
+	ret = of_property_read_u32(pdev->dev.of_node, "dglnt,fmax", &dglnt->fmax);
+	if (ret < 0) {
+      dglnt->fmax = DGLNT_ENC_MAX_FREQ;
+		DRM_INFO("No max frequency in DT, using default %dKHz\n", DGLNT_ENC_MAX_FREQ);
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "dglnt,hmax", &dglnt->hmax);
+	if (ret < 0) {
+      dglnt->hmax = DGLNT_ENC_MAX_H;
+		DRM_INFO("No max horizontal width in DT, using default %d\n", DGLNT_ENC_MAX_H);
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "dglnt,vmax", &dglnt->vmax);
+	if (ret < 0) {
+      dglnt->vmax = DGLNT_ENC_MAX_V;
+		DRM_INFO("No max vertical height in DT, using default %d\n", DGLNT_ENC_MAX_V);
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "dglnt,hpref", &dglnt->hpref);
+	if (ret < 0) {
+      dglnt->hpref = DGLNT_ENC_PREF_H;
+		if (!(dglnt->i2c_present))
+			DRM_INFO("No pref horizontal width in DT, using default %d\n", DGLNT_ENC_PREF_H);
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "dglnt,vpref", &dglnt->vpref);
+	if (ret < 0) {
+      dglnt->vpref = DGLNT_ENC_PREF_V;
+		if (!(dglnt->i2c_present))
+			DRM_INFO("No pref horizontal width in DT, using default %d\n", DGLNT_ENC_PREF_V);
+	}
 
 	return 0;
 }
