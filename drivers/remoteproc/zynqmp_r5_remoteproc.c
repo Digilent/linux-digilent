@@ -121,14 +121,18 @@ struct mem_pool_st {
  * struct zynqmp_r5_rproc_pdata - zynqmp rpu remote processor instance state
  * @rproc: rproc handle
  * @fw_ops: local firmware operations
- * @defaulta_fw_ops: default rproc firmware operations
+ * @default_fw_ops: default rproc firmware operations
  * @workqueue: workqueue for the RPU remoteproc
  * @rpu_base: virt ptr to RPU control address registers
+ * @rpu_glbl_base: virt ptr to RPU global control address registers
  * @ipi_base: virt ptr to IPI channel address registers for APU
  * @rpu_mode: RPU core configuration
  * @rpu_id: RPU CPU id
  * @rpu_pd_id: RPU CPU power domain id
  * @bootmem: RPU boot memory device used
+ * @mem_pools: list of gen_pool for firmware mmio_sram memory and their
+ *             power domain IDs
+ * @mems: list of rproc_mem_entries for firmware
  * @vring0: IRQ number used for vring0
  * @ipi_dest_mask: IPI destination mask for the IPI channel
  */
@@ -217,12 +221,10 @@ static bool r5_is_running(struct zynqmp_r5_rproc_pdata *pdata)
 	} else if (status != PM_PROC_STATE_ACTIVE) {
 		pr_debug("RPU %d is not running.\n", pdata->rpu_id);
 		return false;
-	} else {
-		pr_debug("RPU %d is running.\n", pdata->rpu_id);
-		return true;
 	}
 
-	return false;
+	pr_debug("RPU %d is running.\n", pdata->rpu_id);
+	return true;
 }
 
 /**
@@ -230,6 +232,8 @@ static bool r5_is_running(struct zynqmp_r5_rproc_pdata *pdata)
  * @pdata: platform data
  *
  * Request access to TCM
+ *
+ * @return: 0 if succeeded, error code otherwise
  */
 static int r5_request_tcm(struct zynqmp_r5_rproc_pdata *pdata)
 {
@@ -299,6 +303,9 @@ static inline void enable_ipi(struct zynqmp_r5_rproc_pdata *pdata)
  * @data: data passed to idr_for_each callback
  *
  * Pass notification to remtoeproc virtio
+ *
+ * @return: 0. having return is to satisfy the idr_for_each() function
+ *          pointer input argument requirement.
  */
 static int event_notified_idr_cb(int id, void *ptr, void *data)
 {
@@ -415,7 +422,7 @@ static bool zynqmp_r5_rproc_is_running(struct rproc *rproc)
 static void *zynqmp_r5_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
 {
 	struct rproc_mem_entry *mem;
-	void *va = 0;
+	void *va = NULL;
 	struct zynqmp_r5_rproc_pdata *local = rproc->priv;
 
 	list_for_each_entry(mem, &local->mems, node) {
@@ -647,7 +654,8 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ipi");
-	local->ipi_base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	local->ipi_base = devm_ioremap(&pdev->dev, res->start,
+				resource_size(res));
 	if (IS_ERR(local->ipi_base)) {
 		pr_err("%s: Unable to map IPI\n", __func__);
 		ret = PTR_ERR(local->ipi_base);

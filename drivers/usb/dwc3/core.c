@@ -822,6 +822,32 @@ static int dwc3_core_init(struct dwc3 *dwc)
 		dwc3_writel(dwc->regs, DWC3_GUCTL2, reg);
 	}
 
+	/* When configured in HOST mode, after issuing U3/L2 exit controller
+	 * fails to send proper CRC checksum in CRC5 feild. Because of this
+	 * behaviour Transaction Error is generated, resulting in reset and
+	 * re-enumeration of usb device attached. Enabling bit 10 of GUCTL1
+	 * will correct this problem
+	 */
+	if (dwc->enable_guctl1_resume_quirk) {
+		reg = dwc3_readl(dwc->regs, DWC3_GUCTL1);
+		reg |= DWC3_GUCTL1_RESUME_QUIRK;
+		dwc3_writel(dwc->regs, DWC3_GUCTL1, reg);
+	}
+
+	/* SNPS controller when configureed in HOST mode maintains Inter Packet
+	 * Delay (IPD) of ~380ns which works with most of the super-speed hubs
+	 * except VIA-LAB hubs. When IPD is ~380ns HOST controller fails to
+	 * enumerate FS/LS devices when connected behind VIA-LAB hubs.
+	 * Enabling bit 9 of GUCTL1 enables the workaround in HW to reduce the
+	 * ULPI clock latency by 1 cycle, thus reducing the IPD (~360ns) and
+	 * making controller enumerate FS/LS devices connected behind VIA-LAB.
+	 */
+	if (dwc->enable_guctl1_ipd_quirk) {
+		reg = dwc3_readl(dwc->regs, DWC3_GUCTL1);
+		reg |= DWC3_GUCTL1_IPD_QUIRK;
+		dwc3_writel(dwc->regs, DWC3_GUCTL1, reg);
+	}
+
 	return 0;
 
 err4:
@@ -995,6 +1021,7 @@ static int dwc3_probe(struct platform_device *pdev)
 	u8			lpm_nyet_threshold;
 	u8			tx_de_emphasis;
 	u8			hird_threshold;
+	u32			mdwidth;
 
 	int			ret;
 
@@ -1103,6 +1130,10 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	dwc->refclk_fladj = device_property_read_bool(dev,
 						      "snps,refclk_fladj");
+	dwc->enable_guctl1_resume_quirk = device_property_read_bool(dev,
+				"snps,enable_guctl1_resume_quirk");
+	dwc->enable_guctl1_ipd_quirk = device_property_read_bool(dev,
+				"snps,enable_guctl1_ipd_quirk");
 
 	dwc->lpm_nyet_threshold = lpm_nyet_threshold;
 	dwc->tx_de_emphasis = tx_de_emphasis;
@@ -1122,8 +1153,12 @@ static int dwc3_probe(struct platform_device *pdev)
 	if (!dev->dma_mask) {
 		dev->dma_mask = dev->parent->dma_mask;
 		dev->dma_parms = dev->parent->dma_parms;
-		dma_set_coherent_mask(dev, dev->parent->coherent_dma_mask);
 	}
+
+	/* Set dma coherent mask to DMA BUS data width */
+	mdwidth = DWC3_GHWPARAMS0_MDWIDTH(dwc->hwparams.hwparams0);
+	dev_dbg(dev, "Enabling %d-bit DMA addresses.\n", mdwidth);
+	dma_set_coherent_mask(dev, DMA_BIT_MASK(mdwidth));
 
 	pm_runtime_set_active(dev);
 	pm_runtime_use_autosuspend(dev);

@@ -53,7 +53,7 @@ struct zynqmp_pll {
 #define PLL_FBDIV_MAX	125
 
 #define PS_PLL_VCO_MIN 1500000000
-#define PS_PLL_VCO_MAX 3000000000
+#define PS_PLL_VCO_MAX 3000000000UL
 
 enum pll_mode {
 	PLL_MODE_FRAC,
@@ -122,11 +122,11 @@ static long zynqmp_pll_round_rate(struct clk_hw *hw, unsigned long rate,
 
 	if (pll_frac_get_mode(hw) == PLL_MODE_FRAC) {
 		if (rate > PS_PLL_VCO_MAX) {
-			fbdiv = DIV_ROUND_CLOSEST(rate, PS_PLL_VCO_MAX);
+			fbdiv = rate / PS_PLL_VCO_MAX;
 			rate = rate / (fbdiv + 1);
 		}
 		if (rate < PS_PLL_VCO_MIN) {
-			fbdiv = DIV_ROUND_CLOSEST(PS_PLL_VCO_MIN, rate);
+			fbdiv = DIV_ROUND_UP(PS_PLL_VCO_MIN, rate);
 			rate = rate * fbdiv;
 		}
 		return rate;
