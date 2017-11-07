@@ -611,6 +611,23 @@ ret:
     return 0;
 }
 
+int axidma_get_residue(struct axidma_device *dev, struct axidma_residue *res)
+{
+    struct axidma_chan *chan;
+    struct dma_tx_state state;
+
+    chan = axidma_get_chan(dev, res->channel_id);
+
+    if (chan != NULL) {
+        dmaengine_tx_status(chan->chan, chan->chan->cookie, &state);
+        res->residue = state.residue;
+
+        return 0;
+    }
+    else
+        return -ENODEV;
+}
+
 int axidma_stop_channel(struct axidma_device *dev,
                         struct axidma_chan *chan_info)
 {
