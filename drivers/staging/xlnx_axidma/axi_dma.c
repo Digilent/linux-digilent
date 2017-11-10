@@ -99,6 +99,8 @@ static const struct of_device_id axidma_compatible_of_ids[] = {
     {}
 };
 
+MODULE_DEVICE_TABLE(of, axidma_compatible_of_ids);
+
 static struct platform_driver axidma_driver = {
     .driver = {
         .name = MODULE_NAME,
