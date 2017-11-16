@@ -88,6 +88,11 @@ struct axidma_channel_info {
     struct axidma_chan *channels;   // Metadata about all available channels
 };
 
+struct axidma_signal_info {
+    int signal;
+    void *user_data;
+};
+
 struct axidma_register_buffer {
     int fd;                         // Anonymous file descriptor for DMA buffer
     size_t size;                    // The size of the external DMA buffer

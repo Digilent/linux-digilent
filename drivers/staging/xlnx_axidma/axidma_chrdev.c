@@ -34,9 +34,6 @@
  * Internal Definitions
  *----------------------------------------------------------------------------*/
 
-// TODO: Maybe this can be improved?
-static struct axidma_device *axidma_dev;
-
 // A structure that represents a DMA buffer allocation
 struct axidma_dma_allocation {
     size_t size;                // Size of the buffer
@@ -44,6 +41,7 @@ struct axidma_dma_allocation {
     void *kern_addr;            // Kernel virtual address of the buffer
     dma_addr_t dma_addr;        // DMA bus address of the buffer
     struct list_head list;      // List node pointers for allocation list
+    struct device *device;      // Device structure for the char device
 };
 
 /* A structure that represents a DMA buffer allocation imported from another
@@ -205,13 +203,11 @@ static int axidma_put_external(struct axidma_device *dev, void *user_addr)
 
 static void axidma_vma_close(struct vm_area_struct *vma)
 {
-    struct axidma_device *dev;
     struct axidma_dma_allocation *dma_alloc;
 
     // Get the AXI DMA allocation data and free the DMA buffer
-    dev = axidma_dev;
     dma_alloc = vma->vm_private_data;
-    dma_free_coherent(&dev->pdev->dev, dma_alloc->size, dma_alloc->kern_addr,
+    dma_free_coherent(dma_alloc->device, dma_alloc->size, dma_alloc->kern_addr,
                       dma_alloc->dma_addr);
 
     // Remove the allocation from the list, and free the structure
@@ -242,7 +238,8 @@ static int axidma_open(struct inode *inode, struct file *file)
     }
 
     // Place the axidma structure in the private data of the file
-    file->private_data = (void *)axidma_dev;
+    file->private_data = container_of(inode->i_cdev, struct axidma_device,
+                                      chrdev);
     return 0;
 }
 
@@ -272,6 +269,7 @@ static int axidma_mmap(struct file *file, struct vm_area_struct *vma)
     // Set the user virtual address and the size
     dma_alloc->size = vma->vm_end - vma->vm_start;
     dma_alloc->user_addr = (void *)vma->vm_start;
+    dma_alloc->device = &dev->pdev->dev;
 
     // Configure the DMA device
     of_dma_configure(dev->device, NULL);
@@ -347,6 +345,7 @@ static long axidma_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     struct axidma_device *dev;
     struct axidma_num_channels num_chans;
     struct axidma_channel_info usr_chans, kern_chans;
+    struct axidma_signal_info sig_info;
     struct axidma_register_buffer ext_buf;
     struct axidma_transaction trans;
     struct axidma_inout_transaction inout_trans;
@@ -413,7 +412,12 @@ static long axidma_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             break;
 
         case AXIDMA_SET_DMA_SIGNAL:
-            rc = axidma_set_signal(dev, arg);
+            if (copy_from_user(&sig_info, arg_ptr, sizeof(sig_info)) != 0) {
+                axidma_err("Unable to copy signal info from userspace for "
+                           "AXIDMA_SET_DMA_SIGNAL.\n");
+                return -EFAULT;
+            }
+            rc = axidma_set_signal(dev, sig_info.signal, sig_info.user_data);
             break;
 
         case AXIDMA_REGISTER_BUFFER:
@@ -565,9 +569,6 @@ static const struct file_operations axidma_fops = {
 int axidma_chrdev_init(struct axidma_device *dev)
 {
     int rc;
-
-    // Store a global pointer to the axidma device
-    axidma_dev = dev;
 
     // Allocate a major and minor number region for the character device
     rc = alloc_chrdev_region(&dev->dev_num, dev->minor_num, dev->num_devices,
