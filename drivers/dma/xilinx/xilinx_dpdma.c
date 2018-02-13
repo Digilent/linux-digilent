@@ -61,7 +61,7 @@
 #define XILINX_DPDMA_INTR_GLOBAL_ERR			0x7000000
 #define XILINX_DPDMA_INTR_ERR_ALL			0x7fff000
 #define XILINX_DPDMA_INTR_CHAN_MASK			0x41041
-#define XILINX_DPDMA_INTR_GLOBAL_MASK			0xf00000
+#define XILINX_DPDMA_INTR_GLOBAL_MASK			0xf000000
 #define XILINX_DPDMA_INTR_ALL				0xfffffff
 #define XILINX_DPDMA_EISR				0x14
 #define XILINX_DPDMA_EIMR				0x18
@@ -338,7 +338,7 @@ struct xilinx_dpdma_device {
 };
 
 #ifdef CONFIG_XILINX_DPDMA_DEBUG_FS
-#define XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE	32UL
+#define XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE	32
 #define XILINX_DPDMA_DEBUGFS_UINT16_MAX_STR	"65535"
 #define IN_RANGE(x, min, max) ((x) >= (min) && (x) <= (max))
 
@@ -412,7 +412,8 @@ static ssize_t xilinx_dpdma_debugfs_desc_done_intr_read(char **kern_buff)
 	dpdma_debugfs.testcase = DPDMA_TC_NONE;
 
 	out_str_len = strlen(XILINX_DPDMA_DEBUGFS_UINT16_MAX_STR);
-	out_str_len = min(XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE, out_str_len);
+	out_str_len = min_t(size_t, XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE,
+			    out_str_len);
 	snprintf(*kern_buff, out_str_len, "%d",
 		 dpdma_debugfs.xilinx_dpdma_intr_done_count);
 
@@ -488,8 +489,8 @@ static ssize_t xilinx_dpdma_debugfs_read(struct file *f, char __user *buf,
 
 	if (dpdma_debugfs.testcase == DPDMA_TC_NONE) {
 		out_str_len = strlen("No testcase executed");
-		out_str_len = min(XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE,
-				  out_str_len);
+		out_str_len = min_t(size_t, XILINX_DPDMA_DEBUGFS_READ_MAX_SIZE,
+				    out_str_len);
 		snprintf(kern_buff, out_str_len, "%s", "No testcase executed");
 	} else {
 		ret = dpdma_debugfs_reqs[dpdma_debugfs.testcase].read_handler(
@@ -1267,10 +1268,10 @@ static inline void xilinx_dpdma_chan_enable(struct xilinx_dpdma_chan *chan)
 
 	reg = XILINX_DPDMA_INTR_CHAN_MASK << chan->id;
 	reg |= XILINX_DPDMA_INTR_GLOBAL_MASK;
-	dpdma_set(chan->xdev->reg, XILINX_DPDMA_IEN, reg);
+	dpdma_write(chan->xdev->reg, XILINX_DPDMA_IEN, reg);
 	reg = XILINX_DPDMA_EINTR_CHAN_ERR_MASK << chan->id;
 	reg |= XILINX_DPDMA_INTR_GLOBAL_ERR;
-	dpdma_set(chan->xdev->reg, XILINX_DPDMA_EIEN, reg);
+	dpdma_write(chan->xdev->reg, XILINX_DPDMA_EIEN, reg);
 
 	reg = XILINX_DPDMA_CH_CNTL_ENABLE;
 	reg |= XILINX_DPDMA_CH_CNTL_QOS_VID_CLASS <<
@@ -1293,9 +1294,9 @@ static inline void xilinx_dpdma_chan_disable(struct xilinx_dpdma_chan *chan)
 	u32 reg;
 
 	reg = XILINX_DPDMA_INTR_CHAN_MASK << chan->id;
-	dpdma_clr(chan->xdev->reg, XILINX_DPDMA_IEN, reg);
+	dpdma_write(chan->xdev->reg, XILINX_DPDMA_IEN, reg);
 	reg = XILINX_DPDMA_EINTR_CHAN_ERR_MASK << chan->id;
-	dpdma_clr(chan->xdev->reg, XILINX_DPDMA_EIEN, reg);
+	dpdma_write(chan->xdev->reg, XILINX_DPDMA_EIEN, reg);
 
 	dpdma_clr(chan->reg, XILINX_DPDMA_CH_CNTL, XILINX_DPDMA_CH_CNTL_ENABLE);
 }
@@ -1645,7 +1646,6 @@ static int xilinx_dpdma_chan_terminate_all(struct xilinx_dpdma_chan *chan)
 static bool
 xilinx_dpdma_chan_err(struct xilinx_dpdma_chan *chan, u32 isr, u32 eisr)
 {
-
 	if (!chan)
 		return false;
 

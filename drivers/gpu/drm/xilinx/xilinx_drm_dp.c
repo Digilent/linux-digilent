@@ -41,6 +41,12 @@ module_param_named(aux_timeout_ms, xilinx_drm_dp_aux_timeout_ms, uint, 0444);
 MODULE_PARM_DESC(aux_timeout_ms,
 		 "DP aux timeout value in msec (default: 50)");
 
+static uint xilinx_drm_dp_power_on_delay_ms = 4;
+module_param_named(power_on_delay_ms, xilinx_drm_dp_power_on_delay_ms, uint,
+		   0644);
+MODULE_PARM_DESC(power_on_delay,
+		 "Delay after power on request in msec (default: 4)");
+
 /* Link configuration registers */
 #define XILINX_DP_TX_LINK_BW_SET			0x0
 #define XILINX_DP_TX_LANE_CNT_SET			0x4
@@ -49,11 +55,11 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_TX_SCRAMBLING_DISABLE			0x14
 #define XILINX_DP_TX_DOWNSPREAD_CTL			0x18
 #define XILINX_DP_TX_SW_RESET				0x1c
-#define XILINX_DP_TX_SW_RESET_STREAM1			(1 << 0)
-#define XILINX_DP_TX_SW_RESET_STREAM2			(1 << 1)
-#define XILINX_DP_TX_SW_RESET_STREAM3			(1 << 2)
-#define XILINX_DP_TX_SW_RESET_STREAM4			(1 << 3)
-#define XILINX_DP_TX_SW_RESET_AUX			(1 << 7)
+#define XILINX_DP_TX_SW_RESET_STREAM1			BIT(0)
+#define XILINX_DP_TX_SW_RESET_STREAM2			BIT(1)
+#define XILINX_DP_TX_SW_RESET_STREAM3			BIT(2)
+#define XILINX_DP_TX_SW_RESET_STREAM4			BIT(3)
+#define XILINX_DP_TX_SW_RESET_AUX			BIT(7)
 #define XILINX_DP_TX_SW_RESET_ALL			(XILINX_DP_TX_SW_RESET_STREAM1 | \
 							 XILINX_DP_TX_SW_RESET_STREAM2 | \
 							 XILINX_DP_TX_SW_RESET_STREAM3 | \
@@ -84,7 +90,7 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_TX_CORE_ID_MINOR_SHIFT		16
 #define XILINX_DP_TX_CORE_ID_REVISION_MASK		(0xff << 8)
 #define XILINX_DP_TX_CORE_ID_REVISION_SHIFT		8
-#define XILINX_DP_TX_CORE_ID_DIRECTION			(1 << 0)
+#define XILINX_DP_TX_CORE_ID_DIRECTION			BIT(0)
 
 /* AUX channel interface registers */
 #define XILINX_DP_TX_AUX_COMMAND			0x100
@@ -97,38 +103,38 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_TX_CLK_DIVIDER_MHZ			1000000
 #define XILINX_DP_TX_CLK_DIVIDER_AUX_FILTER_SHIFT	8
 #define XILINX_DP_TX_INTR_SIGNAL_STATE			0x130
-#define XILINX_DP_TX_INTR_SIGNAL_STATE_HPD		(1 << 0)
-#define XILINX_DP_TX_INTR_SIGNAL_STATE_REQUEST		(1 << 1)
-#define XILINX_DP_TX_INTR_SIGNAL_STATE_REPLY		(1 << 2)
-#define XILINX_DP_TX_INTR_SIGNAL_STATE_REPLY_TIMEOUT	(1 << 3)
+#define XILINX_DP_TX_INTR_SIGNAL_STATE_HPD		BIT(0)
+#define XILINX_DP_TX_INTR_SIGNAL_STATE_REQUEST		BIT(1)
+#define XILINX_DP_TX_INTR_SIGNAL_STATE_REPLY		BIT(2)
+#define XILINX_DP_TX_INTR_SIGNAL_STATE_REPLY_TIMEOUT	BIT(3)
 #define XILINX_DP_TX_AUX_REPLY_DATA			0x134
 #define XILINX_DP_TX_AUX_REPLY_CODE			0x138
 #define XILINX_DP_TX_AUX_REPLY_CODE_AUX_ACK		(0)
-#define XILINX_DP_TX_AUX_REPLY_CODE_AUX_NACK		(1 << 0)
-#define XILINX_DP_TX_AUX_REPLY_CODE_AUX_DEFER		(1 << 1)
+#define XILINX_DP_TX_AUX_REPLY_CODE_AUX_NACK		BIT(0)
+#define XILINX_DP_TX_AUX_REPLY_CODE_AUX_DEFER		BIT(1)
 #define XILINX_DP_TX_AUX_REPLY_CODE_I2C_ACK		(0)
-#define XILINX_DP_TX_AUX_REPLY_CODE_I2C_NACK		(1 << 2)
-#define XILINX_DP_TX_AUX_REPLY_CODE_I2C_DEFER		(1 << 3)
+#define XILINX_DP_TX_AUX_REPLY_CODE_I2C_NACK		BIT(2)
+#define XILINX_DP_TX_AUX_REPLY_CODE_I2C_DEFER		BIT(3)
 #define XILINX_DP_TX_AUX_REPLY_CNT			0x13c
 #define XILINX_DP_TX_AUX_REPLY_CNT_MASK			0xff
 #define XILINX_DP_TX_INTR_STATUS			0x140
 #define XILINX_DP_TX_INTR_MASK				0x144
-#define XILINX_DP_TX_INTR_HPD_IRQ			(1 << 0)
-#define XILINX_DP_TX_INTR_HPD_EVENT			(1 << 1)
-#define XILINX_DP_TX_INTR_REPLY_RECV			(1 << 2)
-#define XILINX_DP_TX_INTR_REPLY_TIMEOUT			(1 << 3)
-#define XILINX_DP_TX_INTR_HPD_PULSE			(1 << 4)
-#define XILINX_DP_TX_INTR_EXT_PKT_TXD			(1 << 5)
-#define XILINX_DP_TX_INTR_LIV_ABUF_UNDRFLW		(1 << 12)
-#define XILINX_DP_TX_INTR_VBLANK_START			(1 << 13)
-#define XILINX_DP_TX_INTR_PIXEL0_MATCH			(1 << 14)
-#define XILINX_DP_TX_INTR_PIXEL1_MATCH			(1 << 15)
+#define XILINX_DP_TX_INTR_HPD_IRQ			BIT(0)
+#define XILINX_DP_TX_INTR_HPD_EVENT			BIT(1)
+#define XILINX_DP_TX_INTR_REPLY_RECV			BIT(2)
+#define XILINX_DP_TX_INTR_REPLY_TIMEOUT			BIT(3)
+#define XILINX_DP_TX_INTR_HPD_PULSE			BIT(4)
+#define XILINX_DP_TX_INTR_EXT_PKT_TXD			BIT(5)
+#define XILINX_DP_TX_INTR_LIV_ABUF_UNDRFLW		BIT(12)
+#define XILINX_DP_TX_INTR_VBLANK_START			BIT(13)
+#define XILINX_DP_TX_INTR_PIXEL0_MATCH			BIT(14)
+#define XILINX_DP_TX_INTR_PIXEL1_MATCH			BIT(15)
 #define XILINX_DP_TX_INTR_CHBUF_UNDERFLW_MASK		0x3f0000
 #define XILINX_DP_TX_INTR_CHBUF_OVERFLW_MASK		0xfc00000
-#define XILINX_DP_TX_INTR_CUST_TS_2			(1 << 28)
-#define XILINX_DP_TX_INTR_CUST_TS			(1 << 29)
-#define XILINX_DP_TX_INTR_EXT_VSYNC_TS			(1 << 30)
-#define XILINX_DP_TX_INTR_VSYNC_TS			(1 << 31)
+#define XILINX_DP_TX_INTR_CUST_TS_2			BIT(28)
+#define XILINX_DP_TX_INTR_CUST_TS			BIT(29)
+#define XILINX_DP_TX_INTR_EXT_VSYNC_TS			BIT(30)
+#define XILINX_DP_TX_INTR_VSYNC_TS			BIT(31)
 #define XILINX_DP_TX_INTR_ALL				(XILINX_DP_TX_INTR_HPD_IRQ | \
 							 XILINX_DP_TX_INTR_HPD_EVENT | \
 							 XILINX_DP_TX_INTR_REPLY_RECV | \
@@ -158,13 +164,13 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_TX_MAIN_STREAM_HSTART			0x19c
 #define XILINX_DP_TX_MAIN_STREAM_VSTART			0x1a0
 #define XILINX_DP_TX_MAIN_STREAM_MISC0			0x1a4
-#define XILINX_DP_TX_MAIN_STREAM_MISC0_SYNC		(1 << 0)
+#define XILINX_DP_TX_MAIN_STREAM_MISC0_SYNC		BIT(0)
 #define XILINX_DP_TX_MAIN_STREAM_MISC0_FORMAT_SHIFT	1
-#define XILINX_DP_TX_MAIN_STREAM_MISC0_DYNAMIC_RANGE	(1 << 3)
-#define XILINX_DP_TX_MAIN_STREAM_MISC0_YCBCR_COLRIMETRY	(1 << 4)
+#define XILINX_DP_TX_MAIN_STREAM_MISC0_DYNAMIC_RANGE	BIT(3)
+#define XILINX_DP_TX_MAIN_STREAM_MISC0_YCBCR_COLRIMETRY	BIT(4)
 #define XILINX_DP_TX_MAIN_STREAM_MISC0_BPC_SHIFT	5
 #define XILINX_DP_TX_MAIN_STREAM_MISC1			0x1a8
-#define XILINX_DP_TX_MAIN_STREAM_MISC0_INTERLACED_VERT	(1 << 0)
+#define XILINX_DP_TX_MAIN_STREAM_MISC0_INTERLACED_VERT	BIT(0)
 #define XILINX_DP_TX_MAIN_STREAM_MISC0_STEREO_VID_SHIFT	1
 #define XILINX_DP_TX_M_VID				0x1ac
 #define XILINX_DP_TX_TRANSFER_UNIT_SIZE			0x1b0
@@ -178,10 +184,10 @@ MODULE_PARM_DESC(aux_timeout_ms,
 
 /* PHY configuration and status registers */
 #define XILINX_DP_TX_PHY_CONFIG				0x200
-#define XILINX_DP_TX_PHY_CONFIG_PHY_RESET		(1 << 0)
-#define XILINX_DP_TX_PHY_CONFIG_GTTX_RESET		(1 << 1)
-#define XILINX_DP_TX_PHY_CONFIG_PHY_PMA_RESET		(1 << 8)
-#define XILINX_DP_TX_PHY_CONFIG_PHY_PCS_RESET		(1 << 9)
+#define XILINX_DP_TX_PHY_CONFIG_PHY_RESET		BIT(0)
+#define XILINX_DP_TX_PHY_CONFIG_GTTX_RESET		BIT(1)
+#define XILINX_DP_TX_PHY_CONFIG_PHY_PMA_RESET		BIT(8)
+#define XILINX_DP_TX_PHY_CONFIG_PHY_PCS_RESET		BIT(9)
 #define XILINX_DP_TX_PHY_CONFIG_ALL_RESET		(XILINX_DP_TX_PHY_CONFIG_PHY_RESET | \
 							 XILINX_DP_TX_PHY_CONFIG_GTTX_RESET | \
 							 XILINX_DP_TX_PHY_CONFIG_PHY_PMA_RESET | \
@@ -199,10 +205,10 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_270	0x3
 #define XILINX_DP_TX_PHY_CLOCK_FEEDBACK_SETTING_540	0x5
 #define XILINX_DP_TX_PHY_POWER_DOWN			0x238
-#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_0		(1 << 0)
-#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_1		(1 << 1)
-#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_2		(1 << 2)
-#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_3		(1 << 3)
+#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_0		BIT(0)
+#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_1		BIT(1)
+#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_2		BIT(2)
+#define XILINX_DP_TX_PHY_POWER_DOWN_LANE_3		BIT(3)
 #define XILINX_DP_TX_PHY_POWER_DOWN_ALL			0xf
 #define XILINX_DP_TX_PHY_PRECURSOR_LANE_0		0x23c
 #define XILINX_DP_TX_PHY_PRECURSOR_LANE_1		0x240
@@ -216,7 +222,7 @@ MODULE_PARM_DESC(aux_timeout_ms,
 #define XILINX_DP_SUB_TX_PHY_PRECURSOR_LANE_1		0x250
 #define XILINX_DP_TX_PHY_STATUS				0x280
 #define XILINX_DP_TX_PHY_STATUS_PLL_LOCKED_SHIFT	4
-#define XILINX_DP_TX_PHY_STATUS_FPGA_PLL_LOCKED		(1 << 6)
+#define XILINX_DP_TX_PHY_STATUS_FPGA_PLL_LOCKED		BIT(6)
 
 /* Audio registers */
 #define XILINX_DP_TX_AUDIO_CONTROL			0x300
@@ -309,6 +315,7 @@ struct xilinx_drm_dp_config {
  * @phy: PHY handles for DP lanes
  * @aclk: clock source device for internal axi4-lite clock
  * @aud_clk: clock source device for audio clock
+ * @aud_clk_enabled: if audio clock is enabled
  * @dpms: current dpms state
  * @dpcd: DP configuration data from currently connected sink device
  * @link_config: common link configuration between IP core and sink device
@@ -326,6 +333,7 @@ struct xilinx_drm_dp {
 	struct phy *phy[DP_MAX_LANES];
 	struct clk *aclk;
 	struct clk *aud_clk;
+	bool aud_clk_enabled;
 
 	int dpms;
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
@@ -342,9 +350,11 @@ static inline struct xilinx_drm_dp *to_dp(struct drm_encoder *encoder)
 #define AUX_READ_BIT	0x1
 
 #ifdef CONFIG_DRM_XILINX_DP_DEBUG_FS
-#define XILINX_DP_DEBUGFS_READ_MAX_SIZE	32UL
+#define XILINX_DP_DEBUGFS_READ_MAX_SIZE	32
 #define XILINX_DP_DEBUGFS_UINT8_MAX_STR	"255"
-#define IN_RANGE(x, min, max) ((x) >= (min) && (x) <= (max))
+#define IN_RANGE(x, min, max) ({	\
+		typeof(x) _x = (x);	\
+		_x >= (min) && _x <= (max); })
 
 /* Match xilinx_dp_testcases vs dp_debugfs_reqs[] entry */
 enum xilinx_dp_testcases {
@@ -524,7 +534,8 @@ static ssize_t xilinx_dp_debugfs_max_linkrate_read(char **kern_buff)
 	}
 
 	output_str_len = strlen(XILINX_DP_DEBUGFS_UINT8_MAX_STR);
-	output_str_len = min(XILINX_DP_DEBUGFS_READ_MAX_SIZE, output_str_len);
+	output_str_len = min_t(size_t, XILINX_DP_DEBUGFS_READ_MAX_SIZE,
+			       output_str_len);
 	snprintf(*kern_buff, output_str_len, "%u", dpcd_link_bw);
 
 	return 0;
@@ -550,7 +561,8 @@ static ssize_t xilinx_dp_debugfs_max_lanecnt_read(char **kern_buff)
 
 	dpcd_lane_cnt &= DP_LANE_COUNT_MASK;
 	output_str_len = strlen(XILINX_DP_DEBUGFS_UINT8_MAX_STR);
-	output_str_len = min(XILINX_DP_DEBUGFS_READ_MAX_SIZE, output_str_len);
+	output_str_len = min_t(size_t, XILINX_DP_DEBUGFS_READ_MAX_SIZE,
+			       output_str_len);
 	snprintf(*kern_buff, output_str_len, "%u", dpcd_lane_cnt);
 
 	return 0;
@@ -585,7 +597,8 @@ xilinx_dp_debugfs_output_display_format_read(char **kern_buff)
 		return ret;
 
 	output_str_len = strlen("Success");
-	output_str_len = min(XILINX_DP_DEBUGFS_READ_MAX_SIZE, output_str_len);
+	output_str_len = min_t(size_t, XILINX_DP_DEBUGFS_READ_MAX_SIZE,
+			       output_str_len);
 	snprintf(*kern_buff, output_str_len, "%s", "Success");
 
 	return 0;
@@ -625,7 +638,8 @@ static ssize_t xilinx_dp_debugfs_read(struct file *f, char __user *buf,
 
 	if (dp_debugfs.testcase == DP_TC_NONE) {
 		out_str_len = strlen("No testcase executed");
-		out_str_len = min(XILINX_DP_DEBUGFS_READ_MAX_SIZE, out_str_len);
+		out_str_len = min_t(size_t, XILINX_DP_DEBUGFS_READ_MAX_SIZE,
+				    out_str_len);
 		snprintf(kern_buff, out_str_len, "%s", "No testcase executed");
 	} else {
 		ret = dp_debugfs_reqs[dp_debugfs.testcase].read_handler(
@@ -1032,14 +1046,13 @@ static int xilinx_drm_dp_link_train_cr(struct xilinx_drm_dp *dp)
 	bool cr_done;
 	int ret;
 
+	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET,
+			  DP_TRAINING_PATTERN_1);
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_TRAINING_PATTERN_SET,
 				 DP_TRAINING_PATTERN_1 |
 				 DP_LINK_SCRAMBLING_DISABLE);
 	if (ret < 0)
 		return ret;
-
-	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET,
-			  DP_TRAINING_PATTERN_1);
 
 	/* 256 loops should be maximum iterations for 4 lanes and 4 values.
 	 * So, This loop should exit before 512 iterations
@@ -1106,13 +1119,11 @@ static int xilinx_drm_dp_link_train_ce(struct xilinx_drm_dp *dp)
 		pat = DP_TRAINING_PATTERN_3;
 	else
 		pat = DP_TRAINING_PATTERN_2;
-
+	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET, pat);
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_TRAINING_PATTERN_SET,
 				 pat | DP_LINK_SCRAMBLING_DISABLE);
 	if (ret < 0)
 		return ret;
-
-	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET, pat);
 
 	for (tries = 0; tries < DP_MAX_TRAINING_TRIES; tries++) {
 		ret = xilinx_drm_dp_update_vs_emph(dp);
@@ -1222,14 +1233,14 @@ static int xilinx_drm_dp_train(struct xilinx_drm_dp *dp)
 	if (ret)
 		return ret;
 
-	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET,
-			  DP_TRAINING_PATTERN_DISABLE);
 	ret = drm_dp_dpcd_writeb(&dp->aux, DP_TRAINING_PATTERN_SET,
 				 DP_TRAINING_PATTERN_DISABLE);
 	if (ret < 0) {
 		DRM_ERROR("failed to disable training pattern\n");
 		return ret;
 	}
+	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_TRAINING_PATTERN_SET,
+			  DP_TRAINING_PATTERN_DISABLE);
 
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_SCRAMBLING_DISABLE, 0);
 
@@ -1305,7 +1316,7 @@ static int xilinx_drm_dp_init_aux(struct xilinx_drm_dp *dp)
 				  XILINX_DP_TX_INTR_ALL);
 	else
 		xilinx_drm_writel(dp->iomem, XILINX_DP_TX_INTR_MASK,
-				  ~XILINX_DP_TX_INTR_ALL);
+				  (u32)~XILINX_DP_TX_INTR_ALL);
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_ENABLE, 1);
 
 	return 0;
@@ -1391,8 +1402,17 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 	case DRM_MODE_DPMS_ON:
 		pm_runtime_get_sync(dp->dev);
 
-		if (dp->aud_clk)
-			xilinx_drm_writel(iomem, XILINX_DP_TX_AUDIO_CONTROL, 1);
+		if (dp->aud_clk && !dp->aud_clk_enabled) {
+			ret = clk_prepare_enable(dp->aud_clk);
+			if (ret) {
+				dev_err(dp->dev, "failed to enable aud_clk\n");
+			} else {
+				xilinx_drm_writel(iomem,
+						  XILINX_DP_TX_AUDIO_CONTROL,
+						  1);
+				dp->aud_clk_enabled = true;
+			}
+		}
 		xilinx_drm_writel(iomem, XILINX_DP_TX_PHY_POWER_DOWN, 0);
 
 		for (i = 0; i < 3; i++) {
@@ -1402,7 +1422,8 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 				break;
 			usleep_range(300, 500);
 		}
-
+		/* Some monitors take time to wake up properly */
+		msleep(xilinx_drm_dp_power_on_delay_ms);
 		if (ret != 1)
 			dev_dbg(dp->dev, "DP aux failed\n");
 		else
@@ -1417,9 +1438,11 @@ static void xilinx_drm_dp_dpms(struct drm_encoder *encoder, int dpms)
 		drm_dp_dpcd_writeb(&dp->aux, DP_SET_POWER, DP_SET_POWER_D3);
 		xilinx_drm_writel(iomem, XILINX_DP_TX_PHY_POWER_DOWN,
 				  XILINX_DP_TX_PHY_POWER_DOWN_ALL);
-		if (dp->aud_clk)
+		if (dp->aud_clk && dp->aud_clk_enabled) {
 			xilinx_drm_writel(iomem, XILINX_DP_TX_AUDIO_CONTROL, 0);
-
+			clk_disable_unprepare(dp->aud_clk);
+			dp->aud_clk_enabled = false;
+		}
 		pm_runtime_put_sync(dp->dev);
 
 		return;
@@ -1592,7 +1615,6 @@ static void xilinx_drm_dp_mode_set_stream(struct xilinx_drm_dp *dp,
 	reg = wpl + wpl % lane_cnt - lane_cnt;
 	xilinx_drm_writel(dp->iomem, XILINX_DP_TX_USER_DATA_CNT_PER_LANE, reg);
 }
-
 
 static void xilinx_drm_dp_mode_set(struct drm_encoder *encoder,
 				   struct drm_display_mode *mode,
@@ -1941,18 +1963,12 @@ static int xilinx_drm_dp_probe(struct platform_device *pdev)
 			goto error_aclk;
 		dp->aud_clk = NULL;
 		dev_dbg(dp->dev, "failed to get the aud_clk:\n");
-	} else {
-		ret = clk_prepare_enable(dp->aud_clk);
-		if (ret) {
-			dev_err(dp->dev, "failed to enable aud_clk\n");
-			goto error_aclk;
-		}
 	}
 
 	dp->dp_sub = xilinx_drm_dp_sub_of_get(pdev->dev.of_node);
 	if (IS_ERR(dp->dp_sub)) {
 		ret = PTR_ERR(dp->dp_sub);
-		goto error_aud_clk;
+		goto error_aclk;
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -2048,9 +2064,6 @@ error_dp_sub:
 	xilinx_drm_dp_sub_put(dp->dp_sub);
 error_phy:
 	xilinx_drm_dp_exit_phy(dp);
-error_aud_clk:
-	if (dp->aud_clk)
-		clk_disable_unprepare(dp->aud_clk);
 error_aclk:
 	clk_disable_unprepare(dp->aclk);
 	return ret;
@@ -2067,7 +2080,7 @@ static int xilinx_drm_dp_remove(struct platform_device *pdev)
 	xilinx_drm_dp_exit_phy(dp);
 	xilinx_drm_dp_sub_put(dp->dp_sub);
 
-	if (dp->aud_clk)
+	if (dp->aud_clk && dp->aud_clk_enabled)
 		clk_disable_unprepare(dp->aud_clk);
 	clk_disable_unprepare(dp->aclk);
 

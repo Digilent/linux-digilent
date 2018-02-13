@@ -581,6 +581,8 @@ struct dwc3_ep {
 
 	unsigned		direction:1;
 	unsigned		stream_capable:1;
+#define STREAM_TIMEOUT		50
+	struct timer_list	stream_timeout_timer;
 };
 
 enum dwc3_phy {
@@ -730,8 +732,10 @@ struct dwc3_request {
 	struct list_head	list;
 	struct dwc3_ep		*dep;
 	struct scatterlist	*sg;
+	struct scatterlist	*sg_to_start;
 
 	unsigned		num_pending_sgs;
+	unsigned int		num_queued_sgs;
 	u8			first_trb_index;
 	u8			epnum;
 	struct dwc3_trb		*trb;
@@ -1169,10 +1173,19 @@ static inline bool dwc3_is_usb31(struct dwc3 *dwc)
 #if IS_ENABLED(CONFIG_USB_DWC3_OF_SIMPLE)
 int dwc3_enable_hw_coherency(struct device *dev);
 void dwc3_set_phydata(struct device *dev, struct phy *phy);
+void dwc3_simple_wakeup_capable(struct device *dev, bool wakeup);
+void dwc3_set_simple_data(struct dwc3 *dwc);
+void dwc3_simple_check_quirks(struct dwc3 *dwc);
 #else
 static inline int dwc3_enable_hw_coherency(struct device *dev)
 { return 1; }
 static inline void dwc3_set_phydata(struct device *dev, struct phy *phy)
+{ ; }
+void dwc3_simple_wakeup_capable(struct device *dev, bool wakeup)
+{ ; }
+void dwc3_set_simple_data(struct dwc3 *dwc)
+{ ; }
+void dwc3_simple_check_quirks(struct dwc3 *dwc)
 { ; }
 #endif
 

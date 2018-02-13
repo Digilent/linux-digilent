@@ -70,12 +70,11 @@ static void xilinx_drm_crtc_dpms(struct drm_crtc *base_crtc, int dpms)
 	case DRM_MODE_DPMS_ON:
 		if (!crtc->pixel_clock_enabled) {
 			ret = clk_prepare_enable(crtc->pixel_clock);
-			if (ret) {
+			if (ret)
 				DRM_ERROR("failed to enable a pixel clock\n");
-				crtc->pixel_clock_enabled = false;
-			}
+			else
+				crtc->pixel_clock_enabled = true;
 		}
-		crtc->pixel_clock_enabled = true;
 
 		xilinx_drm_plane_manager_dpms(crtc->plane_manager, dpms);
 		xilinx_drm_plane_dpms(base_crtc->primary, dpms);
@@ -158,7 +157,7 @@ static int xilinx_drm_crtc_mode_set(struct drm_crtc *base_crtc,
 	diff = clk_get_rate(crtc->pixel_clock) - adjusted_mode->clock * 1000;
 	if (abs(diff) > (adjusted_mode->clock * 1000) / 20)
 		DRM_DEBUG_KMS("actual pixel clock rate(%d) is off by %ld\n",
-				adjusted_mode->clock, diff);
+			      adjusted_mode->clock, diff);
 
 	if (crtc->vtc) {
 		/* set video timing */
@@ -286,16 +285,6 @@ void xilinx_drm_crtc_destroy(struct drm_crtc *base_crtc)
 	xilinx_drm_plane_remove_manager(crtc->plane_manager);
 }
 
-/* crtc set config helper */
-static int xilinx_drm_crtc_helper_set_config(struct drm_mode_set *set)
-{
-	struct drm_device *drm = set->crtc->dev;
-
-	xilinx_drm_set_config(drm, set);
-
-	return drm_crtc_helper_set_config(set);
-}
-
 /* cancel page flip functions */
 void xilinx_drm_crtc_cancel_page_flip(struct drm_crtc *base_crtc,
 				      struct drm_file *file)
@@ -345,7 +334,7 @@ static int xilinx_drm_crtc_page_flip(struct drm_crtc *base_crtc,
 	int ret;
 
 	spin_lock_irqsave(&drm->event_lock, flags);
-	if (crtc->event != NULL) {
+	if (crtc->event) {
 		spin_unlock_irqrestore(&drm->event_lock, flags);
 		return -EBUSY;
 	}
@@ -462,7 +451,7 @@ unsigned int xilinx_drm_crtc_get_align(struct drm_crtc *base_crtc)
 
 static struct drm_crtc_funcs xilinx_drm_crtc_funcs = {
 	.destroy	= xilinx_drm_crtc_destroy,
-	.set_config	= xilinx_drm_crtc_helper_set_config,
+	.set_config	= drm_crtc_helper_set_config,
 	.page_flip	= xilinx_drm_crtc_page_flip,
 };
 
@@ -530,7 +519,6 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 			DRM_DEBUG_KMS("failed to get pixel clock\n");
 			crtc->pixel_clock = NULL;
 		}
-
 	}
 
 	ret = clk_prepare_enable(crtc->pixel_clock);
@@ -539,7 +527,7 @@ struct drm_crtc *xilinx_drm_crtc_create(struct drm_device *drm)
 		crtc->pixel_clock_enabled = false;
 		goto err_plane;
 	}
-	crtc->pixel_clock_enabled = true;
+	clk_disable_unprepare(crtc->pixel_clock);
 
 	sub_node = of_parse_phandle(drm->dev->of_node, "xlnx,vtc", 0);
 	if (sub_node) {

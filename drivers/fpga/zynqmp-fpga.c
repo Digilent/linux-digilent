@@ -20,13 +20,11 @@
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/string.h>
-#include <linux/soc/xilinx/zynqmp/pm.h>
+#include <linux/soc/xilinx/zynqmp/firmware.h>
 
 /* Constant Definitions */
 #define IXR_FPGA_DONE_MASK	0X00000008U
-#define IXR_FPGA_AUTHENTICATIN	0x00000004U
-#define IXR_FPGA_ENCRYPTION_USRKEY_EN	0x00000008U
-#define IXR_FPGA_ENCRYPTION_DEVKEY_EN	0x00000010U
+#define IXR_FPGA_ENCRYPTION_EN	0x00000008U
 
 struct zynqmp_fpga_priv {
 	struct device *dev;
@@ -50,19 +48,17 @@ static int zynqmp_fpga_ops_write(struct fpga_manager *mgr,
 {
 	struct zynqmp_fpga_priv *priv;
 	char *kbuf;
-	size_t dma_size = size;
+	size_t dma_size;
 	dma_addr_t dma_addr;
 	u32 transfer_length;
 	int ret;
 
 	priv = mgr->priv;
 
-	if (mgr->flags & IXR_FPGA_AUTHENTICATIN)
-		dma_size = dma_size + SIGNATURE_LEN + PUBLIC_KEY_LEN;
-	if (mgr->flags & IXR_FPGA_ENCRYPTION_DEVKEY_EN)
-		dma_size = dma_size + ENCRYPTED_IV_LEN;
-	else if (mgr->flags & IXR_FPGA_ENCRYPTION_USRKEY_EN)
-		dma_size = dma_size + ENCRYPTED_KEY_LEN + ENCRYPTED_IV_LEN;
+	if (mgr->flags & IXR_FPGA_ENCRYPTION_EN)
+		dma_size = size + ENCRYPTED_KEY_LEN + ENCRYPTED_IV_LEN;
+	else
+		dma_size = size;
 
 	kbuf = dma_alloc_coherent(priv->dev, dma_size, &dma_addr, GFP_KERNEL);
 	if (!kbuf)
@@ -70,14 +66,7 @@ static int zynqmp_fpga_ops_write(struct fpga_manager *mgr,
 
 	memcpy(kbuf, buf, size);
 
-	if (mgr->flags & IXR_FPGA_AUTHENTICATIN) {
-		memcpy(kbuf + size, mgr->signature, SIGNATURE_LEN);
-		memcpy(kbuf + size + SIGNATURE_LEN, mgr->pubkey,
-						PUBLIC_KEY_LEN);
-	}
-	if (mgr->flags & IXR_FPGA_ENCRYPTION_DEVKEY_EN)
-		memcpy(kbuf + size, mgr->iv, ENCRYPTED_IV_LEN);
-	else if (mgr->flags & IXR_FPGA_ENCRYPTION_USRKEY_EN) {
+	if (mgr->flags & IXR_FPGA_ENCRYPTION_EN) {
 		memcpy(kbuf + size, mgr->key, ENCRYPTED_KEY_LEN);
 		memcpy(kbuf + size + ENCRYPTED_KEY_LEN, mgr->iv,
 						ENCRYPTED_IV_LEN);

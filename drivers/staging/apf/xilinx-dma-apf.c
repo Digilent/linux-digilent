@@ -344,10 +344,6 @@ static irqreturn_t xdma_tx_intr_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void xdma_chan_remove(struct xdma_chan *chan)
-{
-}
-
 static void xdma_start_transfer(struct xdma_chan *chan,
 				int start_index,
 				int end_index)
@@ -1147,9 +1143,9 @@ static int xdma_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "unable to allocate BD's\n");
 			return -ENOMEM;
 		}
-		pr_info("  chan%d bd ring @ 0x%08x (size: 0x%08x bytes)\n",
+		pr_info("  chan%d bd ring @ 0x%p (size: 0x%x bytes)\n",
 			chan->id,
-			chan->bd_phys_addr,
+			(void *)chan->bd_phys_addr,
 			chan->bd_chain_size);
 
 		err = dma_init(xdev->chan[chan->id]);
@@ -1185,7 +1181,7 @@ static int xdma_remove(struct platform_device *pdev)
 
 	for (i = 0; i < XDMA_MAX_CHANS_PER_DEVICE; i++) {
 		if (xdev->chan[i])
-			xdma_chan_remove(xdev->chan[i]);
+			xdma_free_chan_resources(xdev->chan[i]);
 	}
 
 	return 0;

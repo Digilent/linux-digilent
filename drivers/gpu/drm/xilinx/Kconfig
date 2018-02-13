@@ -6,6 +6,7 @@ config DRM_XILINX
 	select DRM_GEM_CMA_HELPER
 	select DMA_ENGINE
 	select DRM_XILINX_DP_SUB
+	select XILINX_FRMBUF
 	help
 	  DRM display driver for Xilinx IP based pipelines.
 
@@ -51,8 +52,15 @@ config DRM_XILINX_MIPI_DSI
 	help
 	  DRM driver for Xilinx MIPI DSI IP.
 
+config DRM_XILINX_SDI
+	tristate "Xilinx DRM SDI Subsystem Driver"
+	depends on DRM_XILINX
+	help
+	  DRM driver for Xilinx Display Port Subsystem.
+
 config DRM_DIGILENT_ENCODER
 	tristate "Digilent VGA/HDMI DRM Encoder Driver"
 	depends on DRM_XILINX
 	help
 	  DRM slave encoder for Video-out on Digilent boards.
+

@@ -103,6 +103,59 @@ char *drm_get_format_name(uint32_t format)
 EXPORT_SYMBOL(drm_get_format_name);
 
 /**
+ * drm_format_plane_cpp_scaling_factor - get the plane's scaling factor bpp
+ * @format: pixel format (DRM_FORMAT_*)
+ *
+ * Returns:
+ * scaling factor of bpp for specified pixel format
+ */
+void drm_format_cpp_scaling_factor(uint32_t format,
+				   uint32_t *numerator, uint32_t *denominator)
+{
+	switch (format) {
+	case DRM_FORMAT_XV15:
+	case DRM_FORMAT_XV20:
+	case DRM_FORMAT_Y10:
+		*numerator = 10;
+		*denominator = 8;
+		break;
+	default:
+		*numerator   = 1;
+		*denominator = 1;
+		break;
+	}
+}
+EXPORT_SYMBOL(drm_format_cpp_scaling_factor);
+
+/**
+ * drm_format_width_padding_factor - get the plane's width padding factor
+ * @format: pixel format (DRM_FORMAT_*)
+ *
+ * Returns:
+ * padding width factor for specified pixel format which will
+ * take padding bits into consideration to calculate width
+ */
+void drm_format_width_padding_factor(uint32_t format,
+				     uint32_t *numerator,
+				     uint32_t *denominator)
+{
+	switch (format) {
+	case DRM_FORMAT_XV15:
+	case DRM_FORMAT_XV20:
+	case DRM_FORMAT_Y10:
+		/* 32 bits are required per 30 bits of data */
+		*numerator   = 32;
+		*denominator = 30;
+		break;
+	default:
+		*numerator   = 1;
+		*denominator = 1;
+		break;
+	}
+}
+EXPORT_SYMBOL(drm_format_width_padding_factor);
+
+/**
  * drm_fb_get_bpp_depth - get the bpp/depth values for format
  * @format: pixel format (DRM_FORMAT_*)
  * @depth: storage for the depth value
@@ -207,6 +260,8 @@ int drm_format_num_planes(uint32_t format)
 	case DRM_FORMAT_NV61:
 	case DRM_FORMAT_NV24:
 	case DRM_FORMAT_NV42:
+	case DRM_FORMAT_XV15:
+	case DRM_FORMAT_XV20:
 		return 2;
 	default:
 		return 1;
@@ -231,6 +286,11 @@ int drm_format_plane_cpp(uint32_t format, int plane)
 		return 0;
 
 	switch (format) {
+	case DRM_FORMAT_XVUY8888:
+	case DRM_FORMAT_XVUY2101010:
+		return 4;
+	case DRM_FORMAT_VUY888:
+		return 3;
 	case DRM_FORMAT_YUYV:
 	case DRM_FORMAT_YVYU:
 	case DRM_FORMAT_UYVY:
@@ -242,6 +302,8 @@ int drm_format_plane_cpp(uint32_t format, int plane)
 	case DRM_FORMAT_NV61:
 	case DRM_FORMAT_NV24:
 	case DRM_FORMAT_NV42:
+	case DRM_FORMAT_XV15:
+	case DRM_FORMAT_XV20:
 		return plane ? 2 : 1;
 	case DRM_FORMAT_YUV410:
 	case DRM_FORMAT_YVU410:
@@ -253,6 +315,8 @@ int drm_format_plane_cpp(uint32_t format, int plane)
 	case DRM_FORMAT_YVU422:
 	case DRM_FORMAT_YUV444:
 	case DRM_FORMAT_YVU444:
+	case DRM_FORMAT_Y8:
+	case DRM_FORMAT_Y10:
 		return 1;
 	default:
 		drm_fb_get_bpp_depth(format, &depth, &bpp);
@@ -285,6 +349,8 @@ int drm_format_horz_chroma_subsampling(uint32_t format)
 	case DRM_FORMAT_NV21:
 	case DRM_FORMAT_NV16:
 	case DRM_FORMAT_NV61:
+	case DRM_FORMAT_XV15:
+	case DRM_FORMAT_XV20:
 	case DRM_FORMAT_YUV422:
 	case DRM_FORMAT_YVU422:
 	case DRM_FORMAT_YUV420:
@@ -314,6 +380,7 @@ int drm_format_vert_chroma_subsampling(uint32_t format)
 	case DRM_FORMAT_YVU420:
 	case DRM_FORMAT_NV12:
 	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_XV15:
 		return 2;
 	default:
 		return 1;

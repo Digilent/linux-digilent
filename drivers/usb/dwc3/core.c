@@ -486,6 +486,11 @@ static int dwc3_config_soc_bus(struct dwc3 *dwc)
 			return ret;
 	}
 
+	/* Send struct dwc3 to dwc3-of-simple for configuring VBUS
+	 * during suspend/resume
+	 */
+	dwc3_set_simple_data(dwc);
+
 	return 0;
 }
 
@@ -1141,6 +1146,9 @@ static int dwc3_probe(struct platform_device *pdev)
 	dwc->hird_threshold = hird_threshold
 		| (dwc->is_utmi_l1_suspend << 4);
 
+	/* Check if extra quirks to be added */
+	dwc3_simple_check_quirks(dwc);
+
 	platform_set_drvdata(pdev, dwc);
 	dwc3_cache_hwparams(dwc);
 
@@ -1418,6 +1426,16 @@ static int dwc3_suspend(struct device *dev)
 {
 	struct dwc3	*dwc = dev_get_drvdata(dev);
 	int		ret;
+
+	/* Inform dwc3-of-simple about wakeup capability when dr_mode is set
+	 * to peripheral mode only. xhci-plat.c takes care of host mode.
+	 */
+	if (dwc->dr_mode != USB_DR_MODE_HOST) {
+		if (dwc->remote_wakeup)
+			dwc3_simple_wakeup_capable(dev, true);
+		else
+			dwc3_simple_wakeup_capable(dev, false);
+	}
 
 	ret = dwc3_suspend_common(dwc);
 	if (ret)

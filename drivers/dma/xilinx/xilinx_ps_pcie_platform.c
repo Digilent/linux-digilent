@@ -22,13 +22,13 @@
 
 #define MIN_SW_INTR_TRANSACTIONS       2
 
-#define CHANNEL_PROPERTY_LENGTH 20
+#define CHANNEL_PROPERTY_LENGTH 50
 #define WORKQ_NAME_SIZE		100
 #define INTR_HANDLR_NAME_SIZE   100
 
 #define PS_PCIE_DMA_IRQ_NOSHARE    0
 
-#define MAX_COAELSE_COUNT     255
+#define MAX_COALESCE_COUNT     255
 
 #define DMA_CHANNEL_REGS_SIZE 0x80
 
@@ -79,7 +79,7 @@
 #define DMA_SW_INTR_ASSRT_BIT           BIT(3)
 
 #define SOURCE_CONTROL_BD_BYTE_COUNT_MASK       GENMASK(23, 0)
-#define SOURCE_CONTROL_BD_HOST_MEMORY_BIT       BIT(24)
+#define SOURCE_CONTROL_BD_LOC_AXI		BIT(24)
 #define SOURCE_CONTROL_BD_EOP_BIT               BIT(25)
 #define SOURCE_CONTROL_BD_INTR_BIT              BIT(26)
 #define SOURCE_CONTROL_BACK_TO_BACK_PACK_BIT    BIT(25)
@@ -103,6 +103,8 @@
 
 #define AXI_ATTRIBUTE       0x3
 #define PCI_ATTRIBUTE       0x2
+
+#define ROOTDMA_Q_READ_ATTRIBUTE 0x8
 
 /*
  * User Id programmed into Source Q will be copied into Status Q of Destination
@@ -262,9 +264,9 @@ enum dev_channel_properties {
  * @state: Indicates channel state
  * @channel_lock: Spin lock to be used before changing channel state
  * @cookie_lock: Spin lock to be used before assigning cookie for a transaction
- * @coaelseCount: Indicates number of packet transfers before interrupts
+ * @coalesce_count: Indicates number of packet transfers before interrupts
  * @poll_timer_freq:Indicates frequency of polling for completed transactions
- * @poll_timer: Timer to poll dma buffer descriptors if coaelse count is > 0
+ * @poll_timer: Timer to poll dma buffer descriptors if coalesce count is > 0
  * @src_avail_descriptors: Available sgl source descriptors
  * @src_desc_lock: Lock for synchronizing src_avail_descriptors
  * @dst_avail_descriptors: Available sgl destination descriptors
@@ -285,6 +287,10 @@ enum dev_channel_properties {
  * @pdst_sta_bd: Virtual address of Dst Status Q buffer Descriptors
  * @dst_staprobe_idx: Holds index of Status Q to be examined for updates
  * @dst_sta_hw_probe_idx: Holds index of max limit of Dst Status Q for hardware
+ * @@read_attribute: Describes the attributes of buffer in srcq
+ * @@write_attribute: Describes the attributes of buffer in dstq
+ * @@intr_status_offset: Register offset to be cheked on receiving interrupt
+ * @@intr_status_offset: Register offset to be used to control interrupts
  * @ppkt_ctx_srcq: Virtual address of packet context to Src Q updates
  * @idx_ctx_srcq_head: Holds index of packet context to be filled for Source Q
  * @idx_ctx_srcq_tail: Holds index of packet context to be examined for Source Q
@@ -345,7 +351,7 @@ struct ps_pcie_dma_chan {
 
 	spinlock_t cookie_lock;  /* For acquiring cookie from dma framework*/
 
-	u32 coaelse_count;
+	u32 coalesce_count;
 	u32 poll_timer_freq;
 
 	struct timer_list poll_timer;
@@ -373,6 +379,12 @@ struct ps_pcie_dma_chan {
 	struct STATUS_DMA_DESCRIPTOR *pdst_sta_bd;
 	u32 dst_staprobe_idx;
 	u32 dst_sta_hw_probe_idx;
+
+	u32 read_attribute;
+	u32 write_attribute;
+
+	u32 intr_status_offset;
+	u32 intr_control_offset;
 
 	struct PACKET_TRANSFER_PARAMS *ppkt_ctx_srcq;
 	u16 idx_ctx_srcq_head;
@@ -423,6 +435,7 @@ struct ps_pcie_dma_chan {
 
 /*
  * struct xlnx_pcie_dma_device - Driver specific platform device structure
+ * @is_rootdma: Indicates whether the dma instance is root port dma
  * @dma_buf_ext_addr: Indicates whether target system is 32 bit or 64 bit
  * @bar_mask: Indicates available pcie bars
  * @board_number: Count value of platform device
@@ -434,8 +447,12 @@ struct ps_pcie_dma_chan {
  * @irq_vecs: Number of irq vectors allocated to pci device
  * @pci_dev: Parent pci device which created this platform device
  * @bar_info: PCIe bar related information
+ * @platform_irq_vec: Platform irq vector number for root dma
+ * @rootdma_vendor: PCI Vendor id for root dma
+ * @rootdma_device: PCI Device id for root dma
  */
 struct xlnx_pcie_dma_device {
+	bool is_rootdma;
 	bool dma_buf_ext_addr;
 	u32 bar_mask;
 	u16 board_number;
@@ -447,6 +464,9 @@ struct xlnx_pcie_dma_device {
 	void __iomem *reg_base;
 	struct pci_dev *pci_dev;
 	struct BAR_PARAMS bar_info[MAX_BARS];
+	int platform_irq_vec;
+	u16 rootdma_vendor;
+	u16 rootdma_device;
 };
 
 #define to_xilinx_chan(chan) \
@@ -465,6 +485,7 @@ static void ps_pcie_dma_clr_mask(struct ps_pcie_dma_chan *chan, u32 reg,
 static void ps_pcie_dma_set_mask(struct ps_pcie_dma_chan *chan, u32 reg,
 				 u32 mask);
 static int irq_setup(struct xlnx_pcie_dma_device *xdev);
+static int platform_irq_setup(struct xlnx_pcie_dma_device *xdev);
 static int chan_intr_setup(struct xlnx_pcie_dma_device *xdev);
 static int device_intr_setup(struct xlnx_pcie_dma_device *xdev);
 static int irq_probe(struct xlnx_pcie_dma_device *xdev);
@@ -473,6 +494,8 @@ static irqreturn_t ps_pcie_dma_dev_intr_handler(int irq, void *data);
 static irqreturn_t ps_pcie_dma_chan_intr_handler(int irq, void *data);
 static int init_hw_components(struct ps_pcie_dma_chan *chan);
 static int init_sw_components(struct ps_pcie_dma_chan *chan);
+static void update_channel_read_attribute(struct ps_pcie_dma_chan *chan);
+static void update_channel_write_attribute(struct ps_pcie_dma_chan *chan);
 static void ps_pcie_chan_reset(struct ps_pcie_dma_chan *chan);
 static void poll_completed_transactions(unsigned long arg);
 static bool check_descriptors_for_two_queues(struct ps_pcie_dma_chan *chan,
@@ -527,6 +550,10 @@ static struct dma_async_tx_descriptor *xlnx_ps_pcie_dma_prep_interrupt(
 		struct dma_chan *channel, unsigned long flags);
 static void xlnx_ps_pcie_dma_issue_pending(struct dma_chan *channel);
 static int xlnx_ps_pcie_dma_terminate_all(struct dma_chan *channel);
+static int read_rootdma_config(struct platform_device *platform_dev,
+			       struct xlnx_pcie_dma_device *xdev);
+static int read_epdma_config(struct platform_device *platform_dev,
+			     struct xlnx_pcie_dma_device *xdev);
 static int xlnx_pcie_dma_driver_probe(struct platform_device *platform_dev);
 static int xlnx_pcie_dma_driver_remove(struct platform_device *platform_dev);
 
@@ -684,6 +711,22 @@ static int irq_setup(struct xlnx_pcie_dma_device *xdev)
 	return err;
 }
 
+static int platform_irq_setup(struct xlnx_pcie_dma_device *xdev)
+{
+	int err;
+
+	err = devm_request_irq(xdev->dev,
+			       xdev->platform_irq_vec,
+			       ps_pcie_dma_dev_intr_handler,
+			       IRQF_SHARED,
+			       "PS PCIe Root DMA Handler", xdev);
+	if (err)
+		dev_err(xdev->dev, "Couldn't request irq %d\n",
+			xdev->platform_irq_vec);
+
+	return err;
+}
+
 /**
  * irq_probe - Checks which interrupt types can be serviced by hardware
  *
@@ -718,7 +761,7 @@ static int ps_pcie_check_intr_status(struct ps_pcie_dma_chan *chan)
 	if (chan->state != CHANNEL_AVAILABLE)
 		return err;
 
-	status = chan->chan_base->pcie_intr_status;
+	status = ps_pcie_dma_read(chan, chan->intr_status_offset);
 
 	if (status & DMA_INTSTATUS_SGLINTR_BIT) {
 		if (chan->primary_desc_cleanup) {
@@ -726,9 +769,8 @@ static int ps_pcie_check_intr_status(struct ps_pcie_dma_chan *chan)
 				   &chan->handle_primary_desc_cleanup);
 		}
 		/* Clearing Persistent bit */
-		chan->chan_base->pcie_intr_status =
-			chan->chan_base->pcie_intr_status |
-			DMA_INTSTATUS_SGLINTR_BIT;
+		ps_pcie_dma_set_mask(chan, chan->intr_status_offset,
+				     DMA_INTSTATUS_SGLINTR_BIT);
 		err = 0;
 	}
 
@@ -736,9 +778,8 @@ static int ps_pcie_check_intr_status(struct ps_pcie_dma_chan *chan)
 		if (chan->sw_intrs_wrkq)
 			queue_work(chan->sw_intrs_wrkq, &chan->handle_sw_intrs);
 		/* Clearing Persistent bit */
-		chan->chan_base->pcie_intr_status =
-			chan->chan_base->pcie_intr_status |
-			DMA_INTSTATUS_SWINTR_BIT;
+		ps_pcie_dma_set_mask(chan, chan->intr_status_offset,
+				     DMA_INTSTATUS_SWINTR_BIT);
 		err = 0;
 	}
 
@@ -771,9 +812,8 @@ static int ps_pcie_check_intr_status(struct ps_pcie_dma_chan *chan)
 			chan->chan_base->stad_q_size,
 			chan->chan_base->stad_q_next);
 		/* Clearing Persistent bit */
-		chan->chan_base->pcie_intr_status =
-			chan->chan_base->pcie_intr_status |
-			DMA_INTSTATUS_DMAERR_BIT;
+		ps_pcie_dma_set_mask(chan, chan->intr_status_offset,
+				     DMA_INTSTATUS_DMAERR_BIT);
 
 		handle_error(chan);
 
@@ -792,7 +832,13 @@ static int init_hw_components(struct ps_pcie_dma_chan *chan)
 			upper_32_bits(chan->src_sgl_bd_pa);
 		chan->chan_base->src_q_size = chan->total_descriptors;
 		chan->chan_base->src_q_limit = 0;
-		chan->chan_base->src_q_low =
+		if (chan->xdev->is_rootdma) {
+			chan->chan_base->src_q_low = ROOTDMA_Q_READ_ATTRIBUTE
+						     | DMA_QPTRLO_QLOCAXI_BIT;
+		} else {
+			chan->chan_base->src_q_low = 0;
+		}
+		chan->chan_base->src_q_low |=
 			(lower_32_bits((chan->src_sgl_bd_pa))
 			 & ~(DMA_SRC_Q_LOW_BIT_SHIFT))
 			| DMA_QPTRLO_Q_ENABLE_BIT;
@@ -802,7 +848,13 @@ static int init_hw_components(struct ps_pcie_dma_chan *chan)
 			upper_32_bits(chan->src_sta_bd_pa);
 		chan->chan_base->stas_q_size = chan->total_descriptors;
 		chan->chan_base->stas_q_limit = chan->total_descriptors - 1;
-		chan->chan_base->stas_q_low =
+		if (chan->xdev->is_rootdma) {
+			chan->chan_base->stas_q_low = ROOTDMA_Q_READ_ATTRIBUTE
+						      | DMA_QPTRLO_QLOCAXI_BIT;
+		} else {
+			chan->chan_base->stas_q_low = 0;
+		}
+		chan->chan_base->stas_q_low |=
 			(lower_32_bits(chan->src_sta_bd_pa)
 			 & ~(DMA_SRC_Q_LOW_BIT_SHIFT))
 			| DMA_QPTRLO_Q_ENABLE_BIT;
@@ -815,7 +867,13 @@ static int init_hw_components(struct ps_pcie_dma_chan *chan)
 			upper_32_bits(chan->dst_sgl_bd_pa);
 		chan->chan_base->dst_q_size = chan->total_descriptors;
 		chan->chan_base->dst_q_limit = 0;
-		chan->chan_base->dst_q_low =
+		if (chan->xdev->is_rootdma) {
+			chan->chan_base->dst_q_low = ROOTDMA_Q_READ_ATTRIBUTE
+						     | DMA_QPTRLO_QLOCAXI_BIT;
+		} else {
+			chan->chan_base->dst_q_low = 0;
+		}
+		chan->chan_base->dst_q_low |=
 			(lower_32_bits(chan->dst_sgl_bd_pa)
 			 & ~(DMA_SRC_Q_LOW_BIT_SHIFT))
 			| DMA_QPTRLO_Q_ENABLE_BIT;
@@ -825,13 +883,72 @@ static int init_hw_components(struct ps_pcie_dma_chan *chan)
 			upper_32_bits(chan->dst_sta_bd_pa);
 		chan->chan_base->stad_q_size = chan->total_descriptors;
 		chan->chan_base->stad_q_limit = chan->total_descriptors - 1;
-		chan->chan_base->stad_q_low =
+		if (chan->xdev->is_rootdma) {
+			chan->chan_base->stad_q_low = ROOTDMA_Q_READ_ATTRIBUTE
+						      | DMA_QPTRLO_QLOCAXI_BIT;
+		} else {
+			chan->chan_base->stad_q_low = 0;
+		}
+		chan->chan_base->stad_q_low |=
 			(lower_32_bits(chan->dst_sta_bd_pa)
 			 & ~(DMA_SRC_Q_LOW_BIT_SHIFT))
 			| DMA_QPTRLO_Q_ENABLE_BIT;
 	}
 
 	return 0;
+}
+
+static void update_channel_read_attribute(struct ps_pcie_dma_chan *chan)
+{
+	if (chan->xdev->is_rootdma) {
+		/* For Root DMA, Host Memory and Buffer Descriptors
+		 * will be on AXI side
+		 */
+		if (chan->srcq_buffer_location == BUFFER_LOC_PCI) {
+			chan->read_attribute = (AXI_ATTRIBUTE <<
+						SRC_CTL_ATTRIB_BIT_SHIFT) |
+						SOURCE_CONTROL_BD_LOC_AXI;
+		} else if (chan->srcq_buffer_location == BUFFER_LOC_AXI) {
+			chan->read_attribute = AXI_ATTRIBUTE <<
+					       SRC_CTL_ATTRIB_BIT_SHIFT;
+		}
+	} else {
+		if (chan->srcq_buffer_location == BUFFER_LOC_PCI) {
+			chan->read_attribute = PCI_ATTRIBUTE <<
+					       SRC_CTL_ATTRIB_BIT_SHIFT;
+		} else if (chan->srcq_buffer_location == BUFFER_LOC_AXI) {
+			chan->read_attribute = (AXI_ATTRIBUTE <<
+						SRC_CTL_ATTRIB_BIT_SHIFT) |
+						SOURCE_CONTROL_BD_LOC_AXI;
+		}
+	}
+}
+
+static void update_channel_write_attribute(struct ps_pcie_dma_chan *chan)
+{
+	if (chan->xdev->is_rootdma) {
+		/* For Root DMA, Host Memory and Buffer Descriptors
+		 * will be on AXI side
+		 */
+		if (chan->dstq_buffer_location == BUFFER_LOC_PCI) {
+			chan->write_attribute = (AXI_ATTRIBUTE <<
+						 SRC_CTL_ATTRIB_BIT_SHIFT) |
+						SOURCE_CONTROL_BD_LOC_AXI;
+		} else if (chan->srcq_buffer_location == BUFFER_LOC_AXI) {
+			chan->write_attribute = AXI_ATTRIBUTE <<
+						SRC_CTL_ATTRIB_BIT_SHIFT;
+		}
+	} else {
+		if (chan->dstq_buffer_location == BUFFER_LOC_PCI) {
+			chan->write_attribute = PCI_ATTRIBUTE <<
+						SRC_CTL_ATTRIB_BIT_SHIFT;
+		} else if (chan->dstq_buffer_location == BUFFER_LOC_AXI) {
+			chan->write_attribute = (AXI_ATTRIBUTE <<
+						 SRC_CTL_ATTRIB_BIT_SHIFT) |
+						SOURCE_CONTROL_BD_LOC_AXI;
+		}
+	}
+	chan->write_attribute |= SOURCE_CONTROL_BACK_TO_BACK_PACK_BIT;
 }
 
 static int init_sw_components(struct ps_pcie_dma_chan *chan)
@@ -980,7 +1097,6 @@ static void xlnx_ps_pcie_update_srcq(struct ps_pcie_dma_chan *chan,
 	struct PACKET_TRANSFER_PARAMS *pkt_ctx = NULL;
 	struct scatterlist *sgl_ptr;
 	unsigned int i;
-	u32 read_attribute = 0;
 
 	pkt_ctx = chan->ppkt_ctx_srcq + chan->idx_ctx_srcq_head;
 	if (pkt_ctx->availability_status == IN_USE) {
@@ -994,12 +1110,8 @@ static void xlnx_ps_pcie_update_srcq(struct ps_pcie_dma_chan *chan,
 	pkt_ctx->availability_status = IN_USE;
 	pkt_ctx->sgl = seg->tx_elements.src_sgl;
 
-	if (chan->srcq_buffer_location == BUFFER_LOC_PCI) {
+	if (chan->srcq_buffer_location == BUFFER_LOC_PCI)
 		pkt_ctx->seg = seg;
-		read_attribute = PCI_ATTRIBUTE << SRC_CTL_ATTRIB_BIT_SHIFT;
-	} else
-		read_attribute = (AXI_ATTRIBUTE << SRC_CTL_ATTRIB_BIT_SHIFT) |
-				 SOURCE_CONTROL_BD_HOST_MEMORY_BIT;
 
 	/*  Get the address of the next available DMA Descriptor */
 	pdesc = chan->psrc_sgl_bd + chan->src_sgl_freeidx;
@@ -1018,7 +1130,7 @@ static void xlnx_ps_pcie_update_srcq(struct ps_pcie_dma_chan *chan,
 
 		pdesc->control_byte_count = (sg_dma_len(sgl_ptr) &
 					    SOURCE_CONTROL_BD_BYTE_COUNT_MASK) |
-					    read_attribute;
+					    chan->read_attribute;
 		if (pkt_ctx->seg)
 			pkt_ctx->requested_bytes += sg_dma_len(sgl_ptr);
 
@@ -1053,7 +1165,6 @@ static void xlnx_ps_pcie_update_dstq(struct ps_pcie_dma_chan *chan,
 	struct PACKET_TRANSFER_PARAMS *pkt_ctx = NULL;
 	struct scatterlist *sgl_ptr;
 	unsigned int i;
-	u32 write_attribute = 0;
 
 	pkt_ctx = chan->ppkt_ctx_dstq + chan->idx_ctx_dstq_head;
 	if (pkt_ctx->availability_status == IN_USE) {
@@ -1068,14 +1179,8 @@ static void xlnx_ps_pcie_update_dstq(struct ps_pcie_dma_chan *chan,
 	pkt_ctx->availability_status = IN_USE;
 	pkt_ctx->sgl = seg->tx_elements.dst_sgl;
 
-	if (chan->dstq_buffer_location == BUFFER_LOC_PCI) {
+	if (chan->dstq_buffer_location == BUFFER_LOC_PCI)
 		pkt_ctx->seg = seg;
-		write_attribute = (PCI_ATTRIBUTE << SRC_CTL_ATTRIB_BIT_SHIFT) |
-					SOURCE_CONTROL_BACK_TO_BACK_PACK_BIT;
-	} else
-		write_attribute = (AXI_ATTRIBUTE << SRC_CTL_ATTRIB_BIT_SHIFT) |
-					SOURCE_CONTROL_BD_HOST_MEMORY_BIT |
-					SOURCE_CONTROL_BACK_TO_BACK_PACK_BIT;
 
 	pdesc = chan->pdst_sgl_bd + chan->dst_sgl_freeidx;
 	pkt_ctx->idx_sop = chan->dst_sgl_freeidx;
@@ -1093,7 +1198,7 @@ static void xlnx_ps_pcie_update_dstq(struct ps_pcie_dma_chan *chan,
 
 		pdesc->control_byte_count = (sg_dma_len(sgl_ptr) &
 					SOURCE_CONTROL_BD_BYTE_COUNT_MASK) |
-						write_attribute;
+						chan->write_attribute;
 
 		if (pkt_ctx->seg)
 			pkt_ctx->requested_bytes += sg_dma_len(sgl_ptr);
@@ -1166,13 +1271,13 @@ static void dst_cleanup_work(struct work_struct *work)
 	struct STATUS_DMA_DESCRIPTOR *psta_bd;
 	struct DEST_DMA_DESCRIPTOR *pdst_bd;
 	struct PACKET_TRANSFER_PARAMS *ppkt_ctx;
+	struct dmaengine_result rslt;
+	u32 completed_bytes;
 	u32 dstq_desc_idx;
 
 	psta_bd = chan->pdst_sta_bd + chan->dst_staprobe_idx;
 
 	while (psta_bd->status_flag_byte_count & STA_BD_COMPLETED_BIT) {
-		u32 completed_bytes = 0;
-
 		if (psta_bd->status_flag_byte_count &
 				STA_BD_DESTINATION_ERROR_BIT) {
 			dev_err(chan->dev,
@@ -1211,7 +1316,7 @@ static void dst_cleanup_work(struct work_struct *work)
 		}
 
 		chan->idx_ctx_dstq_tail = psta_bd->user_handle;
-		ppkt_ctx = chan->ppkt_ctx_dstq + psta_bd->user_handle;
+		ppkt_ctx = chan->ppkt_ctx_dstq + chan->idx_ctx_dstq_tail;
 		completed_bytes = (psta_bd->status_flag_byte_count &
 					STA_BD_BYTE_COUNT_MASK) >>
 						STA_BD_BYTE_COUNT_SHIFT;
@@ -1255,8 +1360,6 @@ static void dst_cleanup_work(struct work_struct *work)
 
 		/* Invoking callback */
 		if (ppkt_ctx->seg) {
-			struct dmaengine_result rslt;
-
 			spin_lock(&chan->cookie_lock);
 			dma_cookie_complete(&ppkt_ctx->seg->async_tx);
 			spin_unlock(&chan->cookie_lock);
@@ -1290,13 +1393,13 @@ static void src_cleanup_work(struct work_struct *work)
 	struct STATUS_DMA_DESCRIPTOR *psta_bd;
 	struct SOURCE_DMA_DESCRIPTOR *psrc_bd;
 	struct PACKET_TRANSFER_PARAMS *ppkt_ctx;
+	struct dmaengine_result rslt;
+	u32 completed_bytes;
 	u32 srcq_desc_idx;
 
 	psta_bd = chan->psrc_sta_bd + chan->src_staprobe_idx;
 
 	while (psta_bd->status_flag_byte_count & STA_BD_COMPLETED_BIT) {
-		u32 completed_bytes = 0;
-
 		if (psta_bd->status_flag_byte_count &
 				STA_BD_DESTINATION_ERROR_BIT) {
 			dev_err(chan->dev,
@@ -1333,7 +1436,7 @@ static void src_cleanup_work(struct work_struct *work)
 			break;
 		}
 		chan->idx_ctx_srcq_tail = psta_bd->user_handle;
-		ppkt_ctx = chan->ppkt_ctx_srcq + psta_bd->user_handle;
+		ppkt_ctx = chan->ppkt_ctx_srcq + chan->idx_ctx_srcq_tail;
 		completed_bytes = (psta_bd->status_flag_byte_count
 					& STA_BD_BYTE_COUNT_MASK) >>
 						STA_BD_BYTE_COUNT_SHIFT;
@@ -1376,8 +1479,6 @@ static void src_cleanup_work(struct work_struct *work)
 
 		/* Invoking callback */
 		if (ppkt_ctx->seg) {
-			struct dmaengine_result rslt;
-
 			spin_lock(&chan->cookie_lock);
 			dma_cookie_complete(&ppkt_ctx->seg->async_tx);
 			spin_unlock(&chan->cookie_lock);
@@ -1397,7 +1498,7 @@ static void src_cleanup_work(struct work_struct *work)
 /**
  * ps_pcie_chan_primary_work - Masks out interrupts, invokes source Q and
  * destination Q processing. Waits for source Q and destination Q processing
- * and re enables interrupts. Same work is invoked by timer if coaelse count
+ * and re enables interrupts. Same work is invoked by timer if coalesce count
  * is greater than zero and interrupts are not invoked before the timeout period
  *
  * @work: Work associated with the task
@@ -1412,7 +1513,7 @@ static void ps_pcie_chan_primary_work(struct work_struct *work)
 				handle_primary_desc_cleanup);
 
 	/* Disable interrupts for Channel */
-	ps_pcie_dma_clr_mask(chan, DMA_PCIE_INTR_CNTRL_REG_OFFSET,
+	ps_pcie_dma_clr_mask(chan, chan->intr_control_offset,
 			     DMA_INTCNTRL_ENABLINTR_BIT);
 
 	if (chan->psrc_sgl_bd) {
@@ -1434,7 +1535,7 @@ static void ps_pcie_chan_primary_work(struct work_struct *work)
 		wait_for_completion_interruptible(&chan->dstq_work_complete);
 
 	/* Enable interrupts for channel */
-	ps_pcie_dma_set_mask(chan, DMA_PCIE_INTR_CNTRL_REG_OFFSET,
+	ps_pcie_dma_set_mask(chan, chan->intr_control_offset,
 			     DMA_INTCNTRL_ENABLINTR_BIT);
 
 	if (chan->chan_programming) {
@@ -1442,8 +1543,139 @@ static void ps_pcie_chan_primary_work(struct work_struct *work)
 			   &chan->handle_chan_programming);
 	}
 
-	if (chan->coaelse_count > 0 && chan->poll_timer.function)
+	if (chan->coalesce_count > 0 && chan->poll_timer.function)
 		mod_timer(&chan->poll_timer, jiffies + chan->poll_timer_freq);
+}
+
+static int read_rootdma_config(struct platform_device *platform_dev,
+			       struct xlnx_pcie_dma_device *xdev)
+{
+	int err;
+	struct resource *r;
+
+	err = dma_set_mask(&platform_dev->dev, DMA_BIT_MASK(64));
+	if (err) {
+		dev_info(&platform_dev->dev, "Cannot set 64 bit DMA mask\n");
+		err = dma_set_mask(&platform_dev->dev, DMA_BIT_MASK(32));
+		if (err) {
+			dev_err(&platform_dev->dev, "DMA mask set error\n");
+			return err;
+		}
+	}
+
+	err = dma_set_coherent_mask(&platform_dev->dev, DMA_BIT_MASK(64));
+	if (err) {
+		dev_info(&platform_dev->dev, "Cannot set 64 bit consistent DMA mask\n");
+		err = dma_set_coherent_mask(&platform_dev->dev,
+					    DMA_BIT_MASK(32));
+		if (err) {
+			dev_err(&platform_dev->dev, "Cannot set consistent DMA mask\n");
+			return err;
+		}
+	}
+
+	r = platform_get_resource_byname(platform_dev, IORESOURCE_MEM,
+					 "ps_pcie_regbase");
+	if (!r) {
+		dev_err(&platform_dev->dev,
+			"Unable to find memory resource for root dma\n");
+		return PTR_ERR(r);
+	}
+
+	xdev->reg_base = devm_ioremap_resource(&platform_dev->dev, r);
+	if (IS_ERR(xdev->reg_base)) {
+		dev_err(&platform_dev->dev, "ioresource error for root dma\n");
+		return PTR_ERR(xdev->reg_base);
+	}
+
+	xdev->platform_irq_vec =
+		platform_get_irq_byname(platform_dev,
+					"ps_pcie_rootdma_intr");
+	if (xdev->platform_irq_vec < 0) {
+		dev_err(&platform_dev->dev,
+			"Unable to get interrupt number for root dma\n");
+		return xdev->platform_irq_vec;
+	}
+
+	err = device_property_read_u16(&platform_dev->dev, "dma_vendorid",
+				       &xdev->rootdma_vendor);
+	if (err) {
+		dev_err(&platform_dev->dev,
+			"Unable to find RootDMA PCI Vendor Id\n");
+		return err;
+	}
+
+	err = device_property_read_u16(&platform_dev->dev, "dma_deviceid",
+				       &xdev->rootdma_device);
+	if (err) {
+		dev_err(&platform_dev->dev,
+			"Unable to find RootDMA PCI Device Id\n");
+		return err;
+	}
+
+	xdev->common.dev = xdev->dev;
+
+	return 0;
+}
+
+static int read_epdma_config(struct platform_device *platform_dev,
+			     struct xlnx_pcie_dma_device *xdev)
+{
+	int err;
+	struct pci_dev *pdev;
+	u16 i;
+	void __iomem * const *pci_iomap;
+	unsigned long pci_bar_length;
+
+	pdev = *((struct pci_dev **)(platform_dev->dev.platform_data));
+	xdev->pci_dev = pdev;
+
+	for (i = 0; i < MAX_BARS; i++) {
+		if (pci_resource_len(pdev, i) == 0)
+			continue;
+		xdev->bar_mask = xdev->bar_mask | (1 << (i));
+	}
+
+	err = pcim_iomap_regions(pdev, xdev->bar_mask, PLATFORM_DRIVER_NAME);
+	if (err) {
+		dev_err(&pdev->dev, "Cannot request PCI regions, aborting\n");
+		return err;
+	}
+
+	pci_iomap = pcim_iomap_table(pdev);
+	if (!pci_iomap) {
+		err = -ENOMEM;
+		return err;
+	}
+
+	for (i = 0; i < MAX_BARS; i++) {
+		pci_bar_length = pci_resource_len(pdev, i);
+		if (pci_bar_length == 0) {
+			xdev->bar_info[i].BAR_LENGTH = 0;
+			xdev->bar_info[i].BAR_PHYS_ADDR = 0;
+			xdev->bar_info[i].BAR_VIRT_ADDR = NULL;
+		} else {
+			xdev->bar_info[i].BAR_LENGTH =
+				pci_bar_length;
+			xdev->bar_info[i].BAR_PHYS_ADDR =
+				pci_resource_start(pdev, i);
+			xdev->bar_info[i].BAR_VIRT_ADDR =
+				pci_iomap[i];
+		}
+	}
+
+	xdev->reg_base = pci_iomap[DMA_BAR_NUMBER];
+
+	err = irq_probe(xdev);
+	if (err < 0) {
+		dev_err(&pdev->dev, "Cannot probe irq lines for device %d\n",
+			platform_dev->id);
+		return err;
+	}
+
+	xdev->common.dev = &pdev->dev;
+
+	return 0;
 }
 
 static int probe_channel_properties(struct platform_device *platform_dev,
@@ -1458,7 +1690,7 @@ static int probe_channel_properties(struct platform_device *platform_dev,
 	struct ps_pcie_dma_channel_match *xlnx_match;
 
 	snprintf(propertyname, CHANNEL_PROPERTY_LENGTH,
-		 "channel%d", channel_number);
+		 "ps_pcie_channel%d", channel_number);
 
 	channel = &xdev->channels[channel_number];
 
@@ -1540,14 +1772,14 @@ static int probe_channel_properties(struct platform_device *platform_dev,
 				}
 				break;
 			case COALESE_COUNT:
-				channel->coaelse_count = val[COALESE_COUNT];
+				channel->coalesce_count = val[COALESE_COUNT];
 
-				if (channel->coaelse_count >
-					MAX_COAELSE_COUNT) {
+				if (channel->coalesce_count >
+					MAX_COALESCE_COUNT) {
 					dev_info(&platform_dev->dev,
-						 "Invalid Coaelse Count\n");
-					channel->coaelse_count =
-						MAX_COAELSE_COUNT;
+						 "Invalid coalesce Count\n");
+					channel->coalesce_count =
+						MAX_COALESCE_COUNT;
 				}
 				break;
 			case POLL_TIMER_FREQUENCY:
@@ -1586,7 +1818,17 @@ static int probe_channel_properties(struct platform_device *platform_dev,
 
 	channel->xdev = xdev;
 	channel->channel_number = channel_number;
-	channel->dev = &xdev->pci_dev->dev;
+
+	if (xdev->is_rootdma) {
+		channel->dev = xdev->dev;
+		channel->intr_status_offset = DMA_AXI_INTR_STATUS_REG_OFFSET;
+		channel->intr_control_offset = DMA_AXI_INTR_CNTRL_REG_OFFSET;
+	} else {
+		channel->dev = &xdev->pci_dev->dev;
+		channel->intr_status_offset = DMA_PCIE_INTR_STATUS_REG_OFFSET;
+		channel->intr_control_offset = DMA_PCIE_INTR_CNTRL_REG_OFFSET;
+	}
+
 	channel->chan_base =
 	(struct DMA_ENGINE_REGISTERS *)((__force char *)(xdev->reg_base) +
 				 (channel_number * DMA_CHANNEL_REGS_SIZE));
@@ -1598,6 +1840,9 @@ static int probe_channel_properties(struct platform_device *platform_dev,
 		return -ENOTSUPP;
 	}
 
+	update_channel_read_attribute(channel);
+	update_channel_write_attribute(channel);
+
 	xlnx_match = devm_kzalloc(&platform_dev->dev,
 				  sizeof(struct ps_pcie_dma_channel_match),
 				  GFP_KERNEL);
@@ -1605,12 +1850,18 @@ static int probe_channel_properties(struct platform_device *platform_dev,
 	if (!xlnx_match)
 		return -ENOMEM;
 
-	xlnx_match->pci_vendorid = xdev->pci_dev->vendor;
-	xlnx_match->pci_deviceid = xdev->pci_dev->device;
+	if (xdev->is_rootdma) {
+		xlnx_match->pci_vendorid = xdev->rootdma_vendor;
+		xlnx_match->pci_deviceid = xdev->rootdma_device;
+	} else {
+		xlnx_match->pci_vendorid = xdev->pci_dev->vendor;
+		xlnx_match->pci_deviceid = xdev->pci_dev->device;
+		xlnx_match->bar_params = xdev->bar_info;
+	}
+
 	xlnx_match->board_number = xdev->board_number;
 	xlnx_match->channel_number = channel_number;
 	xlnx_match->direction = xdev->channels[channel_number].direction;
-	xlnx_match->bar_params = xdev->bar_info;
 
 	channel->common.private = (void *)xlnx_match;
 
@@ -1690,12 +1941,12 @@ static void xlnx_ps_pcie_free_descriptors(struct ps_pcie_dma_chan *chan)
 
 static int xlnx_ps_pcie_channel_activate(struct ps_pcie_dma_chan *chan)
 {
-	u32 reg = chan->coaelse_count;
+	u32 reg = chan->coalesce_count;
 
 	reg = reg << DMA_INTCNTRL_SGCOLSCCNT_BIT_SHIFT;
 
 	/* Enable Interrupts for channel */
-	ps_pcie_dma_set_mask(chan, DMA_PCIE_INTR_CNTRL_REG_OFFSET,
+	ps_pcie_dma_set_mask(chan, chan->intr_control_offset,
 			     reg | DMA_INTCNTRL_ENABLINTR_BIT |
 			     DMA_INTCNTRL_DMAERRINTR_BIT |
 			     DMA_INTCNTRL_DMASGINTR_BIT);
@@ -1710,7 +1961,7 @@ static int xlnx_ps_pcie_channel_activate(struct ps_pcie_dma_chan *chan)
 	spin_unlock(&chan->channel_lock);
 
 	/* Activate timer if required */
-	if ((chan->coaelse_count > 0) && !chan->poll_timer.function)
+	if ((chan->coalesce_count > 0) && !chan->poll_timer.function)
 		xlnx_ps_pcie_alloc_poll_timer(chan);
 
 	return 0;
@@ -1719,11 +1970,11 @@ static int xlnx_ps_pcie_channel_activate(struct ps_pcie_dma_chan *chan)
 static void xlnx_ps_pcie_channel_quiesce(struct ps_pcie_dma_chan *chan)
 {
 	/* Disable interrupts for Channel */
-	ps_pcie_dma_clr_mask(chan, DMA_PCIE_INTR_CNTRL_REG_OFFSET,
+	ps_pcie_dma_clr_mask(chan, chan->intr_control_offset,
 			     DMA_INTCNTRL_ENABLINTR_BIT);
 
 	/* Delete timer if it is created */
-	if ((chan->coaelse_count > 0) && (!chan->poll_timer.function))
+	if ((chan->coalesce_count > 0) && (!chan->poll_timer.function))
 		xlnx_ps_pcie_free_poll_timer(chan);
 
 	/* Flush descriptor cleaning work queues */
@@ -1735,7 +1986,7 @@ static void xlnx_ps_pcie_channel_quiesce(struct ps_pcie_dma_chan *chan)
 		flush_workqueue(chan->chan_programming);
 
 	/*  Clear the persistent bits */
-	ps_pcie_dma_set_mask(chan, DMA_PCIE_INTR_STATUS_REG_OFFSET,
+	ps_pcie_dma_set_mask(chan, chan->intr_status_offset,
 			     DMA_INTSTATUS_DMAERR_BIT |
 			     DMA_INTSTATUS_SGLINTR_BIT |
 			     DMA_INTSTATUS_SWINTR_BIT);
@@ -2476,19 +2727,15 @@ static struct dma_async_tx_descriptor *xlnx_ps_pcie_dma_prep_dma_sg(
 		return NULL;
 
 	if (chan->num_queues != DEFAULT_DMA_QUEUES) {
-		dev_err(
-		chan->dev,
-		"Only prep_slave_sg is supported for channel %d\n",
-		chan->channel_number);
+		dev_err(chan->dev, "Only prep_slave_sg for channel %d\n",
+			chan->channel_number);
 		return NULL;
 	}
 
 	seg = mempool_alloc(chan->transactions_pool, GFP_ATOMIC);
 	if (!seg) {
-		dev_err(
-		chan->dev,
-		"Unable to allocate tx segment for channel %d\n",
-		chan->channel_number);
+		dev_err(chan->dev, "Tx segment alloc for channel %d\n",
+			chan->channel_number);
 		return NULL;
 	}
 
@@ -2644,22 +2891,15 @@ static struct dma_async_tx_descriptor *xlnx_ps_pcie_dma_prep_interrupt(
 
 static int xlnx_pcie_dma_driver_probe(struct platform_device *platform_dev)
 {
-	struct pci_dev *pdev;
-	int err = 0;
+	int err, i;
 	struct xlnx_pcie_dma_device *xdev;
-	u16 i = 0;
-	void __iomem * const *pci_iomap;
-	unsigned long pci_bar_length;
-
-	pdev = *((struct pci_dev **)(platform_dev->dev.platform_data));
+	static u16 board_number;
 
 	xdev = devm_kzalloc(&platform_dev->dev,
 			    sizeof(struct xlnx_pcie_dma_device), GFP_KERNEL);
 
-	if (!xdev) {
-		err = -ENOMEM;
-		goto platform_driver_probe_return;
-	}
+	if (!xdev)
+		return -ENOMEM;
 
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
 	xdev->dma_buf_ext_addr = true;
@@ -2667,14 +2907,17 @@ static int xlnx_pcie_dma_driver_probe(struct platform_device *platform_dev)
 	xdev->dma_buf_ext_addr = false;
 #endif
 
-	xdev->pci_dev = pdev;
-	xdev->dev = &platform_dev->dev;
+	xdev->is_rootdma = device_property_read_bool(&platform_dev->dev,
+						     "rootdma");
 
-	if (device_property_read_u32(&platform_dev->dev, "xlnx,numchannels",
-				     &xdev->num_channels) != 0) {
+	xdev->dev = &platform_dev->dev;
+	xdev->board_number = board_number;
+
+	err = device_property_read_u32(&platform_dev->dev, "numchannels",
+				       &xdev->num_channels);
+	if (err) {
 		dev_err(&platform_dev->dev,
 			"Unable to find numchannels property\n");
-		err = -EINVAL;
 		goto platform_driver_probe_return;
 	}
 
@@ -2690,51 +2933,23 @@ static int xlnx_pcie_dma_driver_probe(struct platform_device *platform_dev)
 						sizeof(struct ps_pcie_dma_chan)
 							* xdev->num_channels,
 						GFP_KERNEL);
-
 	if (!xdev->channels) {
 		err = -ENOMEM;
 		goto platform_driver_probe_return;
 	}
 
-	for (i = 0; i < MAX_BARS; i++) {
-		if (pci_resource_len(pdev, i) == 0)
-			continue;
-		xdev->bar_mask = xdev->bar_mask | (1 << (i));
-	}
-	err = pcim_iomap_regions(pdev, xdev->bar_mask, PLATFORM_DRIVER_NAME);
-	if (err) {
-		dev_err(&pdev->dev, "Cannot request PCI regions, aborting\n");
-		return err;
-	}
+	if (xdev->is_rootdma)
+		err = read_rootdma_config(platform_dev, xdev);
+	else
+		err = read_epdma_config(platform_dev, xdev);
 
-	pci_iomap = pcim_iomap_table(pdev);
-	if (!pci_iomap) {
-		err = -ENOMEM;
+	if (err) {
+		dev_err(&platform_dev->dev,
+			"Unable to initialize dma configuration\n");
 		goto platform_driver_probe_return;
 	}
 
-	for (i = 0; i < MAX_BARS; i++) {
-		pci_bar_length = pci_resource_len(pdev, i);
-		if (pci_bar_length == 0) {
-			xdev->bar_info[i].BAR_LENGTH = 0;
-			xdev->bar_info[i].BAR_PHYS_ADDR = 0;
-			xdev->bar_info[i].BAR_VIRT_ADDR = NULL;
-		} else {
-			xdev->bar_info[i].BAR_LENGTH =
-				pci_bar_length;
-			xdev->bar_info[i].BAR_PHYS_ADDR =
-				pci_resource_start(pdev, i);
-			xdev->bar_info[i].BAR_VIRT_ADDR =
-				pci_iomap[i];
-		}
-	}
-	xdev->reg_base = pci_iomap[DMA_BAR_NUMBER];
-
-	xdev->board_number = platform_dev->id;
-
 	/* Initialize the DMA engine */
-	xdev->common.dev = &pdev->dev;
-
 	INIT_LIST_HEAD(&xdev->common.channels);
 
 	dma_cap_set(DMA_SLAVE, xdev->common.cap_mask);
@@ -2762,36 +2977,35 @@ static int xlnx_pcie_dma_driver_probe(struct platform_device *platform_dev)
 		err = probe_channel_properties(platform_dev, xdev, i);
 
 		if (err != 0) {
-			dev_err(&pdev->dev,
+			dev_err(xdev->dev,
 				"Unable to read channel properties\n");
 			goto platform_driver_probe_return;
 		}
 	}
 
-	err = irq_probe(xdev);
-	if (err < 0) {
-		dev_err(&pdev->dev, "Cannot probe irq lines for device %d\n",
-			platform_dev->id);
-		goto platform_driver_probe_return;
-	}
-
-	err = irq_setup(xdev);
+	if (xdev->is_rootdma)
+		err = platform_irq_setup(xdev);
+	else
+		err = irq_setup(xdev);
 	if (err) {
-		dev_err(&pdev->dev, "Cannot request irq lines for device %d\n",
-			platform_dev->id);
+		dev_err(xdev->dev, "Cannot request irq lines for device %d\n",
+			xdev->board_number);
 		goto platform_driver_probe_return;
 	}
 
 	err = dma_async_device_register(&xdev->common);
 	if (err) {
-		dev_err(&pdev->dev,
+		dev_err(xdev->dev,
 			"Unable to register board %d with dma framework\n",
-			platform_dev->id);
+			xdev->board_number);
 		goto platform_driver_probe_return;
 	}
 
 	platform_set_drvdata(platform_dev, xdev);
 
+	board_number++;
+
+	dev_info(&platform_dev->dev, "PS PCIe Platform driver probed\n");
 	return 0;
 
 platform_driver_probe_return:
@@ -2812,9 +3026,18 @@ static int xlnx_pcie_dma_driver_remove(struct platform_device *platform_dev)
 	return 0;
 }
 
+#ifdef CONFIG_OF
+static const struct of_device_id xlnx_pcie_root_dma_of_ids[] = {
+	{ .compatible = "xlnx,ps_pcie_dma-1.00.a", },
+	{}
+};
+MODULE_DEVICE_TABLE(of, xlnx_pcie_root_dma_of_ids);
+#endif
+
 static struct platform_driver xlnx_pcie_dma_driver = {
 	.driver = {
 		.name = XLNX_PLATFORM_DRIVER_NAME,
+		.of_match_table = of_match_ptr(xlnx_pcie_root_dma_of_ids),
 		.owner = THIS_MODULE,
 	},
 	.probe =  xlnx_pcie_dma_driver_probe,

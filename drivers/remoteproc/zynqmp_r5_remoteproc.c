@@ -70,7 +70,7 @@
 
 /* RPU IPI mask */
 #define RPU_IPI_INIT_MASK	0x00000100
-#define RPU_IPI_MASK(n)		(RPU_IPI_INIT_MASK << n)
+#define RPU_IPI_MASK(n)		(RPU_IPI_INIT_MASK << (n))
 #define RPU_0_IPI_MASK		RPU_IPI_MASK(0)
 #define RPU_1_IPI_MASK		RPU_IPI_MASK(1)
 
@@ -84,9 +84,6 @@
 	writel((val), ((void __iomem *)(base)) + (reg))
 
 #define DEFAULT_FIRMWARE_NAME	"rproc-rpu-fw"
-
-/* Maximum on chip memories used by the driver*/
-#define MAX_ON_CHIP_MEMS        32
 
 static bool autoboot __read_mostly;
 
@@ -167,7 +164,7 @@ static void r5_boot_addr_config(struct zynqmp_r5_rproc_pdata *pdata)
 	u32 offset = RPU_CFG_OFFSET;
 
 	pr_debug("%s: R5 ID: %d, boot_dev %d\n",
-			 __func__, pdata->rpu_id, pdata->bootmem);
+		 __func__, pdata->rpu_id, pdata->bootmem);
 
 	tmp = reg_read(pdata->rpu_base, offset);
 	if (pdata->bootmem == OCM)
@@ -215,7 +212,7 @@ static bool r5_is_running(struct zynqmp_r5_rproc_pdata *pdata)
 
 	pr_debug("%s: rpu id: %d\n", __func__, pdata->rpu_id);
 	if (zynqmp_pm_get_node_status(pdata->rpu_pd_id,
-		&status, &requirements, &usage)) {
+				      &status, &requirements, &usage)) {
 		pr_err("Failed to get RPU node status.\n");
 		return false;
 	} else if (status != PM_PROC_STATE_ACTIVE) {
@@ -246,7 +243,7 @@ static int r5_request_tcm(struct zynqmp_r5_rproc_pdata *pdata)
 
 		list_for_each_entry(pd_id, &mem_node->pd_ids, node)
 			zynqmp_pm_request_node(pd_id->id,
-				ZYNQMP_PM_CAPABILITY_ACCESS,
+					       ZYNQMP_PM_CAPABILITY_ACCESS,
 				0, ZYNQMP_PM_REQUEST_ACK_BLOCKING);
 	}
 
@@ -281,7 +278,8 @@ static void r5_release_tcm(struct zynqmp_r5_rproc_pdata *pdata)
 static inline void disable_ipi(struct zynqmp_r5_rproc_pdata *pdata)
 {
 	/* Disable R5 IPI interrupt */
-	reg_write(pdata->ipi_base, IDR_OFFSET, pdata->ipi_dest_mask);
+	if (pdata->ipi_base)
+		reg_write(pdata->ipi_base, IDR_OFFSET, pdata->ipi_dest_mask);
 }
 
 /**
@@ -293,7 +291,8 @@ static inline void disable_ipi(struct zynqmp_r5_rproc_pdata *pdata)
 static inline void enable_ipi(struct zynqmp_r5_rproc_pdata *pdata)
 {
 	/* Enable R5 IPI interrupt */
-	reg_write(pdata->ipi_base, IER_OFFSET, pdata->ipi_dest_mask);
+	if (pdata->ipi_base)
+		reg_write(pdata->ipi_base, IER_OFFSET, pdata->ipi_dest_mask);
 }
 
 /**
@@ -325,7 +324,6 @@ static void handle_event_notified(struct work_struct *work)
 	idr_for_each(&rproc->notifyids, event_notified_idr_cb, rproc);
 }
 
-
 static int zynqmp_r5_rproc_start(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
@@ -344,16 +342,16 @@ static int zynqmp_r5_rproc_start(struct rproc *rproc)
 	else
 		local->bootmem = TCM;
 	dev_info(dev, "RPU boot from %s.",
-		local->bootmem == OCM ? "OCM" : "TCM");
+		 local->bootmem == OCM ? "OCM" : "TCM");
 
 	r5_mode_config(local);
 	zynqmp_pm_force_powerdown(local->rpu_pd_id,
-		ZYNQMP_PM_REQUEST_ACK_BLOCKING);
+				  ZYNQMP_PM_REQUEST_ACK_BLOCKING);
 	r5_boot_addr_config(local);
 	/* Add delay before release from halt and reset */
-	udelay(500);
+	usleep_range(400, 500);
 	zynqmp_pm_request_wakeup(local->rpu_pd_id,
-		1, local->bootmem,
+				 1, local->bootmem,
 		ZYNQMP_PM_REQUEST_ACK_NO);
 
 	/* Make sure IPI is enabled */
@@ -379,7 +377,8 @@ static void zynqmp_r5_rproc_kick(struct rproc *rproc, int vqid)
 	 * send irq to R5 firmware
 	 * Currently vqid is not used because we only got one.
 	 */
-	reg_write(local->ipi_base, TRIG_OFFSET, local->ipi_dest_mask);
+	if (local->ipi_base)
+		reg_write(local->ipi_base, TRIG_OFFSET, local->ipi_dest_mask);
 }
 
 /* power off the remote processor */
@@ -393,7 +392,7 @@ static int zynqmp_r5_rproc_stop(struct rproc *rproc)
 
 	disable_ipi(local);
 	zynqmp_pm_force_powerdown(local->rpu_pd_id,
-		ZYNQMP_PM_REQUEST_ACK_BLOCKING);
+				  ZYNQMP_PM_REQUEST_ACK_BLOCKING);
 
 	/* After it reset was once asserted, TCM will be initialized
 	 * before it can be read. E.g. remoteproc virtio will access
@@ -465,7 +464,7 @@ static int zynqmp_r5_rproc_add_mems(struct zynqmp_r5_rproc_pdata *pdata)
 		mem_pool = mem_node->pool;
 		mem_size = gen_pool_size(mem_pool);
 		mem  = devm_kzalloc(dev, sizeof(struct rproc_mem_entry),
-				GFP_KERNEL);
+				    GFP_KERNEL);
 		if (!mem)
 			return -ENOMEM;
 
@@ -495,7 +494,6 @@ static int zynqmp_r5_rproc_add_mems(struct zynqmp_r5_rproc_pdata *pdata)
 	}
 	return 0;
 }
-
 
 /* Release R5 from reset and make it halted.
  * In case the firmware uses TCM, in order to load firmware to TCM,
@@ -572,12 +570,11 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	struct rproc *rproc;
 	struct gen_pool *mem_pool = NULL;
 	struct mem_pool_st *mem_node = NULL;
-	char mem_name[16];
 	int i;
 	struct device_node *tmp_node;
 
 	rproc = rproc_alloc(&pdev->dev, dev_name(&pdev->dev),
-		&zynqmp_r5_rproc_ops, NULL,
+			    &zynqmp_r5_rproc_ops, NULL,
 		sizeof(struct zynqmp_r5_rproc_pdata));
 	if (!rproc) {
 		dev_err(&pdev->dev, "rproc allocation failed\n");
@@ -634,7 +631,7 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-		"rpu_base");
+					   "rpu_base");
 	local->rpu_base = devm_ioremap(&pdev->dev, res->start,
 					resource_size(res));
 	if (IS_ERR(local->rpu_base)) {
@@ -644,7 +641,7 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-		"rpu_glbl_base");
+					   "rpu_glbl_base");
 	local->rpu_glbl_base = devm_ioremap(&pdev->dev, res->start,
 					resource_size(res));
 	if (IS_ERR(local->rpu_glbl_base)) {
@@ -654,31 +651,36 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ipi");
-	local->ipi_base = devm_ioremap(&pdev->dev, res->start,
+	if (res) {
+		local->ipi_base = devm_ioremap(&pdev->dev, res->start,
 				resource_size(res));
-	if (IS_ERR(local->ipi_base)) {
-		pr_err("%s: Unable to map IPI\n", __func__);
-		ret = PTR_ERR(local->ipi_base);
-		goto rproc_fault;
+		if (IS_ERR(local->ipi_base)) {
+			pr_err("%s: Unable to map IPI\n", __func__);
+			ret = PTR_ERR(local->ipi_base);
+			goto rproc_fault;
+		}
+	} else {
+		dev_info(&pdev->dev, "IPI resource is not specified.\n");
 	}
 
 	/* Find on-chip memory */
 	INIT_LIST_HEAD(&local->mem_pools);
 	INIT_LIST_HEAD(&local->mems);
-	for (i = 0; i < MAX_ON_CHIP_MEMS; i++) {
-		sprintf(mem_name, "sram_%d", i);
+	for (i = 0; ; i++) {
+		char *srams_name = "srams";
+
 		mem_pool = of_gen_pool_get(pdev->dev.of_node,
-					mem_name, 0);
+					   srams_name, i);
 		if (mem_pool) {
 			mem_node = devm_kzalloc(&pdev->dev,
-					sizeof(struct mem_pool_st),
+						sizeof(struct mem_pool_st),
 					GFP_KERNEL);
 			if (!mem_node)
 				goto rproc_fault;
 			mem_node->pool = mem_pool;
 			/* Get the memory node power domain id */
 			tmp_node = of_parse_phandle(pdev->dev.of_node,
-						mem_name, 0);
+						    srams_name, i);
 			if (tmp_node) {
 				struct device_node *pd_node;
 				struct pd_id_st *pd_id;
@@ -687,27 +689,38 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 				INIT_LIST_HEAD(&mem_node->pd_ids);
 				for (j = 0; ; j++) {
 					pd_node = of_parse_phandle(tmp_node,
-						"pd-handle", j);
+								   "pd-handle",
+								   j);
 					if (!pd_node)
 						break;
 					pd_id = devm_kzalloc(&pdev->dev,
-							sizeof(*pd_id),
+							     sizeof(*pd_id),
 							GFP_KERNEL);
 					if (!pd_id) {
 						ret = -ENOMEM;
 						goto rproc_fault;
 					}
 					of_property_read_u32(pd_node,
-						"pd-id", &pd_id->id);
+							     "pd-id",
+							     &pd_id->id);
 					list_add_tail(&pd_id->node,
-						&mem_node->pd_ids);
+						      &mem_node->pd_ids);
 					dev_dbg(&pdev->dev,
 						"mem[%d] pd_id = %d.\n",
 						i, pd_id->id);
 				}
 			}
 			list_add_tail(&mem_node->node, &local->mem_pools);
+		} else {
+			break;
 		}
+	}
+	if (!i) {
+		/* No srams specified */
+		dev_err(&pdev->dev,
+			"no 'srams' firmware mmio-sram memories specified in DTB.");
+		ret = -EINVAL;
+		goto rproc_fault;
 	}
 
 	/* Disable IPI before requesting IPI IRQ */
@@ -715,21 +728,23 @@ static int zynqmp_r5_remoteproc_probe(struct platform_device *pdev)
 	INIT_WORK(&local->workqueue, handle_event_notified);
 
 	/* IPI IRQ */
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to find IPI IRQ\n");
-		goto rproc_fault;
+	if (local->ipi_base) {
+		ret = platform_get_irq(pdev, 0);
+		if (ret < 0) {
+			dev_err(&pdev->dev, "unable to find IPI IRQ\n");
+			goto rproc_fault;
+		}
+		local->vring0 = ret;
+		ret = devm_request_irq(&pdev->dev, local->vring0,
+				       r5_remoteproc_interrupt, IRQF_SHARED,
+				       dev_name(&pdev->dev), &pdev->dev);
+		if (ret) {
+			dev_err(&pdev->dev, "IRQ %d already allocated\n",
+				local->vring0);
+			goto rproc_fault;
+		}
+		dev_dbg(&pdev->dev, "vring0 irq: %d\n", local->vring0);
 	}
-	local->vring0 = ret;
-	ret = devm_request_irq(&pdev->dev, local->vring0,
-		r5_remoteproc_interrupt, IRQF_SHARED, dev_name(&pdev->dev),
-		&pdev->dev);
-	if (ret) {
-		dev_err(&pdev->dev, "IRQ %d already allocated\n",
-			local->vring0);
-		goto rproc_fault;
-	}
-	dev_dbg(&pdev->dev, "vring0 irq: %d\n", local->vring0);
 
 	ret = zynqmp_r5_rproc_init(local->rproc);
 	if (ret) {
@@ -801,7 +816,7 @@ module_platform_driver(zynqmp_r5_remoteproc_driver);
 
 module_param_named(autoboot,  autoboot, bool, 0444);
 MODULE_PARM_DESC(autoboot,
-	"enable | disable autoboot. (default: true)");
+		 "enable | disable autoboot. (default: true)");
 
 MODULE_AUTHOR("Jason Wu <j.wu@xilinx.com>");
 MODULE_LICENSE("GPL v2");

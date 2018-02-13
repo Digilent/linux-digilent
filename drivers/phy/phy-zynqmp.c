@@ -34,7 +34,7 @@
 #include <linux/delay.h>
 #include <dt-bindings/phy/phy.h>
 #include <linux/soc/xilinx/zynqmp/fw.h>
-#include <linux/soc/xilinx/zynqmp/pm.h>
+#include <linux/soc/xilinx/zynqmp/firmware.h>
 #include <linux/reset.h>
 #include <linux/list.h>
 #include <linux/slab.h>
@@ -153,8 +153,6 @@
 #define PROT_BUS_WIDTH_10		0x0
 #define PROT_BUS_WIDTH_20		0x1
 #define PROT_BUS_WIDTH_40		0x2
-
-#define TX_TERM_FIX_VAL			0x11
 
 #define LANE_CLK_SHARE_MASK		0x8F
 
@@ -352,6 +350,7 @@ int xpsgtr_set_protregs(struct phy *phy, void __iomem *regs)
 	gtr_dev->regs = regs;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(xpsgtr_set_protregs);
 
 int xpsgtr_override_deemph(struct phy *phy, u8 plvl, u8 vlvl)
 {
@@ -1007,7 +1006,7 @@ static int xpsgtr_phy_init(struct phy *phy)
 		 * we need to configure any lane ICM_CFG to valid protocol. This
 		 * will deassert the CMN_Resetn signal.
 		 */
-		writel(TX_TERM_FIX_VAL, gtr_dev->serdes + ICM_CFG1);
+		xpsgtr_lane_setprotocol(gtr_phy);
 
 		/* Clear Test Mode reset */
 		reg = readl(gtr_dev->serdes + TM_CMN_RST);
