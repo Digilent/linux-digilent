@@ -945,6 +945,8 @@ xilinx_drm_plane_create(struct xilinx_drm_plane_manager *manager,
 				return ERR_PTR(-EINVAL);
 			}
 		}
+		else
+			plane->format = manager->format;
 	}
 
 	/* initialize drm plane */
