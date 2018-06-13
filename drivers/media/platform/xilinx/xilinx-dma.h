@@ -40,7 +40,7 @@ struct xvip_video_format;
  * @use_count: number of DMA engines using the pipeline
  * @stream_count: number of DMA engines currently streaming
  * @num_dmas: number of DMA engines in the pipeline
- * @output: DMA engine at the output of the pipeline
+ * @xdev: Composite device the pipe belongs to
  */
 struct xvip_pipeline {
 	struct media_pipeline pipe;
@@ -50,7 +50,7 @@ struct xvip_pipeline {
 	unsigned int stream_count;
 
 	unsigned int num_dmas;
-	struct xvip_dma *output;
+	struct xvip_composite_device *xdev;
 };
 
 static inline struct xvip_pipeline *to_xvip_pipeline(struct media_entity *e)
@@ -63,12 +63,15 @@ static inline struct xvip_pipeline *to_xvip_pipeline(struct media_entity *e)
  * @list: list entry in a composite device dmas list
  * @video: V4L2 video device associated with the DMA channel
  * @pad: media pad for the video device entity
+ * @remote_subdev_med_bus: media bus format of sub-device
  * @xdev: composite device the DMA channel belongs to
  * @pipe: pipeline belonging to the DMA channel
  * @port: composite device DT node port number for the DMA channel
  * @lock: protects the @format, @fmtinfo and @queue fields
  * @format: active V4L2 pixel format
  * @fmtinfo: format information corresponding to the active @format
+ * @poss_v4l2_fmts: All possible v4l formats supported
+ * @poss_v4l2_fmt_cnt: number of supported v4l formats
  * @queue: vb2 buffers queue
  * @sequence: V4L2 buffers sequence number
  * @queued_bufs: list of queued buffers
@@ -77,6 +80,7 @@ static inline struct xvip_pipeline *to_xvip_pipeline(struct media_entity *e)
  * @align: transfer alignment required by the DMA channel (in bytes)
  * @xt: dma interleaved template for dma configuration
  * @sgl: data chunk structure for dma_interleaved_template
+ * @prev_fid: Previous Field ID
  */
 struct xvip_dma {
 	struct list_head list;
@@ -104,6 +108,8 @@ struct xvip_dma {
 	unsigned int align;
 	struct dma_interleaved_template xt;
 	struct data_chunk sgl[1];
+
+	u32 prev_fid;
 };
 
 #define to_xvip_dma(vdev)	container_of(vdev, struct xvip_dma, video)

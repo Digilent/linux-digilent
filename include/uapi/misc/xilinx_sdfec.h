@@ -38,9 +38,10 @@ enum xsdfec_code {
 };
 
 enum xsdfec_order {
-	INVALID_ORDER = 0,
-	MAINTAIN_ORDER,
-	OUT_OF_ORDER,
+	XSDFEC_INVALID_ORDER = 0,
+	XSDFEC_MAINTAIN_ORDER,
+	XSDFEC_OUT_OF_ORDER,
+	XSDFEC_ORDER_MAX,
 };
 
 enum xsdfec_state {
@@ -50,10 +51,17 @@ enum xsdfec_state {
 	XSDFEC_NEEDS_RESET,
 };
 
-enum xsdfec_op_mode {
-	XSDFEC_UNKNOWN_MODE = 0,
-	XSDFEC_ENCODE,
-	XSDFEC_DECODE,
+enum xsdfec_axis_width {
+	XSDFEC_1x128b = 1,
+	XSDFEC_2x128b = 2,
+	XSDFEC_4x128b = 4,
+};
+
+enum xsdfec_axis_word_include {
+	XSDFEC_FIXED_VALUE = 0,
+	XSDFEC_IN_BLOCK,
+	XSDFEC_PER_AXI_TRANSACTION,
+	XSDFEC_AXIS_WORDS_INCLUDE_MAX,
 };
 
 /**
@@ -68,7 +76,7 @@ struct xsdfec_turbo {
 };
 
 /**
- * struct xsdfec_ldpc - User data for LDPC Codes
+ * struct xsdfec_ldpc_params - User data for LDPC Codes
  * @n: Number of code word bits
  * @k: Number of information bits
  * @psize: Size of sub-matrix
@@ -81,7 +89,6 @@ struct xsdfec_turbo {
  * @special_qc: Sub-Matrix property for Circulant weight > 0
  * @no_final_parity: Decide if final parity check needs to be performed
  * @max_schedule: Experimental code word scheduling limit
- * @lat_ctrl: Latency Control
  * @sc_off: SC offset
  * @la_off: LA offset
  * @qc_off: QC offset
@@ -93,7 +100,7 @@ struct xsdfec_turbo {
  * This structure describes the LDPC code that is passed to the driver
  * by the application.
  */
-struct xsdfec_ldpc {
+struct xsdfec_ldpc_params {
 	u32 n;
 	u32 k;
 	u32 psize;
@@ -106,7 +113,6 @@ struct xsdfec_ldpc {
 	u32 special_qc;
 	u32 no_final_parity;
 	u32 max_schedule;
-	u32 lat_ctrl;
 	u32 sc_off;
 	u32 la_off;
 	u32 qc_off;
@@ -122,21 +128,33 @@ struct xsdfec_ldpc {
 /**
  * struct xsdfec_status - Status of SDFEC device
  * @fec_id: ID of SDFEC instance
- * @code: The codes being used by the SDFEC instance
- * @order: Order of Operation
  * @state: State of the SDFEC device
- * @mode: Mode of Operation
  * @activity: Describes if the SDFEC instance is Active
- * @cecc_count: Count of the Correctable ECC Errors occurred
  */
 struct xsdfec_status {
 	s32 fec_id;
+	enum xsdfec_state state;
+	bool activity;
+};
+
+/**
+ * struct xsdfec_config - Configuration of SDFEC device
+ * @fec_id: ID of SDFEC instance
+ * @code: The codes being used by the SDFEC instance
+ * @order: Order of Operation
+ * @din_width: Width of the DIN AXI Stream
+ * @din_word_include: How DIN_WORDS are inputted
+ * @dout_width: Width of the DOUT AXI Stream
+ * @dout_word_include: HOW DOUT_WORDS are outputted
+ */
+struct xsdfec_config {
+	s32 fec_id;
 	enum xsdfec_code code;
 	enum xsdfec_order order;
-	enum xsdfec_state state;
-	enum xsdfec_op_mode mode;
-	bool activity;
-	int cecc_count;
+	enum xsdfec_axis_width din_width;
+	enum xsdfec_axis_word_include din_word_include;
+	enum xsdfec_axis_width dout_width;
+	enum xsdfec_axis_word_include dout_word_include;
 };
 
 /**
@@ -149,6 +167,20 @@ struct xsdfec_irq {
 	bool enable_ecc_isr;
 };
 
+/**
+ * struct xsdfec_ioctl_stats - Stats retrived by ioctl XSDFEC_GET_STATS. Used
+ *			       to buffer atomic_t variables from struct
+ *			       xsdfec_dev.
+ * @isr_err_count: Count of ISR errors
+ * @cecc_count: Count of Correctable ECC errors (SBE)
+ * @uecc_count: Count of Uncorrectable ECC errors (MBE)
+ */
+struct xsdfec_stats {
+	u32 isr_err_count;
+	u32 cecc_count;
+	u32 uecc_count;
+};
+
 /*
  * XSDFEC IOCTL List
  */
@@ -157,8 +189,6 @@ struct xsdfec_irq {
 #define XSDFEC_START_DEV	_IO(XSDFEC_MAGIC, 0)
 /* ioctl to stop the device */
 #define XSDFEC_STOP_DEV		_IO(XSDFEC_MAGIC, 1)
-/* ioctl to communicate to the driver that device has been reset */
-#define XSDFEC_RESET_REQ	_IO(XSDFEC_MAGIC, 2)
 /* ioctl that returns status of sdfec device */
 #define XSDFEC_GET_STATUS	_IOR(XSDFEC_MAGIC, 3, struct xsdfec_status *)
 /* ioctl to enable or disable irq */
@@ -166,6 +196,31 @@ struct xsdfec_irq {
 /* ioctl to enable turbo params for sdfec device */
 #define XSDFEC_SET_TURBO	_IOW(XSDFEC_MAGIC, 5, struct xsdfec_turbo *)
 /* ioctl to add an LDPC code to the sdfec ldpc codes */
-#define XSDFEC_ADD_LDPC		_IOW(XSDFEC_MAGIC, 6, struct xsdfec_ldpc *)
+#define XSDFEC_ADD_LDPC_CODE_PARAMS	\
+	_IOW(XSDFEC_MAGIC, 6, struct xsdfec_ldpc_params *)
+/* ioctl that returns sdfec device configuration */
+#define XSDFEC_GET_CONFIG	_IOR(XSDFEC_MAGIC, 7, struct xsdfec_config *)
+/* ioctl that returns sdfec turbo param values */
+#define XSDFEC_GET_TURBO	_IOR(XSDFEC_MAGIC, 8, struct xsdfec_turbo *)
+/* ioctl that returns sdfec LDPC code param values, code_id must be specified */
+#define XSDFEC_GET_LDPC_CODE_PARAMS \
+	_IOWR(XSDFEC_MAGIC, 9, struct xsdfec_ldpc_params *)
+/* ioctl that sets order, if order of blocks can change from input to output */
+#define XSDFEC_SET_ORDER	_IOW(XSDFEC_MAGIC, 10, unsigned long *)
+/*
+ * ioctl that sets bypass.
+ * setting a value of 0 results in normal operation.
+ * setting a value of 1 results in the sdfec performing the configured
+ * operations (same number of cycles) but output data matches the input data
+ */
+#define XSDFEC_SET_BYPASS	_IOW(XSDFEC_MAGIC, 11, unsigned long *)
+/* ioctl that determines if sdfec is processing data */
+#define XSDFEC_IS_ACTIVE	_IOR(XSDFEC_MAGIC, 12, bool *)
+/* ioctl that clears error stats collected during interrupts */
+#define XSDFEC_CLEAR_STATS	_IO(XSDFEC_MAGIC, 13)
+/* ioctl that returns sdfec device stats */
+#define XSDFEC_GET_STATS	_IOR(XSDFEC_MAGIC, 14, struct xsdfec_stats *)
+/* ioctl that returns sdfec device to default config, use after a reset */
+#define XSDFEC_SET_DEFAULT_CONFIG _IO(XSDFEC_MAGIC, 15)
 
 #endif /* __XILINX_SDFEC_H__ */

@@ -21,6 +21,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/dma/xilinx_frmbuf.h>
 #include <linux/dmapool.h>
 #include <linux/gpio/consumer.h>
@@ -51,12 +52,15 @@
 #define XILINX_FRMBUF_FMT_OFFSET		0x28
 #define XILINX_FRMBUF_ADDR_OFFSET		0x30
 #define XILINX_FRMBUF_ADDR2_OFFSET		0x3c
+#define XILINX_FRMBUF_FID_OFFSET		0x48
 
 /* Control Registers */
 #define XILINX_FRMBUF_CTRL_AP_START		BIT(0)
 #define XILINX_FRMBUF_CTRL_AP_DONE		BIT(1)
 #define XILINX_FRMBUF_CTRL_AP_IDLE		BIT(2)
 #define XILINX_FRMBUF_CTRL_AP_READY		BIT(3)
+#define XILINX_FRMBUF_CTRL_FLUSH		BIT(5)
+#define XILINX_FRMBUF_CTRL_FLUSH_DONE		BIT(6)
 #define XILINX_FRMBUF_CTRL_AUTO_RESTART		BIT(7)
 #define XILINX_FRMBUF_GIE_EN			BIT(0)
 
@@ -90,6 +94,19 @@
 #define XILINX_FRMBUF_FMT_BGRA8			26
 #define XILINX_FRMBUF_FMT_BGRX8			27
 #define XILINX_FRMBUF_FMT_UYVY8			28
+#define XILINX_FRMBUF_FMT_BGR8				29
+
+/* FID Register */
+#define XILINX_FRMBUF_FID_MASK			BIT(0)
+
+#define XILINX_FRMBUF_ALIGN_MUL			8
+
+#define WAIT_FOR_FLUSH_DONE			25
+
+/* Pixels per clock property flag */
+#define XILINX_PPC_PROP				BIT(0)
+#define XILINX_FLUSH_PROP			BIT(1)
+#define XILINX_FID_PROP				BIT(2)
 
 /**
  * struct xilinx_frmbuf_desc_hw - Hardware Descriptor
@@ -113,11 +130,13 @@ struct xilinx_frmbuf_desc_hw {
  * @async_tx: Async transaction descriptor
  * @hw: Hardware descriptor
  * @node: Node in the channel descriptors list
+ * @fid: Field ID of buffer
  */
 struct xilinx_frmbuf_tx_descriptor {
 	struct dma_async_tx_descriptor async_tx;
 	struct xilinx_frmbuf_desc_hw hw;
 	struct list_head node;
+	u32 fid;
 };
 
 /**
@@ -137,6 +156,7 @@ struct xilinx_frmbuf_tx_descriptor {
  * @idle: Channel idle state
  * @tasklet: Cleanup work after irq
  * @vid_fmt: Reference to currently assigned video format description
+ * @hw_fid: FID enabled in hardware flag
  */
 struct xilinx_frmbuf_chan {
 	struct xilinx_frmbuf_device *xdev;
@@ -156,6 +176,7 @@ struct xilinx_frmbuf_chan {
 	bool idle;
 	struct tasklet_struct tasklet;
 	const struct xilinx_frmbuf_format_desc *vid_fmt;
+	bool hw_fid;
 };
 
 /**
@@ -212,7 +233,7 @@ static const struct xilinx_frmbuf_format_desc xilinx_frmbuf_formats[] = {
 		.ppw = 1,
 		.num_planes = 1,
 		.drm_fmt = DRM_FORMAT_XRGB8888,
-		.v4l2_fmt = V4L2_PIX_FMT_XRGB32,
+		.v4l2_fmt = V4L2_PIX_FMT_XBGR32,
 		.fmt_bitmask = BIT(2),
 	},
 	{
@@ -316,6 +337,16 @@ static const struct xilinx_frmbuf_format_desc xilinx_frmbuf_formats[] = {
 		.fmt_bitmask = BIT(13),
 	},
 	{
+		.dts_name = "xv15",
+		.id = XILINX_FRMBUF_FMT_Y_UV10_420,
+		.bpw = 32,
+		.ppw = 3,
+		.num_planes = 2,
+		.drm_fmt = 0,
+		.v4l2_fmt = V4L2_PIX_FMT_XV15,
+		.fmt_bitmask = BIT(13),
+	},
+	{
 		.dts_name = "xv20",
 		.id = XILINX_FRMBUF_FMT_Y_UV10,
 		.bpw = 32,
@@ -323,6 +354,16 @@ static const struct xilinx_frmbuf_format_desc xilinx_frmbuf_formats[] = {
 		.num_planes = 2,
 		.drm_fmt = DRM_FORMAT_XV20,
 		.v4l2_fmt = V4L2_PIX_FMT_XV20M,
+		.fmt_bitmask = BIT(14),
+	},
+	{
+		.dts_name = "xv20",
+		.id = XILINX_FRMBUF_FMT_Y_UV10,
+		.bpw = 32,
+		.ppw = 3,
+		.num_planes = 2,
+		.drm_fmt = 0,
+		.v4l2_fmt = V4L2_PIX_FMT_XV20,
 		.fmt_bitmask = BIT(14),
 	},
 	{
@@ -355,6 +396,56 @@ static const struct xilinx_frmbuf_format_desc xilinx_frmbuf_formats[] = {
 		.v4l2_fmt = V4L2_PIX_FMT_Y10,
 		.fmt_bitmask = BIT(17),
 	},
+	{
+		.dts_name = "rgb888",
+		.id = XILINX_FRMBUF_FMT_BGR8,
+		.bpw = 24,
+		.ppw = 1,
+		.num_planes = 1,
+		.drm_fmt = DRM_FORMAT_RGB888,
+		.v4l2_fmt = V4L2_PIX_FMT_BGR24,
+		.fmt_bitmask = BIT(18),
+	},
+	{
+		.dts_name = "abgr8888",
+		.id = XILINX_FRMBUF_FMT_RGBA8,
+		.bpw = 32,
+		.ppw = 1,
+		.num_planes = 1,
+		.drm_fmt = DRM_FORMAT_ABGR8888,
+		.v4l2_fmt = 0,
+		.fmt_bitmask = BIT(19),
+	},
+	{
+		.dts_name = "argb8888",
+		.id = XILINX_FRMBUF_FMT_BGRA8,
+		.bpw = 32,
+		.ppw = 1,
+		.num_planes = 1,
+		.drm_fmt = DRM_FORMAT_ARGB8888,
+		.v4l2_fmt = 0,
+		.fmt_bitmask = BIT(20),
+	},
+	{
+		.dts_name = "avuy8888",
+		.id = XILINX_FRMBUF_FMT_YUVA8,
+		.bpw = 32,
+		.ppw = 1,
+		.num_planes = 1,
+		.drm_fmt = DRM_FORMAT_AVUY,
+		.v4l2_fmt = 0,
+		.fmt_bitmask = BIT(21),
+	},
+};
+
+/**
+ * struct xilinx_frmbuf_feature - dt or IP property structure
+ * @direction: dma transfer mode and direction
+ * @flags: Bitmask of properties enabled in IP or dt
+ */
+struct xilinx_frmbuf_feature {
+	enum dma_transfer_direction direction;
+	u32 flags;
 };
 
 /**
@@ -369,6 +460,7 @@ static const struct xilinx_frmbuf_format_desc xilinx_frmbuf_formats[] = {
  * @drm_fmt_cnt: Count of supported DRM fourcc codes
  * @v4l2_memory_fmts: Array of supported V4L2 fourcc codes
  * @v4l2_fmt_cnt: Count of supported V4L2 fourcc codes
+ * @cfg: Pointer to Framebuffer Feature config struct
  */
 struct xilinx_frmbuf_device {
 	void __iomem *regs;
@@ -381,13 +473,36 @@ struct xilinx_frmbuf_device {
 	u32 drm_fmt_cnt;
 	u32 v4l2_memory_fmts[ARRAY_SIZE(xilinx_frmbuf_formats)];
 	u32 v4l2_fmt_cnt;
+	const struct xilinx_frmbuf_feature *cfg;
+};
+
+static const struct xilinx_frmbuf_feature xlnx_fbwr_cfg_v20 = {
+	.direction = DMA_DEV_TO_MEM,
+};
+
+static const struct xilinx_frmbuf_feature xlnx_fbwr_cfg_v21 = {
+	.direction = DMA_DEV_TO_MEM,
+	.flags = XILINX_PPC_PROP | XILINX_FLUSH_PROP | XILINX_FID_PROP,
+};
+
+static const struct xilinx_frmbuf_feature xlnx_fbrd_cfg_v20 = {
+	.direction = DMA_MEM_TO_DEV,
+};
+
+static const struct xilinx_frmbuf_feature xlnx_fbrd_cfg_v21 = {
+	.direction = DMA_MEM_TO_DEV,
+	.flags = XILINX_PPC_PROP | XILINX_FLUSH_PROP | XILINX_FID_PROP,
 };
 
 static const struct of_device_id xilinx_frmbuf_of_ids[] = {
 	{ .compatible = "xlnx,axi-frmbuf-wr-v2",
-		.data = (void *)DMA_DEV_TO_MEM},
+		.data = (void *)&xlnx_fbwr_cfg_v20},
+	{ .compatible = "xlnx,axi-frmbuf-wr-v2.1",
+		.data = (void *)&xlnx_fbwr_cfg_v21},
 	{ .compatible = "xlnx,axi-frmbuf-rd-v2",
-		.data = (void *)DMA_MEM_TO_DEV},
+		.data = (void *)&xlnx_fbrd_cfg_v20},
+	{ .compatible = "xlnx,axi-frmbuf-rd-v2.1",
+		.data = (void *)&xlnx_fbrd_cfg_v21},
 	{/* end of list */}
 };
 
@@ -498,6 +613,17 @@ static int frmbuf_verify_format(struct dma_chan *chan, u32 fourcc, u32 type)
 		      xil_chan->xdev->enabled_vid_fmts))
 			return -EINVAL;
 
+		/*
+		 * The Alpha color formats are supported in Framebuffer Read
+		 * IP only as corresponding DRM formats.
+		 */
+		if (type == XDMA_DRM &&
+		    (xilinx_frmbuf_formats[i].drm_fmt == DRM_FORMAT_ABGR8888 ||
+		     xilinx_frmbuf_formats[i].drm_fmt == DRM_FORMAT_ARGB8888 ||
+		     xilinx_frmbuf_formats[i].drm_fmt == DRM_FORMAT_AVUY) &&
+		    xil_chan->direction != DMA_MEM_TO_DEV)
+			return -EINVAL;
+
 		xil_chan->vid_fmt = &xilinx_frmbuf_formats[i];
 		return 0;
 	}
@@ -579,6 +705,56 @@ int xilinx_xdma_get_v4l2_vid_fmts(struct dma_chan *chan, u32 *fmt_cnt,
 	return 0;
 }
 EXPORT_SYMBOL(xilinx_xdma_get_v4l2_vid_fmts);
+
+int xilinx_xdma_get_fid(struct dma_chan *chan,
+			struct dma_async_tx_descriptor *async_tx, u32 *fid)
+{
+	struct xilinx_frmbuf_device *xdev;
+	struct xilinx_frmbuf_tx_descriptor *desc;
+
+	xdev = frmbuf_find_dev(chan);
+	if (IS_ERR(xdev))
+		return PTR_ERR(xdev);
+
+	if (!async_tx || !fid)
+		return -EINVAL;
+
+	if (xdev->chan.direction != DMA_DEV_TO_MEM)
+		return -EINVAL;
+
+	desc = to_dma_tx_descriptor(async_tx);
+	if (!desc)
+		return -EINVAL;
+
+	*fid = desc->fid;
+	return 0;
+}
+EXPORT_SYMBOL(xilinx_xdma_get_fid);
+
+int xilinx_xdma_set_fid(struct dma_chan *chan,
+			struct dma_async_tx_descriptor *async_tx, u32 fid)
+{
+	struct xilinx_frmbuf_device *xdev;
+	struct xilinx_frmbuf_tx_descriptor *desc;
+
+	if (fid > 1 || !async_tx)
+		return -EINVAL;
+
+	xdev = frmbuf_find_dev(chan);
+	if (IS_ERR(xdev))
+		return PTR_ERR(xdev);
+
+	if (xdev->chan.direction != DMA_MEM_TO_DEV)
+		return -EINVAL;
+
+	desc = to_dma_tx_descriptor(async_tx);
+	if (!desc)
+		return -EINVAL;
+
+	desc->fid = fid;
+	return 0;
+}
+EXPORT_SYMBOL(xilinx_xdma_set_fid);
 
 /**
  * of_dma_xilinx_xlate - Translation function
@@ -775,6 +951,14 @@ static void xilinx_frmbuf_complete_descriptor(struct xilinx_frmbuf_chan *chan)
 {
 	struct xilinx_frmbuf_tx_descriptor *desc = chan->active_desc;
 
+	/*
+	 * In case of frame buffer write, read the fid register
+	 * and associate it with descriptor
+	 */
+	if (chan->direction == DMA_DEV_TO_MEM && chan->hw_fid)
+		desc->fid = frmbuf_read(chan, XILINX_FRMBUF_FID_OFFSET) &
+			    XILINX_FRMBUF_FID_MASK;
+
 	dma_cookie_complete(&desc->async_tx);
 	list_add_tail(&desc->node, &chan->done_list);
 }
@@ -818,6 +1002,10 @@ static void xilinx_frmbuf_start_transfer(struct xilinx_frmbuf_chan *chan)
 	frmbuf_write(chan, XILINX_FRMBUF_STRIDE_OFFSET, desc->hw.stride);
 	frmbuf_write(chan, XILINX_FRMBUF_HEIGHT_OFFSET, desc->hw.vsize);
 	frmbuf_write(chan, XILINX_FRMBUF_FMT_OFFSET, chan->vid_fmt->id);
+
+	/* If it is framebuffer read IP set the FID */
+	if (chan->direction == DMA_MEM_TO_DEV && chan->hw_fid)
+		frmbuf_write(chan, XILINX_FRMBUF_FID_OFFSET, desc->fid);
 
 	/* Start the hardware */
 	xilinx_frmbuf_start(chan);
@@ -996,6 +1184,27 @@ static int xilinx_frmbuf_terminate_all(struct dma_chan *dchan)
 	xilinx_frmbuf_free_descriptors(chan);
 	/* worst case frame-to-frame boundary; ensure frame output complete */
 	msleep(50);
+
+	if (chan->xdev->cfg->flags & XILINX_FLUSH_PROP) {
+		u8 count;
+
+		/*
+		 * Flush the framebuffer FIFO and
+		 * wait for max 50ms for flush done
+		 */
+		frmbuf_set(chan, XILINX_FRMBUF_CTRL_OFFSET,
+			   XILINX_FRMBUF_CTRL_FLUSH);
+		for (count = WAIT_FOR_FLUSH_DONE; count > 0; count--) {
+			if (frmbuf_read(chan, XILINX_FRMBUF_CTRL_OFFSET) &
+					XILINX_FRMBUF_CTRL_FLUSH_DONE)
+				break;
+			usleep_range(2000, 2100);
+		}
+
+		if (!count)
+			dev_err(chan->xdev->dev, "Framebuffer Flush not done!\n");
+	}
+
 	xilinx_frmbuf_chan_reset(chan);
 
 	return 0;
@@ -1069,6 +1278,9 @@ static int xilinx_frmbuf_chan_probe(struct xilinx_frmbuf_device *xdev,
 	else
 		chan->write_addr = write_addr;
 
+	if (xdev->cfg->flags & XILINX_FID_PROP)
+		chan->hw_fid = of_property_read_bool(node, "xlnx,fid");
+
 	spin_lock_init(&chan->lock);
 	INIT_LIST_HEAD(&chan->pending_list);
 	INIT_LIST_HEAD(&chan->done_list);
@@ -1116,7 +1328,7 @@ static int xilinx_frmbuf_probe(struct platform_device *pdev)
 	enum dma_transfer_direction dma_dir;
 	const struct of_device_id *match;
 	int err;
-	u32 i, j;
+	u32 i, j, align, ppc;
 	int hw_vid_fmt_cnt;
 	const char *vid_fmts[ARRAY_SIZE(xilinx_frmbuf_formats)];
 
@@ -1130,7 +1342,9 @@ static int xilinx_frmbuf_probe(struct platform_device *pdev)
 	if (!match)
 		return -ENODEV;
 
-	dma_dir = (enum dma_transfer_direction)match->data;
+	xdev->cfg = match->data;
+
+	dma_dir = (enum dma_transfer_direction)xdev->cfg->direction;
 
 	xdev->rst_gpio = devm_gpiod_get(&pdev->dev, "reset",
 					GPIOD_OUT_HIGH);
@@ -1153,7 +1367,27 @@ static int xilinx_frmbuf_probe(struct platform_device *pdev)
 		return PTR_ERR(xdev->regs);
 
 	/* Initialize the DMA engine */
-	xdev->common.copy_align = 4; /* JPM TODO: need algorithmic setting */
+	if (xdev->cfg->flags & XILINX_PPC_PROP) {
+		err = of_property_read_u32(node, "xlnx,pixels-per-clock", &ppc);
+		if (err || (ppc != 1 && ppc != 2 && ppc != 4)) {
+			dev_err(&pdev->dev, "missing or invalid pixels per clock dts prop\n");
+			return err;
+		}
+
+		err = of_property_read_u32(node, "xlnx,dma-align", &align);
+		if (err)
+			align = ppc * XILINX_FRMBUF_ALIGN_MUL;
+
+		if (align < (ppc * XILINX_FRMBUF_ALIGN_MUL) ||
+		    ffs(align) != fls(align)) {
+			dev_err(&pdev->dev, "invalid dma align dts prop\n");
+			return -EINVAL;
+		}
+	} else {
+		align = 16;
+	}
+
+	xdev->common.copy_align = fls(align) - 1;
 	xdev->common.dev = &pdev->dev;
 
 	INIT_LIST_HEAD(&xdev->common.channels);

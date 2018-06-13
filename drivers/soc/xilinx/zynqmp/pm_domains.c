@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * ZynqMP Generic PM domain support
  *
- *  Copyright (C) 2015 Xilinx
+ *  Copyright (C) 2015-2018 Xilinx, Inc.
  *
  *  Davorin Mista <davorin.mista@aggios.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  Jolly Shah <jollys@xilinx.com>
+ *  Rajan Vaja <rajanv@xilinx.com>
  */
 
 #include <linux/err.h>
@@ -26,7 +16,8 @@
 #include <linux/pm_domain.h>
 #include <linux/slab.h>
 #include <linux/list.h>
-#include <linux/soc/xilinx/zynqmp/pm.h>
+#include <linux/firmware/xilinx/zynqmp/firmware.h>
+#include <linux/soc/xilinx/zynqmp/power.h>
 
 #define DRIVER_NAME "zynqmp_gpd"
 
@@ -94,10 +85,14 @@ static int zynqmp_gpd_power_on(struct generic_pm_domain *domain)
 {
 	int i, status = 0;
 	struct zynqmp_pm_domain *pd;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
+
+	if (!eemi_ops || !eemi_ops->set_requirement)
+		return status;
 
 	pd = container_of(domain, struct zynqmp_pm_domain, gpd);
 	for (i = 0; i < pd->node_id_num; i++) {
-		status = zynqmp_pm_set_requirement(pd->node_ids[i],
+		status = eemi_ops->set_requirement(pd->node_ids[i],
 					ZYNQMP_PM_CAPABILITY_ACCESS,
 					ZYNQMP_PM_MAX_QOS,
 					ZYNQMP_PM_REQUEST_ACK_BLOCKING);
@@ -123,6 +118,10 @@ static int zynqmp_gpd_power_off(struct generic_pm_domain *domain)
 	struct zynqmp_domain_device *zdev, *tmp;
 	u32 capabilities = 0;
 	bool may_wakeup = 0;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
+
+	if (!eemi_ops || !eemi_ops->set_requirement)
+		return status;
 
 	pd = container_of(domain, struct zynqmp_pm_domain, gpd);
 
@@ -142,7 +141,7 @@ static int zynqmp_gpd_power_off(struct generic_pm_domain *domain)
 	}
 
 	for (i = pd->node_id_num - 1; i >= 0; i--) {
-		status = zynqmp_pm_set_requirement(pd->node_ids[i],
+		status = eemi_ops->set_requirement(pd->node_ids[i],
 						   capabilities, 0,
 						   ZYNQMP_PM_REQUEST_ACK_NO);
 		/**
@@ -172,6 +171,10 @@ static int zynqmp_gpd_attach_dev(struct generic_pm_domain *domain,
 	int i, status;
 	struct zynqmp_pm_domain *pd;
 	struct zynqmp_domain_device *zdev;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
+
+	if (!eemi_ops || !eemi_ops->request_node)
+		return -ENXIO;
 
 	pd = container_of(domain, struct zynqmp_pm_domain, gpd);
 
@@ -187,7 +190,7 @@ static int zynqmp_gpd_attach_dev(struct generic_pm_domain *domain,
 		return 0;
 
 	for (i = 0; i < pd->node_id_num; i++) {
-		status = zynqmp_pm_request_node(pd->node_ids[i], 0, 0,
+		status = eemi_ops->request_node(pd->node_ids[i], 0, 0,
 						ZYNQMP_PM_REQUEST_ACK_BLOCKING);
 		/* If requesting a node fails print and return the error */
 		if (status) {
@@ -216,6 +219,10 @@ static void zynqmp_gpd_detach_dev(struct generic_pm_domain *domain,
 	int i, status;
 	struct zynqmp_pm_domain *pd;
 	struct zynqmp_domain_device *zdev, *tmp;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
+
+	if (!eemi_ops || !eemi_ops->release_node)
+		return;
 
 	pd = container_of(domain, struct zynqmp_pm_domain, gpd);
 
@@ -231,7 +238,7 @@ static void zynqmp_gpd_detach_dev(struct generic_pm_domain *domain,
 		return;
 
 	for (i = 0; i < pd->node_id_num; i++) {
-		status = zynqmp_pm_release_node(pd->node_ids[i]);
+		status = eemi_ops->release_node(pd->node_ids[i]);
 		/* If releasing a node fails print the error and return */
 		if (status) {
 			pr_err("%s error %d, node %u\n", __func__, status,

@@ -32,7 +32,9 @@ static const struct xvip_video_format xvip_video_formats[] = {
 	{ XVIP_VF_YUV_420, 8, NULL, MEDIA_BUS_FMT_VYYUYY8_1X24,
 	  1, 12, V4L2_PIX_FMT_NV12M, 2, 2, 1, 2, "4:2:0, 2-plane non-cont" },
 	{ XVIP_VF_YUV_420, 10, NULL, MEDIA_BUS_FMT_VYYUYY8_1X24,
-	  1, 15, V4L2_PIX_FMT_XV15M, 2, 2, 1, 2, "4:2:0, 10-bit 2-plane non-cont" },
+	  1, 12, V4L2_PIX_FMT_XV15, 2, 1, 2, 2, "4:2:0, 10-bit 2-plane cont" },
+	{ XVIP_VF_YUV_420, 10, NULL, MEDIA_BUS_FMT_VYYUYY8_1X24,
+	  1, 12, V4L2_PIX_FMT_XV15M, 2, 2, 1, 2, "4:2:0, 10-bit 2-plane non-cont" },
 	{ XVIP_VF_YUV_422, 8, NULL, MEDIA_BUS_FMT_UYVY8_1X16,
 	  2, 16, V4L2_PIX_FMT_YUYV, 1, 1, 2, 1, "4:2:2, packed, YUYV" },
 	{ XVIP_VF_VUY_422, 8, NULL, MEDIA_BUS_FMT_UYVY8_1X16,
@@ -42,7 +44,9 @@ static const struct xvip_video_format xvip_video_formats[] = {
 	{ XVIP_VF_YUV_422, 8, NULL, MEDIA_BUS_FMT_UYVY8_1X16,
 	  1, 16, V4L2_PIX_FMT_NV16M, 2, 2, 1, 1, "4:2:2, 2-plane non-contiguous" },
 	{ XVIP_VF_YUV_422, 10, NULL, MEDIA_BUS_FMT_UYVY8_1X16,
-	  1, 20, V4L2_PIX_FMT_XV20M, 2, 2, 1, 1, "4:2:2, 10-bit 2-plane non-cont" },
+	  1, 16, V4L2_PIX_FMT_XV20, 2, 1, 2, 1, "4:2:2, 10-bit 2-plane cont" },
+	{ XVIP_VF_YUV_422, 10, NULL, MEDIA_BUS_FMT_UYVY8_1X16,
+	  1, 16, V4L2_PIX_FMT_XV20M, 2, 2, 1, 1, "4:2:2, 10-bit 2-plane non-cont" },
 	{ XVIP_VF_YUV_444, 8, NULL, MEDIA_BUS_FMT_VUY8_1X24,
 	  3, 24, V4L2_PIX_FMT_VUY24, 1, 1, 1, 1, "4:4:4, packed, YUYV" },
 	{ XVIP_VF_YUVX, 8, NULL, MEDIA_BUS_FMT_VUY8_1X24,
@@ -50,11 +54,13 @@ static const struct xvip_video_format xvip_video_formats[] = {
 	{ XVIP_VF_YUVX, 10, NULL, MEDIA_BUS_FMT_VUY8_1X24,
 	  4, 32, V4L2_PIX_FMT_XVUY10, 1, 1, 1, 1, "2:10:10:10, packed, XVUY" },
 	{ XVIP_VF_RBG, 8, NULL, MEDIA_BUS_FMT_RBG888_1X24,
+	  3, 24, V4L2_PIX_FMT_BGR24, 1, 1, 1, 1, "24-bit RGB" },
+	{ XVIP_VF_RBG, 8, NULL, MEDIA_BUS_FMT_RBG888_1X24,
 	  3, 24, V4L2_PIX_FMT_RGB24, 1, 1, 1, 1, "24-bit RGB" },
 	{ XVIP_VF_BGRX, 8, NULL, MEDIA_BUS_FMT_RBG888_1X24,
 	  4, 32, V4L2_PIX_FMT_BGRX32, 1, 1, 1, 1, "x:8:8:8 RGB w/8 bits padding" },
 	{ XVIP_VF_XRGB, 8, NULL, MEDIA_BUS_FMT_RBG888_1X24,
-	  4, 32, V4L2_PIX_FMT_XRGB32, 1, 1, 1, 1, "8:8:8:x RGBx w/8 bits padding" },
+	  4, 32, V4L2_PIX_FMT_XBGR32, 1, 1, 1, 1, "8:8:8:x RGBx w/8 bits padding" },
 	{ XVIP_VF_XBGR, 10, NULL, MEDIA_BUS_FMT_RBG888_1X24,
 	  4, 32, V4L2_PIX_FMT_XBGR30, 1, 1, 1, 1, "2:10:10:10, packed, XBGR" },
 	{ XVIP_VF_MONO_SENSOR, 8, "mono", MEDIA_BUS_FMT_Y8_1X8,
@@ -120,19 +126,23 @@ EXPORT_SYMBOL_GPL(xvip_get_format_by_fourcc);
 /**
  * xvip_bpl_scaling_factor - Retrieve bpl scaling factor for a 4CC
  * @fourcc: the format 4CC
+ * @numerator: returning numerator of scaling factor
+ * @denominator: returning denominator of scaling factor
  *
  * Return: Return numerator and denominator values by address
  */
 void xvip_bpl_scaling_factor(u32 fourcc, u32 *numerator, u32 *denominator)
 {
 	switch (fourcc) {
+	case V4L2_PIX_FMT_XV15:
+	case V4L2_PIX_FMT_XV20:
 	case V4L2_PIX_FMT_XV15M:
 	case V4L2_PIX_FMT_XV20M:
 		*numerator = 10;
 		*denominator = 8;
 		break;
 	default:
-		*numerator   = 1;
+		*numerator = 1;
 		*denominator = 1;
 		break;
 	}
@@ -142,12 +152,16 @@ EXPORT_SYMBOL_GPL(xvip_bpl_scaling_factor);
 /**
  * xvip_width_padding_factor - Retrieve width's padding factor for a 4CC
  * @fourcc: the format 4CC
+ * @numerator: returning numerator of padding factor
+ * @denominator: returning denominator of padding factor
  *
  * Return: Return numerator and denominator values by address
  */
 void xvip_width_padding_factor(u32 fourcc, u32 *numerator, u32 *denominator)
 {
 	switch (fourcc) {
+	case V4L2_PIX_FMT_XV15:
+	case V4L2_PIX_FMT_XV20:
 	case V4L2_PIX_FMT_XV15M:
 	case V4L2_PIX_FMT_XV20M:
 		/* 32 bits are required per 30 bits of data */
@@ -155,7 +169,7 @@ void xvip_width_padding_factor(u32 fourcc, u32 *numerator, u32 *denominator)
 		*denominator = 30;
 		break;
 	default:
-		*numerator   = 1;
+		*numerator = 1;
 		*denominator = 1;
 		break;
 	}

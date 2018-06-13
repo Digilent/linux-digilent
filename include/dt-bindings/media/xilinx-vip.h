@@ -41,4 +41,5 @@
 #define XVIP_VF_XBGR			19
 #define XVIP_VF_Y_GREY			20
 #define XVIP_VF_XRGB			21
+
 #endif /* __DT_BINDINGS_MEDIA_XILINX_VIP_H__ */

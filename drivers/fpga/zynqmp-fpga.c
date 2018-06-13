@@ -20,7 +20,7 @@
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/string.h>
-#include <linux/soc/xilinx/zynqmp/firmware.h>
+#include <linux/firmware/xilinx/zynqmp/firmware.h>
 
 /* Constant Definitions */
 #define IXR_FPGA_DONE_MASK	0X00000008U
@@ -50,13 +50,16 @@ static int zynqmp_fpga_ops_write(struct fpga_manager *mgr,
 	char *kbuf;
 	size_t dma_size;
 	dma_addr_t dma_addr;
-	u32 transfer_length;
 	int ret;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
+
+	if (!eemi_ops || !eemi_ops->fpga_load)
+		return -ENXIO;
 
 	priv = mgr->priv;
 
 	if (mgr->flags & IXR_FPGA_ENCRYPTION_EN)
-		dma_size = size + ENCRYPTED_KEY_LEN + ENCRYPTED_IV_LEN;
+		dma_size = size + ENCRYPTED_KEY_LEN;
 	else
 		dma_size = size;
 
@@ -66,25 +69,13 @@ static int zynqmp_fpga_ops_write(struct fpga_manager *mgr,
 
 	memcpy(kbuf, buf, size);
 
-	if (mgr->flags & IXR_FPGA_ENCRYPTION_EN) {
+	if (mgr->flags & IXR_FPGA_ENCRYPTION_EN)
 		memcpy(kbuf + size, mgr->key, ENCRYPTED_KEY_LEN);
-		memcpy(kbuf + size + ENCRYPTED_KEY_LEN, mgr->iv,
-						ENCRYPTED_IV_LEN);
-	}
 
 	__flush_cache_user_range((unsigned long)kbuf,
 				 (unsigned long)kbuf + dma_size);
 
-	/**
-	 * Translate size from bytes to number of 32bit words that
-	 * the DMA should write to the PCAP interface
-	 */
-	if (size & 3)
-		transfer_length = (size >> 2) + 1;
-	else
-		transfer_length = size >> 2;
-
-	ret = zynqmp_pm_fpga_load(dma_addr, transfer_length, mgr->flags);
+	ret = eemi_ops->fpga_load(dma_addr, dma_addr + size, mgr->flags);
 
 	dma_free_coherent(priv->dev, dma_size, kbuf, dma_addr);
 
@@ -100,8 +91,12 @@ static int zynqmp_fpga_ops_write_complete(struct fpga_manager *mgr,
 static enum fpga_mgr_states zynqmp_fpga_ops_state(struct fpga_manager *mgr)
 {
 	u32 status;
+	const struct zynqmp_eemi_ops *eemi_ops = zynqmp_pm_get_eemi_ops();
 
-	zynqmp_pm_fpga_get_status(&status);
+	if (!eemi_ops || !eemi_ops->fpga_get_status)
+		return FPGA_MGR_STATE_UNKNOWN;
+
+	eemi_ops->fpga_get_status(&status);
 	if (status & IXR_FPGA_DONE_MASK)
 		return FPGA_MGR_STATE_OPERATING;
 
@@ -142,7 +137,6 @@ static int zynqmp_fpga_probe(struct platform_device *pdev)
 
 static int zynqmp_fpga_remove(struct platform_device *pdev)
 {
-
 	fpga_mgr_unregister(&pdev->dev);
 
 	return 0;
