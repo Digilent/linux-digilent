@@ -170,12 +170,18 @@ static int xvip_pipeline_start_stop(struct xvip_composite_device *xdev,
 		 * shared between sub-graphs
 		 */
 		if (start != is_streaming) {
-			ret = v4l2_subdev_call(subdev, video, s_stream,
-					       start);
-			if (start && ret < 0 && ret != -ENOIOCTLCMD) {
-				dev_err(xdev->dev, "s_stream is failed on subdev\n");
-				xvip_subdev_set_streaming(xdev, subdev, !start);
-				return ret;
+			if (start) {
+				ret = v4l2_subdev_call(subdev, core, s_power, 1);
+				ret = v4l2_subdev_call(subdev, video, s_stream,
+						       start);
+				if (start && ret < 0 && ret != -ENOIOCTLCMD) {
+					dev_err(xdev->dev, "s_stream is failed on subdev\n");
+					xvip_subdev_set_streaming(xdev, subdev, !start);
+					return ret;
+				}
+			} else {
+				ret = v4l2_subdev_call(subdev, video, s_stream, start);
+				ret = v4l2_subdev_call(subdev, core, s_power, 0);
 			}
 		}
 	}
@@ -480,8 +486,6 @@ static void xvip_dma_buffer_queue(struct vb2_buffer *vb)
 	struct xvip_dma *dma = vb2_get_drv_priv(vb->vb2_queue);
 	struct xvip_dma_buffer *buf = to_xvip_dma_buffer(vbuf);
 	struct dma_async_tx_descriptor *desc;
-	u32 flags, luma_size;
-	u32 padding_factor_nume, padding_factor_deno, bpl_nume, bpl_deno;
 	dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
 	u32 flags;
 	u32 luma_size;
