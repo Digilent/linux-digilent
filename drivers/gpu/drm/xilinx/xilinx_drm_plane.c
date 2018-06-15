@@ -256,11 +256,7 @@ int xilinx_drm_plane_mode_set(struct drm_plane *base_plane,
 	const struct drm_format_info *info;
 	struct drm_format_name_buf format_name;
 	size_t offset;
-	unsigned int hsub, vsub, fb_plane_cnt, i;
-	uint32_t padding_factor_nume, padding_factor_deno, cpp_nume, cpp_deno;
-
-	/* default setting */
-	plane->format = fb->pixel_format;
+	unsigned int hsub, vsub, i;
 
 	DRM_DEBUG_KMS("plane->id: %d\n", plane->id);
 
@@ -301,7 +297,6 @@ int xilinx_drm_plane_mode_set(struct drm_plane *base_plane,
 		}
 
 		plane->dma[i].xt.numf = height;
-
 		plane->dma[i].sgl[0].size = drm_format_plane_width_bytes(info,
 									 i,
 									 width);
@@ -320,23 +315,6 @@ int xilinx_drm_plane_mode_set(struct drm_plane *base_plane,
 
 	for (; i < MAX_NUM_SUB_PLANES; i++)
 		plane->dma[i].is_active = false;
-
-	/* Do we have a video format aware dma channel?
-	 * so, modify descriptor accordingly. Hueristic test:
-	 * we have a multi-plane format but only one dma channel
-	 */
-	if (plane->dma[0].chan && !plane->dma[1].chan &&
-	    fb_plane_cnt > 1) {
-		u32 stride = plane->dma[0].sgl[0].size +
-			     plane->dma[0].sgl[0].icg;
-
-		plane->dma[0].sgl[0].src_icg =
-			plane->dma[1].xt.src_start -
-			plane->dma[0].xt.src_start -
-			(plane->dma[0].xt.numf * stride);
-
-		plane->dma[0].xt.frame_size = fb_plane_cnt;
-	}
 
 	/* set OSD dimensions */
 	if (plane->manager->osd) {
@@ -933,30 +911,9 @@ xilinx_drm_plane_create(struct xilinx_drm_plane_manager *manager,
 						 &num_fmts);
 	}
 
-	if (plane->format == 0) {
-		ret = xilinx_xdma_get_drm_vid_fmts(plane->dma[0].chan,
-						   &num_fmts, &fmts);
-		if (!ret) {
-			int i;
-
-			for (i = 0; i < num_fmts; i++) {
-				if (fmts[i] != manager->format)
-					continue;
-
-				break;
-			}
-
-			if (i < num_fmts) {
-				plane->format = manager->format;
-			} else {
-				DRM_ERROR("No dma support for drm mgr fmt %x\n",
-					  manager->format);
-				return ERR_PTR(-EINVAL);
-			}
-		}
-		else
-			plane->format = manager->format;
-	}
+	/* If there's no IP other than VDMA, pick the manager's format */
+	if (plane->format == 0)
+		plane->format = manager->format;
 
 	/* initialize drm plane */
 	type = primary ? DRM_PLANE_TYPE_PRIMARY : DRM_PLANE_TYPE_OVERLAY;
