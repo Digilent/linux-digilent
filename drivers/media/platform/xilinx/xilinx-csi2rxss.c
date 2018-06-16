@@ -20,6 +20,7 @@
 #include <linux/compiler.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -269,6 +270,9 @@
 #define XCSI_MIN_HEIGHT			32
 #define XCSI_MAX_HEIGHT			4096
 
+/* POWER MACROS */
+#define XCSI_RESET_ASSERT	(0x1)
+#define XCSI_RESET_DEASSERT	(0x0)
 
 /*
  * Macro to return "true" or "false" string if bit is set
@@ -414,6 +418,7 @@ struct xcsi2rxss_core {
  * @npads: number of pads
  * @streaming: Flag for storing streaming state
  * @suspended: Flag for storing suspended state
+ * @rst_gpio: GPIO device attached to reset
  *
  * This structure contains the device driver related parameters
  */
@@ -430,6 +435,7 @@ struct xcsi2rxss_state {
 	unsigned int npads;
 	bool streaming;
 	bool suspended;
+	struct gpio_desc *rst_gpio;
 };
 
 static inline struct xcsi2rxss_state *
@@ -1061,10 +1067,14 @@ static int xcsi2rxss_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 static int xcsi2rxss_start_stream(struct xcsi2rxss_state *xcsi2rxss)
 {
 	int ret;
+	
+	gpiod_set_value_cansleep(xcsi2rxss->rst_gpio,
+					 XCSI_RESET_ASSERT);
+	udelay(1);
+	gpiod_set_value_cansleep(xcsi2rxss->rst_gpio,
+					 XCSI_RESET_DEASSERT);
 
 	xcsi2rxss_enable(&xcsi2rxss->core, true);
-
-	ret = xcsi2rxss_reset(&xcsi2rxss->core);
 	if (ret < 0)
 		return ret;
 
@@ -1456,6 +1466,10 @@ static int xcsi2rxss_parse_of(struct xcsi2rxss_state *xcsi2rxss)
 		of_property_read_bool(node, "xlnx,en-active-lanes");
 	dev_dbg(core->dev, "Enable active lanes property = %s\n",
 			core->enable_active_lanes ? "Present" : "Absent");
+	if (core->enable_active_lanes) {
+		dev_err(core->dev, "This driver currently does not support en-active-lanes\n");
+		return -EINVAL;
+	}
 
 	ret = of_property_read_string(node, "xlnx,csi-pxl-format",
 					&core->pxlformat);
@@ -1587,6 +1601,14 @@ static int xcsi2rxss_parse_of(struct xcsi2rxss_state *xcsi2rxss)
 		return ret;
 	}
 
+	/* Reset GPIO */
+	xcsi2rxss->rst_gpio = devm_gpiod_get(core->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(xcsi2rxss->rst_gpio)) {
+		if (PTR_ERR(xcsi2rxss->rst_gpio) != -EPROBE_DEFER)
+			dev_err(core->dev, "Reset GPIO not setup in DT");
+		return PTR_ERR(xcsi2rxss->rst_gpio);
+	}
+
 	return 0;
 }
 
@@ -1620,6 +1642,8 @@ static int xcsi2rxss_probe(struct platform_device *pdev)
 	/*
 	 * Reset and initialize the core.
 	 */
+	gpiod_set_value_cansleep(xcsi2rxss->rst_gpio,
+					 XCSI_RESET_DEASSERT);
 	xcsi2rxss_reset(&xcsi2rxss->core);
 
 	xcsi2rxss->core.events =  (struct xcsi2rxss_event *)&xcsi2rxss_events;
