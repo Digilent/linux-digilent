@@ -264,6 +264,12 @@
 #define XCSI_DEFAULT_WIDTH	(1920)
 #define XCSI_DEFAULT_HEIGHT	(1080)
 
+#define XCSI_MIN_WIDTH			32
+#define XCSI_MAX_WIDTH			4096
+#define XCSI_MIN_HEIGHT			32
+#define XCSI_MAX_HEIGHT			4096
+
+
 /*
  * Macro to return "true" or "false" string if bit is set
  */
@@ -1224,6 +1230,12 @@ static int xcsi2rxss_set_format(struct v4l2_subdev *sd,
 		fmt->format.code = code;
 		__format->code = code;
 	}
+	
+	__format->width = clamp_t(unsigned int, fmt->format.width,
+					XCSI_MIN_WIDTH, XCSI_MAX_WIDTH);
+	__format->height = clamp_t(unsigned int, fmt->format.height,
+					XCSI_MIN_HEIGHT, XCSI_MAX_HEIGHT);
+
 
 	mutex_unlock(&xcsi2rxss->lock);
 
