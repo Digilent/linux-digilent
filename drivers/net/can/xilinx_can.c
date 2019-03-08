@@ -502,6 +502,9 @@ static int xcan_chip_start(struct net_device *ndev)
 		   priv->read_reg(priv, XCAN_SR_OFFSET));
 
 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+	priv->tx_head = 0;
+	priv->tx_tail = 0;
+
 	return 0;
 }
 
@@ -1126,8 +1129,10 @@ static irqreturn_t xcan_interrupt(int irq, void *dev_id)
 
 	/* Check for the type of interrupt and Processing it */
 	if (isr & (XCAN_IXR_SLP_MASK | XCAN_IXR_WKUP_MASK)) {
-		priv->write_reg(priv, XCAN_ICR_OFFSET, (XCAN_IXR_SLP_MASK |
-				XCAN_IXR_WKUP_MASK));
+		if (isr & XCAN_IXR_SLP_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_SLP_MASK);
+		if (isr & XCAN_IXR_WKUP_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_WKUP_MASK);
 		xcan_state_interrupt(ndev, isr);
 	}
 
@@ -1138,9 +1143,15 @@ static irqreturn_t xcan_interrupt(int irq, void *dev_id)
 	/* Check for the type of error interrupt and Processing it */
 	if (isr & (XCAN_IXR_ERROR_MASK | XCAN_IXR_RXOFLW_MASK |
 			XCAN_IXR_BSOFF_MASK | XCAN_IXR_ARBLST_MASK)) {
-		priv->write_reg(priv, XCAN_ICR_OFFSET, (XCAN_IXR_ERROR_MASK |
-				XCAN_IXR_RXOFLW_MASK | XCAN_IXR_BSOFF_MASK |
-				XCAN_IXR_ARBLST_MASK));
+		if (isr & XCAN_IXR_ERROR_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_ERROR_MASK);
+		if (isr & XCAN_IXR_RXOFLW_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_RXOFLW_MASK);
+		if (isr & XCAN_IXR_BSOFF_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_BSOFF_MASK);
+		if (isr & XCAN_IXR_ARBLST_MASK)
+			priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_ARBLST_MASK);
+
 		xcan_err_interrupt(ndev, isr);
 	}
 	if (priv->quirks & CANFD_SUPPORT) {
@@ -1512,6 +1523,8 @@ static int xcan_probe(struct platform_device *pdev)
 	}
 	priv->reg_base = addr;
 	priv->tx_max = tx_max;
+	priv->tx_head = 0;
+	priv->tx_tail = 0;
 
 	/* Get IRQ for the device */
 	ndev->irq = platform_get_irq(pdev, 0);
