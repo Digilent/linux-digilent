@@ -248,7 +248,6 @@ static int axidma_prep_transfer(struct axidma_chan *axidma_chan,
     if (dma_tfr->wait) {
         cb_data->comp = dma_comp;
         cb_data->notify_signal = -1;
-        cb_data->user_data = dma_tfr->user_data;
         cb_data->process = NULL;
         init_completion(cb_data->comp);
         dma_txnd->callback_param = cb_data;
@@ -256,7 +255,6 @@ static int axidma_prep_transfer(struct axidma_chan *axidma_chan,
     } else {
         cb_data->comp = NULL;
         cb_data->notify_signal = dma_tfr->notify_signal;
-        cb_data->user_data = dma_tfr->user_data;
         cb_data->process = dma_tfr->process;
         dma_txnd->callback_param = cb_data;
         dma_txnd->callback = axidma_dma_callback;
