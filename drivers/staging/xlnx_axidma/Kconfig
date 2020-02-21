@@ -1,0 +1,9 @@
+config XLNX_AXI_DMA
+	tristate "Xilinx Axi DMA high level driver"
+	depends on CMA && DMA_CMA && XILINX_DMA && XILINX_DMA_ENGINES && DMA_SHARED_BUFFER
+	
+	help
+	  This module adds support to an additional layer to the XILINX 
+	  DMA driver. The purpose of this software stack is to allow userspace 
+	  Linux applications to interact with hardware on the FPGA fabric.
+	  Additonally it enables zero-copy capabilites.
