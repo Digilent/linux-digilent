@@ -124,6 +124,8 @@ source "drivers/staging/xlnxsync/Kconfig"
 
 source "drivers/staging/xlnx_tsmux/Kconfig"
 
+source "drivers/staging/xlnx_axidma/Kconfig"
+
 source "drivers/staging/xroeframer/Kconfig"
 
 source "drivers/staging/xroetrafficgen/Kconfig"
