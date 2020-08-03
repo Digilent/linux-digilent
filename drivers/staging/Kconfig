@@ -140,6 +140,8 @@ source "drivers/staging/xroetrafficgen/Kconfig"
 
 source "drivers/staging/xlnxsync/Kconfig"
 
+source "drivers/staging/xlnx_axidma/Kconfig"
+
 source "drivers/staging/xlnx_tsmux/Kconfig"
 
 endif # STAGING

@@ -59,4 +59,5 @@ obj-y                          += xlnx_ctrl_driver/
 obj-$(CONFIG_ERNIC)		+= xlnx_ernic/
 obj-$(CONFIG_XROE_FRAMER)	+= xroeframer/
 obj-$(CONFIG_XLNX_SYNC)		+= xlnxsync/
+obj-$(CONFIG_XLNX_AXI_DMA)	+= xlnx_axidma/
 obj-$(CONFIG_XLNX_TSMUX)	+= xlnx_tsmux/
