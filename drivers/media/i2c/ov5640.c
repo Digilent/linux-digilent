@@ -1141,7 +1141,7 @@ static int ov5640_load_regs(struct ov5640_dev *sensor,
 			usleep_range(1000 * delay_ms, 1000 * delay_ms + 100);
 	}
 
-	return ov5640_set_timings(sensor, mode);
+	return ret;
 }
 
 static int ov5640_set_autoexposure(struct ov5640_dev *sensor, bool on)
@@ -1810,6 +1810,10 @@ static int ov5640_set_mode(struct ov5640_dev *sensor)
 		ov5640_set_autogain(sensor, true);
 	if (auto_exp)
 		ov5640_set_autoexposure(sensor, true);
+
+	ret = ov5640_set_timings(sensor, mode);
+	if (ret < 0)
+		return ret;
 
 	ret = ov5640_set_binning(sensor, dn_mode != SCALING);
 	if (ret < 0)
