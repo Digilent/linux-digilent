@@ -31,6 +31,8 @@
 
 #define OV5640_DEFAULT_SLAVE_ID 0x3c
 
+#define OV5640_BAD_FRAMES_DURATION 1000
+
 #define OV5640_REG_SYS_RESET02		0x3002
 #define OV5640_REG_SYS_CLOCK_ENABLE02	0x3006
 #define OV5640_REG_SYS_CTRL0		0x3008
@@ -2971,6 +2973,12 @@ out:
 	return ret;
 }
 
+static int ov5640_get_skip_frames(struct v4l2_subdev *sd, u32 *frames)
+{
+	*frames = 60;
+	return 0;
+}
+
 static const struct v4l2_subdev_core_ops ov5640_core_ops = {
 	.s_power = ov5640_s_power,
 	.log_status = v4l2_ctrl_subdev_log_status,
@@ -2992,10 +3000,15 @@ static const struct v4l2_subdev_pad_ops ov5640_pad_ops = {
 	.enum_frame_interval = ov5640_enum_frame_interval,
 };
 
+static const struct v4l2_subdev_sensor_ops ov5640_sensor_ops = {
+	.g_skip_frames = ov5640_get_skip_frames,
+};
+
 static const struct v4l2_subdev_ops ov5640_subdev_ops = {
 	.core = &ov5640_core_ops,
 	.video = &ov5640_video_ops,
 	.pad = &ov5640_pad_ops,
+	.sensor = &ov5640_sensor_ops,
 };
 
 static int ov5640_get_regulators(struct ov5640_dev *sensor)
