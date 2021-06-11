@@ -15,6 +15,7 @@
 #include <linux/slab.h>             // Allocation functions
 #include <linux/stat.h>             // Module parameter permission values
 #include <linux/platform_device.h>  // Platform device definitions
+#include <linux/of_address.h>
 
 // Local dependencies
 #include "axidma.h"                 // Internal definitions
