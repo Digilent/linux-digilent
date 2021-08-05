@@ -88,6 +88,7 @@
 #define OV5640_REG_POLARITY_CTRL00	0x4740
 #define OV5640_REG_MIPI_CTRL00		0x4800
 #define OV5640_REG_DEBUG_MODE		0x4814
+#define OV5640_REG_PCLK_PERIOD		0x4837
 #define OV5640_REG_ISP_FORMAT_MUX_CTRL	0x501f
 #define OV5640_REG_PRE_ISP_TEST_SET1	0x503d
 #define OV5640_REG_SDE_CTRL0		0x5580
@@ -308,7 +309,7 @@ static const struct reg_value ov5640_init_setting_30fps_VGA[] = {
 	{0x302e, 0x08, 0, 0}, {0x4300, 0x3f, 0, 0},
 	{0x501f, 0x00, 0, 0}, {0x4407, 0x04, 0, 0},
 	{0x440e, 0x00, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
-	{0x4837, 0x0a, 0, 0}, {0x3824, 0x02, 0, 0},
+	{0x3824, 0x02, 0, 0},
 	{0x5000, 0xa7, 0, 0}, {0x5001, 0xa3, 0, 0}, {0x5180, 0xff, 0, 0},
 	{0x5181, 0xf2, 0, 0}, {0x5182, 0x00, 0, 0}, {0x5183, 0x14, 0, 0},
 	{0x5184, 0x25, 0, 0}, {0x5185, 0x24, 0, 0}, {0x5186, 0x09, 0, 0},
@@ -793,10 +794,13 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  * This is supposed to be ranging from 1 to 8, but the value is always
  * set to 3 in the vendor kernels.
  */
-#define OV5640_PLL_PREDIV	3
+#define OV5640_PLL_PREDIV	2
 
 #define OV5640_PLL_MULT_MIN	4
 #define OV5640_PLL_MULT_MAX	252
+
+#define OV5640_PLL_DVP_ROOT_DIV		1
+#define OV5640_PLL_MIPI_ROOT_DIV	2
 
 /*
  * This is supposed to be ranging from 1 to 16, but the value is
@@ -846,7 +850,7 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
 
 static unsigned long ov5640_compute_sys_clk(struct ov5640_dev *sensor,
 					    u8 pll_prediv, u8 pll_mult,
-					    u8 sysdiv)
+					    u8 sysdiv, u8 pll_div, u8 sclk_div)
 {
 	unsigned long sysclk = sensor->xclk_freq / pll_prediv * pll_mult;
 
@@ -854,13 +858,16 @@ static unsigned long ov5640_compute_sys_clk(struct ov5640_dev *sensor,
 	if (sysclk / 1000000 > 1000)
 		return 0;
 
-	return sysclk / sysdiv;
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY)
+		sysclk = sysclk / OV5640_BIT_DIV;
+
+	return sysclk / sysdiv / pll_div / sclk_div;
 }
 
 static unsigned long ov5640_calc_sys_clk(struct ov5640_dev *sensor,
 					 unsigned long rate,
 					 u8 *pll_prediv, u8 *pll_mult,
-					 u8 *sysdiv)
+					 u8 *sysdiv, u8 pll_rdiv, u8 *sclk_rdiv)
 {
 	unsigned long best = ~0;
 	u8 best_sysdiv = 1, best_mult = 1;
@@ -883,7 +890,9 @@ static unsigned long ov5640_calc_sys_clk(struct ov5640_dev *sensor,
 
 			_rate = ov5640_compute_sys_clk(sensor,
 						       OV5640_PLL_PREDIV,
-						       _pll_mult, _sysdiv);
+						       _pll_mult, _sysdiv,
+						       pll_rdiv,
+						       OV5640_SCLK_ROOT_DIV);
 
 			/*
 			 * We have reached the maximum allowed PLL1 output,
@@ -914,6 +923,7 @@ out:
 	*sysdiv = best_sysdiv;
 	*pll_prediv = OV5640_PLL_PREDIV;
 	*pll_mult = best_mult;
+	*sclk_rdiv = OV5640_SCLK_ROOT_DIV;
 
 	return best;
 }
@@ -959,11 +969,13 @@ out:
  * FIXME: this deviates from the sensor manual documentation which is quite
  * thin on the MIPI clock tree generation part.
  */
-static int ov5640_set_mipi_pclk(struct ov5640_dev *sensor,
+static int ov5640_set_pclk(struct ov5640_dev *sensor,
 				unsigned long rate)
 {
 	const struct ov5640_mode_info *mode = sensor->current_mode;
+	u8 pll_rdiv, pclk_div, sclk_rdiv, pclk_period;
 	u8 prediv, mult, sysdiv;
+	unsigned long pclk, sclk;
 	u8 mipi_div;
 	int ret;
 
@@ -978,68 +990,43 @@ static int ov5640_set_mipi_pclk(struct ov5640_dev *sensor,
 	else
 		mipi_div = OV5640_MIPI_DIV_PCLK;
 
-	ov5640_calc_sys_clk(sensor, rate, &prediv, &mult, &sysdiv);
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		pclk_div = 1;
+	} else {
+		pclk_div = mipi_div;
+		mipi_div = 1;
+	}
+
+	pll_rdiv = (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY) ?
+		   OV5640_PLL_MIPI_ROOT_DIV : OV5640_PLL_DVP_ROOT_DIV;
+	sclk = ov5640_calc_sys_clk(sensor, rate, &prediv, &mult, &sysdiv,
+		pll_rdiv, &sclk_rdiv);
+
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		/*
+		 * Calculate pclk period * number of CSI2 lanes in ns for MIPI
+		 * timing.
+		 */
+		pclk = sclk * sclk_rdiv / mipi_div;
+		pclk_period = (u8)((1000000000UL + pclk / 2UL) / pclk);
+		pclk_period = pclk_period *
+			      sensor->ep.bus.mipi_csi2.num_data_lanes;
+		ret = ov5640_write_reg(sensor, OV5640_REG_PCLK_PERIOD,
+				       pclk_period);
+		if (ret)
+			return ret;
+	}
 
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL0,
 			     0x0f, OV5640_PLL_CTRL0_MIPI_MODE_8BIT);
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
-			     0xff, sysdiv << 4 | mipi_div);
-	if (ret)
-		return ret;
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL2, 0xff, mult);
-	if (ret)
-		return ret;
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL3,
-			     0x1f, OV5640_PLL_CTRL3_PLL_ROOT_DIV_2 | prediv);
-	if (ret)
-		return ret;
-
-	return ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER,
-			      0x30, OV5640_PLL_SYS_ROOT_DIVIDER_BYPASS);
-}
-
-static unsigned long ov5640_calc_pclk(struct ov5640_dev *sensor,
-				      unsigned long rate,
-				      u8 *pll_prediv, u8 *pll_mult, u8 *sysdiv,
-				      u8 *pll_rdiv, u8 *bit_div, u8 *pclk_div)
-{
-	unsigned long _rate = rate * OV5640_PLL_ROOT_DIV * OV5640_BIT_DIV *
-				OV5640_PCLK_ROOT_DIV;
-
-	_rate = ov5640_calc_sys_clk(sensor, _rate, pll_prediv, pll_mult,
-				    sysdiv);
-	*pll_rdiv = OV5640_PLL_ROOT_DIV;
-	*bit_div = OV5640_BIT_DIV;
-	*pclk_div = OV5640_PCLK_ROOT_DIV;
-
-	return _rate / *pll_rdiv / *bit_div / *pclk_div;
-}
-
-static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
-{
-	u8 prediv, mult, sysdiv, pll_rdiv, bit_div, pclk_div;
-	int ret;
-
-	ov5640_calc_pclk(sensor, rate, &prediv, &mult, &sysdiv, &pll_rdiv,
-			 &bit_div, &pclk_div);
-
-	if (bit_div == 2)
-		bit_div = 8;
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL0,
-			     0x0f, bit_div);
 	if (ret)
 		return ret;
 
 	/*
-	 * We need to set sysdiv according to the clock, and to clear
-	 * the MIPI divider.
+	 * We need to set sysdiv according to the clock.
 	 */
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
-			     0xff, sysdiv << 4);
+			     0xff, sysdiv << 4 | mipi_div);
 	if (ret)
 		return ret;
 
@@ -1053,8 +1040,10 @@ static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
 	if (ret)
 		return ret;
 
-	return ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x30,
-			      (ilog2(pclk_div) << 4));
+	return ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x3F,
+			      (ilog2(pclk_div) << 4) |
+			      (ilog2(sclk_rdiv / 2) << 2) |
+			      ilog2(sclk_rdiv));
 }
 
 /* set JPEG framing sizes */
@@ -1755,6 +1744,7 @@ static int ov5640_set_mode(struct ov5640_dev *sensor)
 	bool auto_exp =  sensor->ctrls.auto_exp->val == V4L2_EXPOSURE_AUTO;
 	unsigned long rate;
 	int ret;
+	u8 bpp;
 
 	dn_mode = mode->dn_mode;
 	orig_dn_mode = orig_mode->dn_mode;
@@ -1775,15 +1765,15 @@ static int ov5640_set_mode(struct ov5640_dev *sensor)
 	/*
 	 * All the formats we support have 16 bits per pixel, seems to require
 	 * the same rate than YUV, so we can just use 16 bpp all the time.
-	 */
-	rate = ov5640_calc_pixel_rate(sensor) * 16;
-	if (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY) {
+	*/
+	bpp = sensor->fmt.code == MEDIA_BUS_FMT_JPEG_1X8 ? 1 : 2;
+	rate = ov5640_calc_pixel_rate(sensor) * bpp;
+
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2_DPHY)
 		rate = rate / sensor->ep.bus.mipi_csi2.num_data_lanes;
-		ret = ov5640_set_mipi_pclk(sensor, rate);
-	} else {
+	else 
 		rate = rate / sensor->ep.bus.parallel.bus_width;
-		ret = ov5640_set_dvp_pclk(sensor, rate);
-	}
+	ret = ov5640_set_pclk(sensor, rate);
 
 	if (ret < 0)
 		return 0;
@@ -1860,12 +1850,7 @@ static int ov5640_restore_mode(struct ov5640_dev *sensor)
 		return ret;
 	sensor->last_mode = &ov5640_mode_init_data;
 
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x3f,
-			     (ilog2(OV5640_SCLK2X_ROOT_DIV) << 2) |
-			     ilog2(OV5640_SCLK_ROOT_DIV));
-	if (ret)
-		return ret;
-
+	
 	/* now restore the last capture mode */
 	ret = ov5640_set_mode(sensor);
 	if (ret < 0)
