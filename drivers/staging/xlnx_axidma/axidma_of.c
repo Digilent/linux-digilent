@@ -82,21 +82,27 @@ static int axidma_of_parse_channel(struct device_node *dma_node, int channel,
 {
     int rc;
     struct device_node *dma_chan_node;
-    u32 channel_id;
+    int of_child_cout;
 
     // Verify that the DMA node has two channel (child) nodes, one for TX and RX
-    if (of_get_child_count(dma_node) < 1) {
+    of_child_cout = of_get_child_count(dma_node);
+    if (of_child_cout < 1) {
         axidma_node_err(dma_node, "DMA does not have any channel nodes.\n");
         return -EINVAL;
-    } else if (of_get_child_count(dma_node) > 2) {
+    } else if (of_child_cout > 2) {
         axidma_node_err(dma_node, "DMA has more than two channel nodes.\n");
         return -EINVAL;
     }
 
-    // Go to the child node that we're parsing
+    /*Go to the child node that we're parsing
+    The channel variable is the channel ID which determines if it's TX or RX
+    direction (0-TX; 1-RX). By default the AXI-DMA declare the TX channel
+    first in the device tree. If the channel ID is 1 (RX) and there are 2
+    channels, in order to read out the correct node, the second node needs to be
+    parsed.*/
     dma_chan_node = of_get_next_child(dma_node, NULL);
-    if (channel == 1) {
-        dma_chan_node = of_get_next_child(dma_node, dma_chan_node);
+    if (channel == 1 && of_child_cout == 2) {
+    	dma_chan_node = of_get_next_child(dma_node, dma_chan_node);
     }
 
     // Check if the specified node exists
@@ -105,18 +111,7 @@ static int axidma_of_parse_channel(struct device_node *dma_node, int channel,
                 channel);
     }
 
-    // Read out the channel's unique device id, and put it in the structure
-    if (of_find_property(dma_chan_node, "xlnx,device-id", NULL) == NULL) {
-        axidma_node_err(dma_chan_node, "DMA channel is missing the "
-                        "'xlnx,device-id' property.\n");
-        return -EINVAL;
-    }
-    rc = of_property_read_u32(dma_chan_node, "xlnx,device-id", &channel_id);
-    if (rc < 0) {
-        axidma_err("Unable to read the 'xlnx,device-id' property.\n");
-        return -EINVAL;
-    }
-    chan->channel_id = channel_id;
+    chan->channel_id = channel;
 
     // Use the compatible string to determine the channel's information
     rc = axidma_parse_compatible_property(dma_chan_node, chan, dev);
