@@ -6,6 +6,10 @@
 menu "Character devices"
 
 source "drivers/tty/Kconfig"
+config DIGILENT_WAVEGEN
+	tristate  "Wavegen support"
+	help
+	  This option enables support for a Wavegen IP character driver.
 
 config TTY_PRINTK
 	tristate "TTY driver to output user messages via printk"
