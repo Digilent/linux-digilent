@@ -21,6 +21,50 @@ struct wilc_wfi_radiotap_cb_hdr {
 #define TX_RADIOTAP_PRESENT ((1 << IEEE80211_RADIOTAP_RATE) |	\
 			     (1 << IEEE80211_RADIOTAP_TX_FLAGS))
 
+void wilc_wfi_handle_monitor_rx(struct wilc *wilc, u8 *buff, u32 size)
+{
+	struct wilc_vif *vif = NULL;
+	struct sk_buff *skb = NULL;
+	struct wilc_wfi_radiotap_hdr *hdr;
+
+	vif = wilc_get_vif_from_type(wilc, WILC_MONITOR_MODE);
+	if (!vif) {
+		PRINT_D(vif->ndev, HOSTAPD_DBG, "Monitor interface not up\n");
+		return;
+	}
+
+	skb = dev_alloc_skb(size + sizeof(*hdr));
+	if (!skb) {
+		PRINT_D(vif->ndev, HOSTAPD_DBG,
+			"Monitor if: No memory to allocate skb");
+		return;
+	}
+#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
+	skb_put_data(skb, buff, size);
+	hdr = skb_push(skb, sizeof(*hdr));
+#else
+	memcpy(skb_put(skb, size), buff, size);
+	hdr = (struct wilc_wfi_radiotap_hdr *)skb_push(skb, sizeof(*hdr));
+#endif
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->hdr.it_version = 0; /* PKTHDR_RADIOTAP_VERSION; */
+	hdr->hdr.it_len = cpu_to_le16(sizeof(*hdr));
+	PRINT_D(vif->ndev, HOSTAPD_DBG,
+		"Radiotap len %d\n", hdr->hdr.it_len);
+	hdr->hdr.it_present = cpu_to_le32
+			(1 << IEEE80211_RADIOTAP_RATE); /* | */
+	PRINT_D(vif->ndev, HOSTAPD_DBG, "Presentflags %d\n",
+		hdr->hdr.it_present);
+	hdr->rate = 5; /* txrate->bitrate / 5; */
+	skb->dev = vif->ndev;
+	skb_reset_mac_header(skb);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	skb->pkt_type = PACKET_OTHERHOST;
+	skb->protocol = htons(ETH_P_802_2);
+	memset(skb->cb, 0, sizeof(skb->cb));
+	netif_rx(skb);
+}
+
 void wilc_wfi_monitor_rx(struct net_device *mon_dev, u8 *buff, u32 size)
 {
 	u32 header, pkt_offset;
@@ -31,8 +75,11 @@ void wilc_wfi_monitor_rx(struct net_device *mon_dev, u8 *buff, u32 size)
 	if (!mon_dev)
 		return;
 
-	if (!netif_running(mon_dev))
+	if (!netif_running(mon_dev)) {
+		PRINT_D(mon_dev, HOSTAPD_DBG,
+			"Monitor interface already RUNNING\n");
 		return;
+	}
 
 	/* Get WILC header */
 	header = get_unaligned_le32(buff - HOST_HDR_OFFSET);
@@ -46,12 +93,20 @@ void wilc_wfi_monitor_rx(struct net_device *mon_dev, u8 *buff, u32 size)
 		/* hostapd callback mgmt frame */
 
 		skb = dev_alloc_skb(size + sizeof(*cb_hdr));
-		if (!skb)
+		if (!skb) {
+			PRINT_D(mon_dev, HOSTAPD_DBG,
+				"Monitor if : No memory to allocate skb");
 			return;
-
+		}
+	#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
 		skb_put_data(skb, buff, size);
 
 		cb_hdr = skb_push(skb, sizeof(*cb_hdr));
+	#else
+		memcpy(skb_put(skb, size), buff, size);
+		cb_hdr = (struct wilc_wfi_radiotap_cb_hdr *)skb_push(skb,
+							    sizeof(*cb_hdr));
+	#endif
 		memset(cb_hdr, 0, sizeof(*cb_hdr));
 
 		cb_hdr->hdr.it_version = 0; /* PKTHDR_RADIOTAP_VERSION; */
@@ -72,16 +127,28 @@ void wilc_wfi_monitor_rx(struct net_device *mon_dev, u8 *buff, u32 size)
 	} else {
 		skb = dev_alloc_skb(size + sizeof(*hdr));
 
-		if (!skb)
+		if (!skb) {
+			PRINT_D(mon_dev, HOSTAPD_DBG,
+				"Monitor if : No memory to allocate skb");
 			return;
-
+		}
+	#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
 		skb_put_data(skb, buff, size);
 		hdr = skb_push(skb, sizeof(*hdr));
-		memset(hdr, 0, sizeof(struct wilc_wfi_radiotap_hdr));
+	#else
+		memcpy(skb_put(skb, size), buff, size);
+		hdr = (struct wilc_wfi_radiotap_hdr *)skb_push(skb,
+							       sizeof(*hdr));
+	#endif
+		memset(hdr, 0, sizeof(*hdr));
 		hdr->hdr.it_version = 0; /* PKTHDR_RADIOTAP_VERSION; */
 		hdr->hdr.it_len = cpu_to_le16(sizeof(*hdr));
+		PRINT_D(mon_dev, HOSTAPD_DBG,
+			"Radiotap len %d\n", hdr->hdr.it_len);
 		hdr->hdr.it_present = cpu_to_le32
-				(1 << IEEE80211_RADIOTAP_RATE);
+				(1 << IEEE80211_RADIOTAP_RATE); /* | */
+		PRINT_D(mon_dev, HOSTAPD_DBG, "Presentflags %d\n",
+			hdr->hdr.it_present);
 		hdr->rate = 5;
 	}
 
@@ -103,6 +170,16 @@ struct tx_complete_mon_data {
 static void mgmt_tx_complete(void *priv, int status)
 {
 	struct tx_complete_mon_data *pv_data = priv;
+	u8 *buf =  pv_data->buff;
+
+	if (status == 1) {
+		if (buf[0] == 0x10 || buf[0] == 0xb0)
+			pr_info("Packet sent Size = %d Add = %p.\n",
+				pv_data->size, pv_data->buff);
+	} else {
+		pr_info("Couldn't send packet Size = %d Add = %p.\n",
+			pv_data->size, pv_data->buff);
+	}
 	/*
 	 * in case of fully hosting mode, the freeing will be done
 	 * in response to the cfg packet
@@ -116,13 +193,18 @@ static int mon_mgmt_tx(struct net_device *dev, const u8 *buf, size_t len)
 {
 	struct tx_complete_mon_data *mgmt_tx = NULL;
 
-	if (!dev)
+	if (!dev) {
+		PRINT_ER(dev, "ERROR: dev == NULL\n");
 		return -EFAULT;
+	}
 
 	netif_stop_queue(dev);
 	mgmt_tx = kmalloc(sizeof(*mgmt_tx), GFP_ATOMIC);
-	if (!mgmt_tx)
+	if (!mgmt_tx) {
+		PRINT_ER(dev,
+			 "Failed to allocate memory for mgmt_tx structure\n");
 		return -ENOMEM;
+	}
 
 	mgmt_tx->buff = kmemdup(buf, len, GFP_ATOMIC);
 	if (!mgmt_tx->buff) {
@@ -144,53 +226,28 @@ static netdev_tx_t wilc_wfi_mon_xmit(struct sk_buff *skb,
 {
 	u32 rtap_len, ret = 0;
 	struct wilc_wfi_mon_priv  *mon_priv;
-	struct sk_buff *skb2;
-	struct wilc_wfi_radiotap_cb_hdr *cb_hdr;
 	u8 srcadd[ETH_ALEN];
 	u8 bssid[ETH_ALEN];
 
 	mon_priv = netdev_priv(dev);
-	if (!mon_priv)
+	if (!mon_priv) {
+		PRINT_ER(dev, "Monitor interface private structure is NULL\n");
 		return -EFAULT;
-
+	}
 	rtap_len = ieee80211_get_radiotap_len(skb->data);
-	if (skb->len < rtap_len)
+	if (skb->len < rtap_len) {
+		PRINT_ER(dev, "Error in radiotap header\n");
 		return -1;
+	}
 
 	skb_pull(skb, rtap_len);
 
-	if (skb->data[0] == 0xc0 && is_broadcast_ether_addr(&skb->data[4])) {
-		skb2 = dev_alloc_skb(skb->len + sizeof(*cb_hdr));
-		if (!skb2)
-			return -ENOMEM;
-
-		skb_put_data(skb2, skb->data, skb->len);
-
-		cb_hdr = skb_push(skb2, sizeof(*cb_hdr));
-		memset(cb_hdr, 0, sizeof(struct wilc_wfi_radiotap_cb_hdr));
-
-		cb_hdr->hdr.it_version = 0; /* PKTHDR_RADIOTAP_VERSION; */
-
-		cb_hdr->hdr.it_len = cpu_to_le16(sizeof(*cb_hdr));
-
-		cb_hdr->hdr.it_present = cpu_to_le32(TX_RADIOTAP_PRESENT);
-
-		cb_hdr->rate = 5;
-		cb_hdr->tx_flags = 0x0004;
-
-		skb2->dev = dev;
-		skb_reset_mac_header(skb2);
-		skb2->ip_summed = CHECKSUM_UNNECESSARY;
-		skb2->pkt_type = PACKET_OTHERHOST;
-		skb2->protocol = htons(ETH_P_802_2);
-		memset(skb2->cb, 0, sizeof(skb2->cb));
-
-		netif_rx(skb2);
-
-		return 0;
-	}
 	skb->dev = mon_priv->real_ndev;
 
+	PRINT_D(dev, HOSTAPD_DBG, "Skipping the radiotap header\n");
+	PRINT_D(dev, HOSTAPD_DBG, "SKB netdevice name = %s\n", skb->dev->name);
+	PRINT_D(dev, HOSTAPD_DBG, "MONITOR real dev name = %s\n",
+		mon_priv->real_ndev->name);
 	ether_addr_copy(srcadd, &skb->data[10]);
 	ether_addr_copy(bssid, &skb->data[16]);
 	/*
@@ -200,7 +257,7 @@ static netdev_tx_t wilc_wfi_mon_xmit(struct sk_buff *skb,
 	if (!(memcmp(srcadd, bssid, 6))) {
 		ret = mon_mgmt_tx(mon_priv->real_ndev, skb->data, skb->len);
 		if (ret)
-			netdev_err(dev, "fail to mgmt tx\n");
+			PRINT_ER(dev, "fail to mgmt tx\n");
 		dev_kfree_skb(skb);
 	} else {
 		ret = wilc_mac_xmit(skb, mon_priv->real_ndev);
@@ -225,16 +282,20 @@ struct net_device *wilc_wfi_init_mon_interface(struct wilc *wl,
 		return wl->monitor_dev;
 
 	wl->monitor_dev = alloc_etherdev(sizeof(struct wilc_wfi_mon_priv));
-	if (!wl->monitor_dev)
+	if (!wl->monitor_dev) {
+		PRINT_ER(real_dev, "failed to allocate memory\n");
 		return NULL;
-
+	}
 	wl->monitor_dev->type = ARPHRD_IEEE80211_RADIOTAP;
 	strlcpy(wl->monitor_dev->name, name, IFNAMSIZ);
 	wl->monitor_dev->netdev_ops = &wilc_wfi_netdev_ops;
+#if KERNEL_VERSION(4, 11, 9) <= LINUX_VERSION_CODE
 	wl->monitor_dev->needs_free_netdev = true;
-
+#else
+	wl->monitor_dev->destructor = free_netdev;
+#endif
 	if (register_netdevice(wl->monitor_dev)) {
-		netdev_err(real_dev, "register_netdevice failed\n");
+		PRINT_ER(real_dev, "register_netdevice failed\n");
 		free_netdev(wl->monitor_dev);
 		return NULL;
 	}
@@ -250,9 +311,14 @@ void wilc_wfi_deinit_mon_interface(struct wilc *wl, bool rtnl_locked)
 	if (!wl->monitor_dev)
 		return;
 
+	PRINT_INFO(wl->monitor_dev, HOSTAPD_DBG,
+		   "In Deinit monitor interface\n");
+	PRINT_INFO(wl->monitor_dev, HOSTAPD_DBG, "Unregister monitor netdev\n");
 	if (rtnl_locked)
 		unregister_netdevice(wl->monitor_dev);
 	else
 		unregister_netdev(wl->monitor_dev);
+	PRINT_INFO(wl->monitor_dev, HOSTAPD_DBG,
+		   "Deinit monitor interface done\n");
 	wl->monitor_dev = NULL;
 }
