@@ -49,6 +49,10 @@
 
 // A convenient structure to pass between prep and start transfer functions
 struct axidma_transfer {
+    dma_addr_t dma_addr;
+    size_t transfer_size;
+    size_t buf_num;
+    size_t buf_len;
     int sg_len;                     // The length of the BD array
     struct scatterlist *sg_list;    // List of buffer descriptors
     bool wait;                      // Indicates if we should wait
@@ -196,8 +200,12 @@ static int axidma_prep_transfer(struct axidma_chan *axidma_chan,
     dma_cookie_t dma_cookie;
     char *direction, *type;
     int rc;
-
+    dma_addr_t dma_addr;
+    size_t transfer_size, buf_len;
+    transfer_size = dma_tfr->transfer_size;
+    buf_len = dma_tfr->buf_len;
     // Get the fields from the structures
+    dma_addr = dma_tfr->dma_addr;
     chan = axidma_chan->chan;
     dma_comp = &dma_tfr->comp;
     dma_dir = axidma_to_dma_dir(dma_tfr->dir);
@@ -210,10 +218,9 @@ static int axidma_prep_transfer(struct axidma_chan *axidma_chan,
 
     /* For VDMA transfers, we configure the channel, then prepare an interlaved
      * transfer. For DMA, we simply prepare a slave scatter-gather transfer. */
-    dma_flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
+    dma_flags = DMA_PREP_INTERRUPT;
     if (dma_tfr->type == AXIDMA_DMA) {
-        dma_txnd = dmaengine_prep_slave_sg(chan, sg_list, sg_len, dma_dir,
-                                           dma_flags);
+        dma_txnd = dmaengine_prep_dma_cyclic(chan, dma_addr, transfer_size, buf_len, DMA_FROM_DEVICE, dma_flags);
     } else {
         axidma_setup_vdma_config(&vdma_config);
         rc = xilinx_vdma_channel_set_config(chan, &vdma_config);
@@ -374,16 +381,21 @@ int axidma_read_transfer(struct axidma_device *dev,
     }
 
     // Setup the scatter-gather list for the transfer (only one entry)
-    sg_init_table(&sg_list, 1);
-    rc = axidma_init_sg_entry(dev, &sg_list, 0, trans->buf,
-                              trans->buf_len);
-    if (rc < 0) {
-        return rc;
+    dma_addr_t dma_addr;
+
+    // Get the DMA address from the user virtual address
+    dma_addr = axidma_uservirt_to_dma(dev, trans->buf, trans->buf_len);
+    if (dma_addr == (dma_addr_t)NULL) {
+        axidma_err("Requested transfer address %p does not fall within a "
+                   "previously allocated DMA buffer.\n", trans->buf);
+        return -EFAULT;
     }
 
     // Setup receive transfer structure for DMA
-    rx_tfr.sg_list = &sg_list;
-    rx_tfr.sg_len = 1;
+    rx_tfr.dma_addr = dma_addr;
+    rx_tfr.transfer_size = trans->buf_len;
+    rx_tfr.buf_num = trans->buf_num;
+    rx_tfr.buf_len = trans->buf_len / trans->buf_num;
     rx_tfr.dir = rx_chan->dir;
     rx_tfr.type = rx_chan->type;
     rx_tfr.wait = trans->wait;
