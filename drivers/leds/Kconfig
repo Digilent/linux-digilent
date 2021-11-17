@@ -792,6 +792,12 @@ config LEDS_BLINKM
 	  This option enables support for the BlinkM RGB LED connected
 	  through I2C. Say Y to enable support for the BlinkM LED.
 
+config LEDS_DIGILENT
+	tristate "LED support for the Digilent boards"
+	help
+	  This option enables support for the LEDs on the Digilent
+	  boards. Say Y to enable these.
+
 config LEDS_POWERNV
 	tristate "LED support for PowerNV Platform"
 	depends on LEDS_CLASS
