@@ -102,9 +102,10 @@ struct axidma_register_buffer {
 struct axidma_transaction {
     bool wait;                      // Indicates if the call is blocking
     int channel_id;                 // The id of the DMA channel to use
+    size_t buf_num;                 // Number of buffers
     void *buf;                      // The buffer used for the transaction
-    size_t buf_len;                 // The length of the buffer
-
+    size_t buf_len;           // The length of the total buffer
+    
     // Kept as a union for extend ability.
     union {
         struct axidma_video_frame frame;    // Frame information for VDMA.
@@ -143,7 +144,7 @@ struct axidma_residue {
 #define AXIDMA_IOCTL_MAGIC              'W'
 
 // The number of IOCTL's implemented, used for verification
-#define AXIDMA_NUM_IOCTLS               11
+#define AXIDMA_NUM_IOCTLS               12
 
 /**
  * Returns the number of available DMA channels in the system.
@@ -396,5 +397,4 @@ struct axidma_residue {
  *  - user_addr - The user virtual address of the external DMA buffer.
  **/
 #define AXIDMA_UNREGISTER_BUFFER        _IO(AXIDMA_IOCTL_MAGIC, 10)
-
 #endif /* AXIDMA_IOCTL_H_ */
