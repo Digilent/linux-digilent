@@ -119,7 +119,7 @@
 #define ZYNQ_QSPI_MAX_NUM_CS		2
 
 /* Maximum address width */
-#define ZYNQ_QSPI_MAX_ADDR_WIDTH	3
+#define ZYNQ_QSPI_MAX_ADDR_WIDTH	4
 
 /**
  * struct zynq_qspi - Defines qspi driver instance
@@ -541,6 +541,7 @@ static irqreturn_t zynq_qspi_irq(int irq, void *dev_id)
  * Executes a memory operation.
  *
  * This function first selects the chip and starts the memory operation.
+ * Supports a maximum of ZYNQ_QSPI_MAX_ADDR_WIDTH bytes of address passed in op->addr.nbytes.
  *
  * Return: 0 in case of success, -EINVAL if address size greater than
  * ZYNQ_QSPI_MAX_ADDR_WIDTH.
