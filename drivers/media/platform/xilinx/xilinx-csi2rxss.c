@@ -664,6 +664,37 @@ static irqreturn_t xcsi2rxss_irq_handler(int irq, void *data)
 }
 
 /**
+ * xcsi2rxss_s_power - It is used to power on/off the subdevices.
+ * @sd: V4L2 Sub device
+ * @on: Flag (True / False)
+ *
+ * This function calls the s_power function of the subdevices of the
+ * Xilinx MIPI CSI-2 Rx Subsystem.
+ *
+ * Return: 0 on success, errors otherwise
+ */
+static int xcsi2rxss_s_power(struct v4l2_subdev *sd, int on)
+{
+
+	struct xcsi2rxss_state *xcsi2rxss = to_xcsi2rxssstate(sd);
+	int ret = 0;
+	mutex_lock(&xcsi2rxss->lock);
+
+	xcsi2rxss->rsubdev =
+		xcsi2rxss_get_remote_subdev(&xcsi2rxss->pads[XVIP_PAD_SINK]);
+
+	if (!xcsi2rxss->rsubdev) {
+		goto exit_s_power;
+	}
+
+	ret = v4l2_subdev_call(xcsi2rxss->rsubdev, core, s_power, on);
+
+exit_s_power:
+	mutex_unlock(&xcsi2rxss->lock);
+	return ret;
+}
+
+/**
  * xcsi2rxss_s_stream - It is used to start/stop the streaming.
  * @sd: V4L2 Sub device
  * @enable: Flag (True / False)
@@ -888,6 +919,7 @@ static const struct media_entity_operations xcsi2rxss_media_ops = {
 
 static const struct v4l2_subdev_core_ops xcsi2rxss_core_ops = {
 	.log_status = xcsi2rxss_log_status,
+	.s_power = xcsi2rxss_s_power,
 };
 
 static const struct v4l2_subdev_video_ops xcsi2rxss_video_ops = {
