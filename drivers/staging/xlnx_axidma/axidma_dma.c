@@ -397,6 +397,7 @@ int axidma_read_transfer(struct axidma_device *dev,
                                 trans->buf_len);
         if (rc < 0) {
             return rc;
+        }
     } else {
         // Get the DMA address from the user virtual address
         dma_addr = axidma_uservirt_to_dma(dev, trans->buf, trans->buf_len);
