@@ -8,6 +8,7 @@
 #define WILC_WLAN_IF_H
 
 #include <linux/netdevice.h>
+#include "debugfs.h"
 #include "fw.h"
 
 /********************************************
@@ -15,6 +16,7 @@
  *      Wlan Configuration ID
  *
  ********************************************/
+#define	FW_WILC3000_BLE		"mchp/wilc3000_ble_firmware.bin"
 
 enum bss_types {
 	WILC_FW_BSS_TYPE_INFRA = 0,
@@ -35,6 +37,10 @@ enum {
 	WILC_FW_PREAMBLE_AUTO = 2,	/* Auto Preamble Selection */
 };
 
+#define DEV_WIFI	0
+#define DEV_BT		1
+#define DEV_MAX		2
+
 enum {
 	WILC_FW_PASSIVE_SCAN = 0,
 	WILC_FW_ACTIVE_SCAN = 1,
@@ -46,12 +52,6 @@ enum {
 	WILC_FW_MAX_FAST_PS = 2,
 	WILC_FW_MIN_PSPOLL_PS = 3,
 	WILC_FW_MAX_PSPOLL_PS = 4
-};
-
-enum chip_ps_states {
-	WILC_CHIP_WAKEDUP = 0,
-	WILC_CHIP_SLEEPING_AUTO = 1,
-	WILC_CHIP_SLEEPING_MANUAL = 2
 };
 
 enum bus_acquire {
@@ -91,7 +91,16 @@ enum authtype {
 	WILC_FW_AUTH_OPEN_SYSTEM = 1,
 	WILC_FW_AUTH_SHARED_KEY = 2,
 	WILC_FW_AUTH_ANY = 3,
-	WILC_FW_AUTH_IEEE8021 = 5
+	WILC_FW_AUTH_IEEE8021 = 5,
+	WILC_FW_AUTH_SAE = 7,
+	WILC_FW_AUTH_IEE8021X_SHA256 = 9,
+	WILC_FW_AUTH_OPEN_SYSTEM_SHA256 = 13
+};
+
+enum mfptype {
+	WILC_FW_MFP_NONE = 0x0,
+	WILC_FW_MFP_OPTIONAL = 0x1,
+	WILC_FW_MFP_REQUIRED = 0x2
 };
 
 enum site_survey {
@@ -182,7 +191,8 @@ enum {
 
 enum {
 	WILC_FW_ACTION_FRM_IDX = 0,
-	WILC_FW_PROBE_REQ_IDX = 1
+	WILC_FW_PROBE_REQ_IDX = 1,
+	WILC_FW_AUTH_REQ_IDX = 2
 };
 
 enum wid_type {
@@ -192,6 +202,13 @@ enum wid_type {
 	WID_STR			= 3,
 	WID_BIN_DATA		= 4,
 	WID_BIN			= 5,
+};
+
+enum {
+	ANTENNA1		= 0,
+	ANTENNA2		= 1,
+	DIVERSITY		= 2,
+	NUM_ANT_MODE
 };
 
 struct wid {
@@ -662,6 +679,9 @@ enum {
 
 	WID_LOG_TERMINAL_SWITCH		= 0x00CD,
 	WID_TX_POWER			= 0x00CE,
+	WID_WOWLAN_TRIGGER		= 0X00CF,
+	WID_SET_MFP			= 0x00D0,
+	WID_USE_PRIORITY_EAPOL		= 0x00D1,
 	/*  EMAC Short WID list */
 	/*  RTS Threshold */
 	/*
@@ -751,6 +771,7 @@ enum {
 	WID_REMOVE_KEY			= 0x301E,
 	WID_ASSOC_REQ_INFO		= 0x301F,
 	WID_ASSOC_RES_INFO		= 0x3020,
+	WID_ADD_IGTK			= 0x3022,
 	WID_MANUFACTURER		= 0x3026, /* Added for CAPI tool */
 	WID_MODEL_NAME			= 0x3027, /* Added for CAPI tool */
 	WID_MODEL_NUM			= 0x3028, /* Added for CAPI tool */
@@ -795,6 +816,8 @@ enum {
 
 	WID_SETUP_MULTICAST_FILTER	= 0x408b,
 
+	WID_ANTENNA_SELECTION		= 0x408c,
+	WID_EXTERNAL_AUTH_PARAM	= 0x408d,
 	/* Miscellaneous WIDs */
 	WID_ALL				= 0x7FFE,
 	WID_MAX				= 0xFFFF
