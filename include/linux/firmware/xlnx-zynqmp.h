@@ -148,6 +148,8 @@
 /* ZynqMP SD tap delay tuning */
 #define SD_ITAPDLY	0xFF180314
 #define SD_OTAPDLYSEL	0xFF180318
+#define SD0_ITAPCHGWIN_BIT 9
+#define SD0_ITAPDLYENA_BIT 8
 
 enum pm_module_id {
 	PM_MODULE_ID = 0x0,

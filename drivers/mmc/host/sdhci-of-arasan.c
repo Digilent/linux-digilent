@@ -1107,18 +1107,55 @@ static int arasan_zynqmp_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	u32 device_id = !strcmp(clk_name, "clk_out_sd0") ? NODE_SD_0 :
 							   NODE_SD_1;
 	int err;
+	u16 clk;
+	u32 mask;
 
 	/* ZynqMP SD controller does not perform auto tuning in DDR50 mode */
 	if (mmc->ios.timing == MMC_TIMING_UHS_DDR50)
 		return 0;
 
+	// Disable the SD clock
+	clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL);
+	clk &= ~SDHCI_CLOCK_CARD_EN;
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	// Gate the output of the input tap delay circuit
+	mask = (device_id == NODE_SD_0) ? GENMASK(SD0_ITAPCHGWIN_BIT, SD0_ITAPCHGWIN_BIT)
+		: GENMASK (SD0_ITAPCHGWIN_BIT+16, SD0_ITAPCHGWIN_BIT+16);
+	err = zynqmp_pm_mmio_write(SD_ITAPDLY, mask, 0xFFFFFFFF);
+	if (err) {
+		pr_err("Error gating Input Tap Delay circuit\n");
+		return err;
+	}
+
+	// Disable manual input tap delay altogether, in preparation for auto-tuning
+	mask = (device_id == NODE_SD_0) ? GENMASK(SD0_ITAPDLYENA_BIT, SD0_ITAPDLYENA_BIT)
+		: GENMASK (SD0_ITAPDLYENA_BIT+16, SD0_ITAPDLYENA_BIT+16);
+	err = zynqmp_pm_mmio_write(SD_ITAPDLY, mask, 0);
+	if (err) {
+		pr_err("Error disabling Manual Input Tap Delay\n");
+		return err;
+	}
+
+	// Un-gate the output of the tap delay lines
+	mask = (device_id == NODE_SD_0) ? GENMASK(SD0_ITAPCHGWIN_BIT, SD0_ITAPCHGWIN_BIT)
+		: GENMASK (SD0_ITAPCHGWIN_BIT+16, SD0_ITAPCHGWIN_BIT+16);
+	err = zynqmp_pm_mmio_write(SD_ITAPDLY, mask, 0);
+	if (err) {
+		pr_err("Error un-gating Input Tap Delay circuit\n");
+		return err;
+	}
+
 	arasan_zynqmp_dll_reset(host, device_id);
 
 	err = sdhci_execute_tuning(mmc, opcode);
-	if (err)
+	if (err) {
+		pr_err("Tuning failed\n");
 		return err;
+	}
 
 	arasan_zynqmp_dll_reset(host, device_id);
+	pr_info("Tuning passed\n");
 
 	return 0;
 }
