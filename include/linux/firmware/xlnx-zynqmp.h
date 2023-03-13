@@ -81,6 +81,10 @@
 #define XILINX_ZYNQMP_PM_FPGA_ENCRYPTION_USERKEY	BIT(3)
 #define XILINX_ZYNQMP_PM_FPGA_ENCRYPTION_DEVKEY		BIT(4)
 
+#define SD_ITAPDLY_ADDR 0xFF180314
+#define SD0_ITAPCHGWIN_BIT 9
+#define SD0_ITAPDLYENA_BIT 8
+
 enum pm_api_id {
 	PM_GET_API_VERSION = 1,
 	PM_SET_CONFIGURATION,
@@ -103,6 +107,8 @@ enum pm_api_id {
 	/* Direct control API functions: */
 	PM_RESET_ASSERT,
 	PM_RESET_GET_STATUS,
+	PM_MMIO_WRITE = 19,
+	PM_MMIO_READ = 20,
 	PM_PM_INIT_FINALIZE = 21,
 	PM_FPGA_LOAD,
 	PM_FPGA_GET_STATUS,
@@ -636,11 +642,24 @@ int zynqmp_pm_ggs_init(struct kobject *parent_kobj);
 
 #if IS_REACHABLE(CONFIG_ARCH_ZYNQMP)
 const struct zynqmp_eemi_ops *zynqmp_pm_get_eemi_ops(void);
+int zynqmp_pm_mmio_read(u32 address, u32 *out);
+int zynqmp_pm_mmio_write(u32 address, u32 mask, u32 value);
 #else
 static inline struct zynqmp_eemi_ops *zynqmp_pm_get_eemi_ops(void)
 {
 	return ERR_PTR(-ENODEV);
 }
+
+static inline int zynqmp_pm_mmio_write(u32 address, u32 mask, u32 value)
+{
+	return -ENODEV;
+}
+
+static inline int zynqmp_pm_mmio_read(u32 address, u32 *out)
+{
+	return -ENODEV;
+}
+
 #endif
 
 #endif /* __FIRMWARE_ZYNQMP_H__ */
