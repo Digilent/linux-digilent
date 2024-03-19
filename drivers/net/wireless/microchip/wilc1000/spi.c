@@ -189,15 +189,15 @@ static void wilc_wlan_power(struct wilc *wilc, bool on)
 
 	if (on) {
 		/* assert ENABLE: */
-		gpiod_set_value(gpios->enable, 1);
+		gpiod_set_value_cansleep(gpios->enable, 1);
 		mdelay(5);
 		/* assert RESET: */
-		gpiod_set_value(gpios->reset, 1);
+		gpiod_set_value_cansleep(gpios->reset, 1);
 	} else {
 		/* deassert RESET: */
-		gpiod_set_value(gpios->reset, 0);
+		gpiod_set_value_cansleep(gpios->reset, 0);
 		/* deassert ENABLE: */
-		gpiod_set_value(gpios->enable, 0);
+		gpiod_set_value_cansleep(gpios->enable, 0);
 	}
 }
 
