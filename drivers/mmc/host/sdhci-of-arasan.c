@@ -1097,6 +1097,11 @@ static void arasan_zynqmp_dll_reset(struct sdhci_host *host, u32 deviceid)
 	sdhci_enable_clk(host, clk);
 }
 
+static int zynqmp_pm_mmio_write(u32 address, u32 mask, u32 value)
+{
+	return zynqmp_pm_invoke_fn(PM_MMIO_WRITE, NULL, 3, address, mask, value ) ;
+}
+
 static int arasan_zynqmp_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
